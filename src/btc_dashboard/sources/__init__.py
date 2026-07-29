@@ -50,3 +50,21 @@ class SourceResult:
 
 def unavailable(name: str, error: str) -> SourceResult:
     return SourceResult(name=name, available=False, error=error)
+
+
+def fmt(value, spec: str = "", *, prefix: str = "", suffix: str = "",
+        missing: str = "n/a") -> str:
+    """Format a possibly-missing value without ever raising.
+
+    Renderers run over data that may be partial: a source can legitimately
+    return some fields and not others, and an *ingested* snapshot may carry a
+    field of the wrong type entirely. A bare f-string blows up on both, and
+    because a raise costs the whole block, one missing number takes out an
+    entire section of the panel. Everything numeric goes through here.
+    """
+    if value is None:
+        return missing
+    try:
+        return f"{prefix}{value:{spec}}{suffix}"
+    except (TypeError, ValueError):
+        return missing

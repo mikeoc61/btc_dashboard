@@ -248,3 +248,38 @@ class TestIdentGuard:
     def test_rejects_unsafe_identifiers(self, bad):
         with pytest.raises(ValueError, match="unsafe SQL identifier"):
             warehouse._ident(bad)
+
+
+class TestPriceComesFromTheBtcTable:
+    """Regression: `close` was read off the latest `onchain` row, where the
+    column does not exist, so it was always None. `sma200` was non-None, and
+    the render line guarded on `sma200` while formatting `close` — which took
+    out the entire ON-CHAIN block with a TypeError on the first real warehouse.
+    """
+
+    def test_close_is_populated(self, tmp_path):
+        path = _build_db(tmp_path / "m.duckdb", days=400,
+                         close=lambda i: 63900.0 if i == 399 else 71000.0)
+        r = warehouse.collect(Config.from_env(db_path=path))
+        assert r.data["close"] == 63900.0
+        assert r.data["sma200"] is not None
+
+    def test_renders_with_price_present(self, tmp_path):
+        path = _build_db(tmp_path / "m.duckdb", days=400)
+        r = warehouse.collect(Config.from_env(db_path=path))
+        assert any("daily close" in line for line in warehouse.render_lines(r.data))
+
+    def test_renders_when_the_price_table_is_empty(self, tmp_path):
+        """On-chain and price advance independently; one empty must not cost
+        the block."""
+        path = _build_db(tmp_path / "m.duckdb", days=400)
+        con = duckdb.connect(str(path))
+        con.execute("DELETE FROM btc")
+        con.close()
+
+        r = warehouse.collect(Config.from_env(db_path=path))
+        assert r.available
+        assert r.data["close"] is None and r.data["sma200"] is None
+        lines = warehouse.render_lines(r.data)          # must not raise
+        assert any("blks" in line for line in lines)
+        assert not any("daily close" in line for line in lines)

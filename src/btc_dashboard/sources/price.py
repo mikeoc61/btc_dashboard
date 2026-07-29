@@ -13,7 +13,7 @@ import json
 import urllib.request
 from typing import Any
 
-from . import SourceResult, unavailable
+from . import SourceResult, fmt, unavailable
 
 NAME = "price"
 
@@ -104,22 +104,28 @@ def collect(cfg) -> SourceResult:
 
 
 def render_lines(d: dict) -> list[str]:
-    out = [f"spot ${d['spot']:,.0f} ({d['source']})"]
+    out = [f"spot {fmt(d.get('spot'), ',.0f', prefix='$')} ({d.get('source') or 'unknown'})"]
     if d.get("sma200") is not None:
         out.append(
-            f"200d SMA ${d['sma200']:,.0f} | {d['sma200_pct']:+.1f}% "
-            f"({d['sma200_position']})"
+            f"200d SMA {fmt(d.get('sma200'), ',.0f', prefix='$')} | "
+            f"{fmt(d.get('sma200_pct'), '+.1f', suffix='%')} "
+            f"({d.get('sma200_position') or 'n/a'})"
         )
     else:
-        out.append(f"200d SMA n/a ({d['days_available']}d available)")
+        out.append(
+            f"200d SMA n/a ({fmt(d.get('days_available'), missing='?')}d available)"
+        )
     return out
 
 
 def context_lines(d: dict) -> list[str]:
-    out = [f"BTC spot: ${d['spot']:,.0f}"]
+    out = []
+    if d.get("spot") is not None:
+        out.append(f"BTC spot: {fmt(d.get('spot'), ',.0f', prefix='$')}")
     if d.get("sma200") is not None:
         out.append(
-            f"BTC 200d SMA: ${d['sma200']:,.0f} | price is {d['sma200_pct']:+.1f}% "
-            f"vs SMA ({d['sma200_position']} the 200d)"
+            f"BTC 200d SMA: {fmt(d.get('sma200'), ',.0f', prefix='$')} | price is "
+            f"{fmt(d.get('sma200_pct'), '+.1f', suffix='%')} vs SMA "
+            f"({d.get('sma200_position') or 'position unknown'} the 200d)"
         )
     return out

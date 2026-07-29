@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import subprocess
 
-from . import SourceResult, unavailable
+from . import SourceResult, fmt, unavailable
 
 NAME = "node"
 
@@ -123,38 +123,49 @@ def collect(cfg) -> SourceResult:
 
 
 def render_lines(d: dict) -> list[str]:
-    hr = f"hashrate {d['hash_rate_ehs']:,.2f} EH/s"
+    hr = f"hashrate {fmt(d.get('hash_rate_ehs'), ',.2f')} EH/s"
     if d.get("hash_rate_7d_pct") is not None:
-        hr += f" ({d['hash_rate_7d_pct']:+.2f}% 7d)"
-    rt = d["retarget"]
-    proj = (
-        f"proj {rt['projection_pct']:+.2f}%"
-        if rt["projection_pct"] is not None
-        else f"proj n/a ({rt['blocks_elapsed']} blks into period)"
-    )
-    eta = f", ~{rt['eta_days']}d" if rt["eta_days"] is not None else ""
-    f = d["fees_sat_vb"]
-    fee_txt = "/".join("n/a" if f[k] is None else f"{f[k]:g}" for k in ("fast", "hour", "day"))
+        hr += f" ({fmt(d.get('hash_rate_7d_pct'), '+.2f', suffix='%')} 7d)"
+
+    rt = d.get("retarget") or {}
+    if rt.get("projection_pct") is not None:
+        proj = f"proj {fmt(rt.get('projection_pct'), '+.2f', suffix='%')}"
+    else:
+        proj = f"proj n/a ({fmt(rt.get('blocks_elapsed'), missing='?')} blks into period)"
+    eta = f", ~{fmt(rt.get('eta_days'))}d" if rt.get("eta_days") is not None else ""
+
+    f = d.get("fees_sat_vb") or {}
+    fee_txt = "/".join(fmt(f.get(k), "g") for k in ("fast", "hour", "day"))
+
+    mp = d.get("mempool") or {}
     return [
-        f"height {d['height']:,} | {hr} | difficulty {d['difficulty_t']:,.2f}T",
-        f"retarget {rt['blocks_left']} blks{eta} | {proj}",
-        f"mempool {d['mempool']['tx']:,} tx / {d['mempool']['vmb']:.1f} vMB",
+        f"height {fmt(d.get('height'), ',')} | {hr} | "
+        f"difficulty {fmt(d.get('difficulty_t'), ',.2f')}T",
+        f"retarget {fmt(rt.get('blocks_left'), ',')} blks{eta} | {proj}",
+        f"mempool {fmt(mp.get('tx'), ',')} tx / {fmt(mp.get('vmb'), '.1f')} vMB",
         f"fees {fee_txt} sat/vB (fast/1hr/1d)",
     ]
 
 
 def context_lines(d: dict) -> list[str]:
-    out = [f"BTC live hash rate: {d['hash_rate_ehs']:,.2f} EH/s"]
+    out = []
+    if d.get("hash_rate_ehs") is not None:
+        out.append(f"BTC live hash rate: {fmt(d.get('hash_rate_ehs'), ',.2f')} EH/s")
     if d.get("hash_rate_7d_pct") is not None:
-        out.append(f"BTC hash rate 7d change: {d['hash_rate_7d_pct']:+.2f}%")
-    rt = d["retarget"]
-    if rt["projection_pct"] is not None:
         out.append(
-            f"BTC difficulty retarget projection: {rt['projection_pct']:+.2f}% in "
-            f"{rt['blocks_left']} blocks — a miner-pressure signal"
+            f"BTC hash rate 7d change: {fmt(d.get('hash_rate_7d_pct'), '+.2f', suffix='%')}"
         )
-    out.append(
-        f"BTC mempool: {d['mempool']['tx']:,} tx / {d['mempool']['vmb']:.1f} vMB "
-        f"(live, not a daily average)"
-    )
+    rt = d.get("retarget") or {}
+    if rt.get("projection_pct") is not None:
+        out.append(
+            f"BTC difficulty retarget projection: "
+            f"{fmt(rt.get('projection_pct'), '+.2f', suffix='%')} in "
+            f"{fmt(rt.get('blocks_left'), ',')} blocks — a miner-pressure signal"
+        )
+    mp = d.get("mempool") or {}
+    if mp.get("tx") is not None or mp.get("vmb") is not None:
+        out.append(
+            f"BTC mempool: {fmt(mp.get('tx'), ',')} tx / {fmt(mp.get('vmb'), '.1f')} vMB "
+            f"(live, not a daily average)"
+        )
     return out

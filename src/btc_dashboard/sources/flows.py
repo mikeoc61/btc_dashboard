@@ -30,7 +30,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import SourceResult, unavailable
+from . import SourceResult, fmt, unavailable
 
 NAME = "flows"
 
@@ -302,24 +302,37 @@ def _m(v: float | None) -> str:
 def render_lines(d: dict) -> list[str]:
     if not d.get("as_of"):
         return ["no fully-reported day available"]
+    # age_days is None when the upstream date string didn't parse; show the
+    # date alone rather than the string "None".
+    age = f", {d['age_days']}d ago" if d.get("age_days") is not None else ""
+    lead = d.get("lead") or LEAD
     out = [
-        f"latest {_m(d['latest_total'])} total | {_m(d['latest_lead'])} {d['lead']} "
-        f"({d['as_of']}, {d['age_days']}d ago)"
+        f"latest {_m(d.get('latest_total'))} total | {_m(d.get('latest_lead'))} {lead} "
+        f"({d.get('as_of') or 'unknown date'}{age})"
     ]
-    for w in d["windows"]:
-        if w["covered"]:
+    for w in d.get("windows") or []:
+        if not isinstance(w, dict):
+            continue
+        if w.get("covered"):
             out.append(
-                f"{w['days']}d net {_m(w['total'])} total | {_m(w['lead'])} {d['lead']}"
+                f"{fmt(w.get('days'))}d net {_m(w.get('total'))} total | "
+                f"{_m(w.get('lead'))} {lead}"
             )
         else:
-            out.append(f"{w['days']}d net n/a ({w['days_available']}d available)")
+            out.append(
+                f"{fmt(w.get('days'))}d net n/a "
+                f"({fmt(w.get('days_available'), missing='?')}d available)"
+            )
     tag = f" — {d['regime']}" if d.get("regime") else ""
-    out.append(f"streak {d['streak_days']}d {d['streak_sign']}{tag}")
-    if d.get("partial"):
-        p = d["partial"]
+    out.append(f"streak {fmt(d.get('streak_days'))}d {d.get('streak_sign') or 'n/a'}{tag}")
+    p = d.get("partial")
+    if isinstance(p, dict):
+        reported = p.get("reported") or []
+        pending = p.get("pending") or []
         out.append(
-            f"partial {p['date']}: {_m(p['reported_total'])} from "
-            f"{len(p['reported'])}/{len(FUNDS)} funds, pending {', '.join(p['pending'])}"
+            f"partial {p.get('date') or 'today'}: {_m(p.get('reported_total'))} from "
+            f"{len(reported)}/{len(FUNDS)} funds, pending "
+            f"{', '.join(pending) or 'n/a'}"
         )
     return out
 
@@ -327,39 +340,49 @@ def render_lines(d: dict) -> list[str]:
 def context_lines(d: dict) -> list[str]:
     if not d.get("as_of"):
         return []
+    lead = d.get("lead") or LEAD
+    age = (
+        f"{fmt(d.get('age_days'))}d ago, " if d.get("age_days") is not None else ""
+    )
     out = [
-        f"BTC ETF flows as of {d['as_of']} ({d['age_days']}d ago, fully reported): "
-        f"{_m(d['latest_total'])} total, {_m(d['latest_lead'])} {d['lead']}"
+        f"BTC ETF flows as of {d['as_of']} ({age}fully reported): "
+        f"{_m(d.get('latest_total'))} total, {_m(d.get('latest_lead'))} {lead}"
     ]
     # Naming the weekday explicitly: without it the model tends to infer one
     # from the date and state it as fact.
     try:
         dt = datetime.strptime(d["as_of"], "%d %b %Y")
         out.append(f"That ETF date was a {dt.strftime('%A')}")
-    except ValueError:
+    except (TypeError, ValueError):
         pass
-    for w in d["windows"]:
-        if w["covered"]:
+    for w in d.get("windows") or []:
+        if not isinstance(w, dict):
+            continue
+        if w.get("covered"):
             out.append(
-                f"BTC ETF {w['days']}d net: {_m(w['total'])} total, "
-                f"{_m(w['lead'])} {d['lead']}"
+                f"BTC ETF {fmt(w.get('days'))}d net: {_m(w.get('total'))} total, "
+                f"{_m(w.get('lead'))} {lead}"
             )
         else:
             out.append(
-                f"BTC ETF {w['days']}d net: not available — only "
-                f"{w['days_available']} fully-reported days exist. Do not treat "
-                f"this as zero or as a smaller window's figure."
+                f"BTC ETF {fmt(w.get('days'))}d net: not available — only "
+                f"{fmt(w.get('days_available'), missing='an unknown number of')} "
+                f"fully-reported days exist. Do not treat this as zero or as a "
+                f"smaller window's figure."
             )
     out.append(
-        f"BTC ETF streak: {d['streak_days']} consecutive {d['streak_sign']} days"
-        + (f", classified {d['regime']} (by {d['lead']} share of the 5d total)"
+        f"BTC ETF streak: {fmt(d.get('streak_days'))} consecutive "
+        f"{d.get('streak_sign') or 'same-sign'} days"
+        + (f", classified {d['regime']} (by {lead} share of the 5d total)"
            if d.get("regime") else "")
     )
-    if d.get("partial"):
-        p = d["partial"]
+    p = d.get("partial")
+    if isinstance(p, dict):
         out.append(
-            f"BTC ETF partial day {p['date']} is IN PROGRESS and excluded from every "
-            f"figure above: {_m(p['reported_total'])} from {', '.join(p['reported'])}, "
-            f"still pending {', '.join(p['pending'])}. Its direction is not yet settled."
+            f"BTC ETF partial day {p.get('date') or 'today'} is IN PROGRESS and "
+            f"excluded from every figure above: {_m(p.get('reported_total'))} from "
+            f"{', '.join(p.get('reported') or []) or 'no funds yet'}, still pending "
+            f"{', '.join(p.get('pending') or []) or 'n/a'}. Its direction is not yet "
+            f"settled."
         )
     return out

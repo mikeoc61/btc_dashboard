@@ -32,7 +32,7 @@ import datetime
 import re
 from pathlib import Path
 
-from . import SourceResult, unavailable
+from . import SourceResult, fmt, unavailable
 
 NAME = "warehouse"
 
@@ -196,6 +196,18 @@ def sma200(con) -> tuple[float | None, float | None]:
     return sma, (latest - sma) / sma * 100
 
 
+def latest_close(con) -> float | None:
+    """Most recent daily close from the `btc` table.
+
+    Deliberately a separate query from the `onchain` row: price and on-chain
+    facts live in different tables and advance independently, so reading price
+    off the on-chain row silently yields None.
+    """
+    return _scalar(
+        con, "SELECT close FROM btc WHERE close IS NOT NULL ORDER BY date DESC LIMIT 1"
+    )
+
+
 def day_pace_retarget(con) -> float | None:
     """Difficulty adjustment implied by the last complete day's block count."""
     v = _scalar(
@@ -258,7 +270,7 @@ def collect(cfg) -> SourceResult:
                     window_days=VOL_WINDOW_DAYS, detrend_dow=True,
                 ),
             },
-            "close": row.get("close"),
+            "close": _try(latest_close, con),
             "sma200": round(sma, 2) if sma else None,
             "sma200_pct": round(sma_pct, 2) if sma_pct is not None else None,
             "day_pace_retarget": _try(day_pace_retarget, con),
@@ -282,45 +294,77 @@ def _ordinal(p: float) -> str:
     return f"{n}{suffix}"
 
 
+def _day_label(raw) -> str:
+    """`UTC <date> <weekday>`, or a plain fallback if the date is unusable.
+
+    The weekday is load-bearing, not decoration: fee_subsidy is seasonally
+    lower at weekends, so an unlabelled weekend dip reads as deterioration
+    rather than as a Saturday.
+    """
+    try:
+        date = datetime.date.fromisoformat(raw)
+        return f"UTC {date} {date:%a}"
+    except (TypeError, ValueError):
+        return f"UTC {raw or 'unknown date'}"
+
+
 def render_lines(d: dict) -> list[str]:
-    oc, sig = d["onchain"], d["signals"]
-    date = datetime.date.fromisoformat(d["date"])
+    oc = d.get("onchain") or {}
+    sig = d.get("signals") or {}
     parts = []
     if oc.get("blocks_day") is not None:
-        parts.append(f"{oc['blocks_day']} blks")
+        parts.append(f"{fmt(oc.get('blocks_day'))} blks")
     if oc.get("block_fullness") is not None:
-        parts.append(f"{oc['block_fullness']:.0f}% full")
+        parts.append(f"{fmt(oc.get('block_fullness'), '.0f')}% full")
     if oc.get("p50_fee") is not None:
         # getblockstats reports integer sat/vB, so 0 is a floor meaning "under
         # 1", not an absence of fees — rendering it as 0.0 reads as missing data.
         p50 = oc["p50_fee"]
-        parts.append("p50 <1 sat/vB" if p50 < 1 else f"p50 {p50:.1f} sat/vB")
+        parts.append(
+            "p50 <1 sat/vB" if isinstance(p50, (int, float)) and p50 < 1
+            else f"p50 {fmt(p50, '.1f')} sat/vB"
+        )
     if oc.get("fee_subsidy") is not None:
-        parts.append(f"fee/subsidy {oc['fee_subsidy']:.2f}%")
+        parts.append(f"fee/subsidy {fmt(oc.get('fee_subsidy'), '.2f')}%")
     if oc.get("miner_rev") is not None:
-        parts.append(f"miner rev {oc['miner_rev']:,.1f} BTC")
+        parts.append(f"miner rev {fmt(oc.get('miner_rev'), ',.1f')} BTC")
 
-    # Name the weekday: fee_subsidy is seasonally lower at weekends, so an
-    # unlabelled weekend dip reads as deterioration rather than a Saturday.
-    out = [f"day (UTC {date} {date:%a}): " + " | ".join(parts)] if parts else []
+    out = [f"day ({_day_label(d.get('date'))}): " + " | ".join(parts)] if parts else []
 
     bits = []
     if sig.get("fee_pctile") is not None:
         bits.append(f"fee/subsidy {_ordinal(sig['fee_pctile'])} pctile 2y (7d)")
     if sig.get("apathy_days"):
-        bits.append(f"apathy {sig['apathy_days']}d")
+        bits.append(f"apathy {fmt(sig.get('apathy_days'))}d")
     dd = sig.get("hashrate_drawdown")
-    if dd is not None and dd < -1:
-        bits.append(f"hashrate {dd:.1f}% off 90d high")
+    if isinstance(dd, (int, float)) and dd < -1:
+        bits.append(f"hashrate {fmt(dd, '.1f')}% off 90d high")
     vol = sig.get("vol_pctile")
-    if vol is not None and vol >= VOL_PCTILE_MIN:
+    if isinstance(vol, (int, float)) and vol >= VOL_PCTILE_MIN:
         bits.append(f"volume {_ordinal(vol)} pctile 2y")
     if bits:
         out.append("signal: " + " | ".join(bits))
-    if d.get("sma200") is not None:
-        out.append(f"warehouse close ${d['close']:,.0f} | 200d SMA ${d['sma200']:,.0f}")
+    # Every value below is guarded independently. A partially-populated
+    # warehouse is normal — the price and on-chain tables advance separately,
+    # and one lagging must not cost the whole block.
+    close, sma = d.get("close"), d.get("sma200")
+    if close is not None and sma is not None:
+        # Labelled as the daily bar to keep it distinct from the live spot in
+        # the PRICE block, which comes from a different source and time.
+        out.append(
+            f"daily close {fmt(close, ',.0f', prefix='$')} | "
+            f"200d SMA {fmt(sma, ',.0f', prefix='$')} (warehouse)"
+        )
+    elif close is not None:
+        out.append(
+            f"daily close {fmt(close, ',.0f', prefix='$')} (warehouse; 200d SMA n/a)"
+        )
+
+    if d.get("day_pace_retarget") is not None:
+        out.append(f"day-pace retarget {fmt(d.get('day_pace_retarget'), '+.2f')}%")
+
     if d.get("warehouse_stale"):
-        out.append(f"warehouse {d['days_behind']}d behind")
+        out.append(f"warehouse {fmt(d.get('days_behind'), missing='?')}d behind")
     return out
 
 
@@ -331,44 +375,44 @@ def context_lines(d: dict) -> list[str]:
     reading from an extreme one, which is exactly when it starts inventing
     thresholds.
     """
-    sig = d["signals"]
+    sig = d.get("signals") or {}
     out: list[str] = []
     if sig.get("fee_pctile") is not None:
         out.append(
-            f"BTC fee/subsidy vs history: {sig['fee_pctile']:.0f}th percentile of 2y "
-            f"(7d mean, weekend-corrected; low = blockspace demand apathy)"
+            f"BTC fee/subsidy vs history: {fmt(sig.get('fee_pctile'), '.0f')}th "
+            f"percentile of 2y (7d mean, weekend-corrected; low = blockspace "
+            f"demand apathy)"
         )
     if sig.get("apathy_days"):
         out.append(
-            f"BTC apathy streak: {sig['apathy_days']} consecutive days under "
+            f"BTC apathy streak: {fmt(sig.get('apathy_days'))} consecutive days under "
             f"{APATHY_MAX}% fee/subsidy. This is regime DURATION against a fixed "
             f"threshold, not a new low."
         )
     dd = sig.get("hashrate_drawdown")
-    if dd is not None and dd < -1:
+    if isinstance(dd, (int, float)) and dd < -1:
         out.append(
-            f"BTC hashrate: {dd:.1f}% off its 90d high (miner stress; historic "
+            f"BTC hashrate: {fmt(dd, '.1f')}% off its 90d high (miner stress; historic "
             f"washouts ran -33% to -50%)"
         )
     vol = sig.get("vol_pctile")
-    if vol is not None and vol >= VOL_PCTILE_MIN:
+    if isinstance(vol, (int, float)) and vol >= VOL_PCTILE_MIN:
         out.append(
-            f"BTC exchange volume: {vol:.0f}th percentile of 2y (single venue, "
+            f"BTC exchange volume: {fmt(vol, '.0f')}th percentile of 2y (single venue, "
             f"weekday-adjusted). Volume marks EVENTS, not direction — pair it with "
             f"the price move. It fires on acute capitulation, stays quiet at slow "
             f"bear bottoms and at every euphoria peak, so it flags the panic itself, "
             f"not the low, which typically follows days later."
         )
     if out:
-        date = datetime.date.fromisoformat(d["date"])
         out.append(
-            f"The on-chain day above is UTC {date:%Y-%m-%d %a}, a complete day. "
+            f"The on-chain day above is {_day_label(d.get('date'))}, a complete day. "
             f"Fee/subsidy runs materially lower at weekends — the percentiles above "
             f"already correct for that, the raw daily figures do not."
         )
     if d.get("warehouse_stale"):
         out.append(
-            f"WARNING: warehouse is {d['days_behind']} days behind; on-chain figures "
-            f"are not current."
+            f"WARNING: warehouse is {fmt(d.get('days_behind'), missing='an unknown number of')} "
+            f"days behind; on-chain figures are not current."
         )
     return out
