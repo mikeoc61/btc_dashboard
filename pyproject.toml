@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "btc-dashboard"
+version = "0.1.0"
+description = "BTC-focused analytics: on-chain history, live node, price/SMA, ETF flows, and LLM ad-hoc analysis."
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = [
+    "duckdb>=1.1",
+    "curl_cffi>=0.7",
+    "beautifulsoup4>=4.12",
+    "requests>=2.31",
+    "anthropic>=0.69",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+btc-dashboard = "btc_dashboard.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
