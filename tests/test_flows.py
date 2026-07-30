@@ -78,21 +78,94 @@ class TestSummarize:
 
 
 class TestClassify:
-    def test_lead_dominant_is_conviction(self):
-        assert flows.classify(-100.0, -80.0) == "conviction"
+    """The tag carries direction.
+
+    "conviction" alone reads as conviction *buying* in English, so an outflow
+    window tagged with the bare word said the opposite of what the data meant.
+    """
+
+    def test_lead_dominant_outflow_is_conviction_distribution(self):
+        assert flows.classify(-100.0, -80.0) == "conviction distribution"
+
+    def test_lead_dominant_inflow_is_conviction_accumulation(self):
+        assert flows.classify(100.0, 80.0) == "conviction accumulation"
 
     def test_lead_exceeding_total_is_offsetting(self):
-        assert flows.classify(-100.0, -150.0) == "offsetting"
+        assert flows.classify(-100.0, -150.0) == "offsetting distribution"
+        assert flows.classify(100.0, 150.0) == "offsetting accumulation"
 
     def test_lead_minority_is_broad(self):
-        assert flows.classify(-100.0, -20.0) == "broad"
+        assert flows.classify(-100.0, -20.0) == "broad distribution"
+        assert flows.classify(100.0, 20.0) == "broad accumulation"
 
-    def test_lead_against_total_is_flagged(self):
-        assert flows.classify(-100.0, 40.0) == "lead opposing"
+    def test_lead_against_total_names_the_disagreement(self):
+        assert flows.classify(-100.0, 40.0) == "distribution against IBIT"
+        assert flows.classify(100.0, -40.0) == "accumulation against IBIT"
 
     def test_no_total_is_unclassified(self):
         assert flows.classify(None, -10.0) is None
         assert flows.classify(0.0, 0.0) is None
+
+    def test_share_is_reported(self):
+        assert flows.lead_share(-494.4, -388.5) == pytest.approx(0.786, abs=0.001)
+        assert flows.lead_share(0.0, 1.0) is None
+        assert flows.lead_share(1.0, None) is None
+
+
+class TestRegimeIsAttachedToItsOwnWindow:
+    """Regression: the tag was rendered on the streak line.
+
+    On 29 Jul the 5d window was a -494.4M net OUTFLOW with IBIT at 79% of it,
+    while the streak was a 1-day INFLOW. Printing "streak 1d inflow —
+    conviction" read as conviction buying: the tag described a measure with
+    the opposite sign to the one it sat beside.
+    """
+
+    def _data(self):
+        return {
+            "lead": "IBIT", "as_of": "29 Jul 2026", "age_days": 1,
+            "latest_total": 32.1, "latest_lead": 89.8, "days_complete": 639,
+            "windows": [
+                {"days": 5, "days_available": 5, "covered": True,
+                 "total": -494.4, "lead": -388.5},
+                {"days": 20, "days_available": 20, "covered": True,
+                 "total": 205.1, "lead": 166.9},
+            ],
+            "streak_days": 1, "streak_sign": "inflow",
+            "regime": "conviction distribution", "regime_window_days": 5,
+            "lead_share_pct": 78.6, "partial": None,
+        }
+
+    def test_streak_line_carries_no_regime_tag(self):
+        streak = next(l for l in flows.render_lines(self._data())
+                      if l.startswith("streak"))
+        assert streak == "streak 1d inflow"
+        assert "conviction" not in streak
+
+    def test_tag_sits_on_the_window_it_describes(self):
+        line = next(l for l in flows.render_lines(self._data())
+                    if l.startswith("5d net"))
+        assert "-494.4M" in line
+        assert "79% IBIT" in line
+        assert "conviction distribution" in line
+
+    def test_other_windows_are_untagged(self):
+        line = next(l for l in flows.render_lines(self._data())
+                    if l.startswith("20d net"))
+        assert "conviction" not in line
+
+    def test_analyst_is_told_the_two_can_disagree(self):
+        ctx = " ".join(flows.context_lines(self._data()))
+        assert "describes the 5d window ONLY" in ctx
+        assert "not a property of the streak" in ctx
+        assert "opposite directions" in ctx
+
+    def test_summary_records_which_window_the_tag_came_from(self):
+        rows = _complete_days(5, per_day=-10.0)
+        s = flows.summarize(rows)
+        assert s["regime_window_days"] == 5
+        assert s["lead_share_pct"] == pytest.approx(100.0)
+        assert s["regime"] == "conviction distribution"
 
 
 class TestParseTable:

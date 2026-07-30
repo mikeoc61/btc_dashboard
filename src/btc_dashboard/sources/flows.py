@@ -221,18 +221,35 @@ def _streak(complete: list[dict]) -> tuple[int, str]:
     return n, ("inflow" if sign and sign > 0 else "outflow" if sign and sign < 0 else "flat")
 
 
-def classify(total: float | None, lead: float | None) -> str | None:
-    """Tag a same-signed window by the lead fund's share of it."""
+def lead_share(total: float | None, lead: float | None) -> float | None:
+    """Lead fund's flow as a proportion of the window total."""
     if not total or lead is None:
         return None
-    share = lead / total
+    return lead / total
+
+
+def classify(total: float | None, lead: float | None) -> str | None:
+    """Tag a window by the lead fund's share of it, and by its direction.
+
+    The direction word is not decoration. "conviction" alone reads as
+    conviction *buying* in English, so an outflow window tagged with the bare
+    word reads as the opposite of what it says — and this tag sits next to a
+    streak that can point the other way, since a one-day inflow inside a
+    five-day net outflow is perfectly ordinary.
+    """
+    share = lead_share(total, lead)
+    if share is None:
+        return None
+    direction = "accumulation" if total > 0 else "distribution"
     if share < 0:
-        return "lead opposing"
+        # The lead moved against the window's net direction, so neither
+        # "conviction" nor "broad" describes it.
+        return f"{direction} against {LEAD}"
     if share >= OFFSETTING_MIN:
-        return "offsetting"
+        return f"offsetting {direction}"
     if share >= CONVICTION_MIN:
-        return "conviction"
-    return "broad"
+        return f"conviction {direction}"
+    return f"broad {direction}"
 
 
 def summarize(rows: list[dict]) -> dict:
@@ -269,6 +286,15 @@ def summarize(rows: list[dict]) -> dict:
         "streak_days": streak_days,
         "streak_sign": streak_sign,
         "regime": classify(primary["total"], primary["lead"]),
+        # Which window the regime describes, and the share behind it. Without
+        # these the tag is a bare adjective with no stated subject — which is
+        # how it ended up being read as a property of the streak.
+        "regime_window_days": primary["days"],
+        "lead_share_pct": (
+            round(lead_share(primary["total"], primary["lead"]) * 100, 1)
+            if lead_share(primary["total"], primary["lead"]) is not None
+            else None
+        ),
         "partial": partial,
     }
 
@@ -333,18 +359,26 @@ def render_lines(d: dict) -> list[str]:
     for w in d.get("windows") or []:
         if not isinstance(w, dict):
             continue
-        if w.get("covered"):
-            out.append(
-                f"{fmt(w.get('days'))}d net {_m(w.get('total'))} total | "
-                f"{_m(w.get('lead'))} {lead}"
-            )
-        else:
+        if not w.get("covered"):
             out.append(
                 f"{fmt(w.get('days'))}d net n/a "
                 f"({fmt(w.get('days_available'), missing='?')}d available)"
             )
-    tag = f" — {d['regime']}" if d.get("regime") else ""
-    out.append(f"streak {fmt(d.get('streak_days'))}d {d.get('streak_sign') or 'n/a'}{tag}")
+            continue
+        line = (
+            f"{fmt(w.get('days'))}d net {_m(w.get('total'))} total | "
+            f"{_m(w.get('lead'))} {lead}"
+        )
+        # The regime tag belongs on the window it is computed from, where the
+        # total's sign is visible beside it. On the streak line it described a
+        # different measure, which could and did point the other way.
+        if w.get("days") == d.get("regime_window_days") and d.get("regime"):
+            share = d.get("lead_share_pct")
+            share_txt = f"{fmt(share, '.0f')}% {lead} — " if share is not None else ""
+            line += f" ({share_txt}{d['regime']})"
+        out.append(line)
+
+    out.append(f"streak {fmt(d.get('streak_days'))}d {d.get('streak_sign') or 'n/a'}")
     p = d.get("partial")
     if isinstance(p, dict):
         reported = p.get("reported") or []
@@ -390,12 +424,24 @@ def context_lines(d: dict) -> list[str]:
                 f"fully-reported days exist. Do not treat this as zero or as a "
                 f"smaller window's figure."
             )
+
     out.append(
         f"BTC ETF streak: {fmt(d.get('streak_days'))} consecutive "
-        f"{d.get('streak_sign') or 'same-sign'} days"
-        + (f", classified {d['regime']} (by {lead} share of the 5d total)"
-           if d.get("regime") else "")
+        f"{d.get('streak_sign') or 'same-sign'} days. This counts only the most "
+        f"recent run and says nothing about the size of the flows in it."
     )
+    if d.get("regime"):
+        window = fmt(d.get("regime_window_days"))
+        share = d.get("lead_share_pct")
+        out.append(
+            f"BTC ETF regime over the {window}d window: {d['regime']} "
+            + (f"({lead} is {fmt(share, '.0f')}% of that window's net). "
+               if share is not None else "")
+            + f"This describes the {window}d window ONLY — it is not a property "
+            f"of the streak above, and the two can point in opposite directions. "
+            f"A short inflow run inside a longer net outflow is ordinary and is "
+            f"not by itself evidence of a turn."
+        )
     p = d.get("partial")
     if isinstance(p, dict):
         out.append(

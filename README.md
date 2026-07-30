@@ -28,10 +28,10 @@ ON-CHAIN (last complete UTC day)
 
 ETF FLOWS
   latest -49.7M total | -54.8M IBIT (28 Jul 2026, 1d ago)
-  5d net -457.4M total | -439.5M IBIT
+  5d net -457.4M total | -439.5M IBIT (96% IBIT — conviction distribution)
   20d net -49.6M total | -135.3M IBIT
   60d net -6.74B total | -4.89B IBIT
-  streak 4d outflow — conviction
+  streak 4d outflow
 ```
 
 ```bash
@@ -265,6 +265,14 @@ because it looks like one. The analyst is told explicitly not to read it as zero
 The same rule governs the moving averages: with 60 days of history you get a
 20d and a 50d SMA and `200d n/a`, never a 60-day mean labelled 200d.
 
+**A tag names the window it came from.** The lead-share classifier describes
+the *primary (5d) window*, so it is printed on that window's line where the
+total's sign is visible beside it — not on the streak line, which is a
+different measure that can point the other way. A one-day inflow inside a
+five-day net outflow is ordinary. The label carries direction for the same
+reason: "conviction" alone reads as conviction *buying*, so an outflow window
+tagged with the bare word said the opposite of what the data meant.
+
 **Weekly seasonality is corrected, two different ways.** `fee_subsidy` runs
 materially lower at weekends, so a raw daily percentile substantially reports
 the day of the week rather than the network. A 7-day mean spans one of each
@@ -368,7 +376,7 @@ substitute for any of them.
 .venv/bin/pytest
 ```
 
-144 tests. The warehouse tests run against a real DuckDB file built per-test
+151 tests. The warehouse tests run against a real DuckDB file built per-test
 rather than a mock — the signal definitions are the part most worth pinning
 down, and a mock would only assert that we called ourselves.
 
