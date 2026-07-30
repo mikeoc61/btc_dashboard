@@ -370,13 +370,50 @@ own. The rest is not built: don't expose it publicly until it is. The service
 being read-only and secret-free limits the blast radius but does not
 substitute for any of them.
 
+## Studies
+
+`tools/` holds one-off analyses that query the warehouse read-only. They are not
+part of the CLI and nothing in the package imports them.
+
+```bash
+python tools/hashrate_study.py                    # full report
+python tools/hashrate_study.py --min-depth 50     # macro bottoms only
+python tools/hashrate_study.py --json
+```
+
+**`hashrate_study.py`** — do hashrate-derived indicators mark cycle price
+bottoms? It derives drawdown episodes from the price series (rather than
+hardcoding dates chosen with hindsight), scores the hash ribbon against the
+*unconditional base rate*, and conditions forward returns on hashrate drawdown
+across every day rather than on a handful of troughs.
+
+Three reporting choices are deliberate, because each guards a way this kind of
+study normally misleads:
+
+- **A base-rate column.** BTC's unconditional forward return over the sample is
+  strongly positive, so any signal judged on its own absolute return looks
+  excellent. Only the edge over entering on a random day means anything — and
+  the hash ribbon's edge is real at 90–180d and gone at 365d.
+- **An effective-sample column.** Daily rows are autocorrelated and their
+  forward windows overlap, so a decile of ~380 days holds barely one
+  independent 365-day observation. Printing `n=386` alone would imply a
+  precision the data cannot support.
+- **A bounded signal-to-trough association.** An unbounded "nearest signal"
+  always finds one; it matched the 2017 corrections to signals 200–390 days
+  away. Beyond 90 days the tool reports none rather than inventing a link.
+
+The headline finding is negative and worth keeping: hashrate stress was extreme
+at two of four macro troughs (2018, 2021) and entirely ordinary at the other two
+(2022, 2026). A credit or exchange failure can bottom price while hashrate barely
+moves, so no single hashrate metric can confirm a bottom on its own.
+
 ## Tests
 
 ```bash
 .venv/bin/pytest
 ```
 
-151 tests. The warehouse tests run against a real DuckDB file built per-test
+181 tests. The warehouse tests run against a real DuckDB file built per-test
 rather than a mock — the signal definitions are the part most worth pinning
 down, and a mock would only assert that we called ourselves.
 

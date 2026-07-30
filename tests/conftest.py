@@ -8,7 +8,15 @@ machine where a cache happens to exist.
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import pytest
+
+# tools/ holds runnable studies rather than package modules, so it is not on
+# the import path by default. Adding it here lets them be unit-tested without
+# turning every script into a package.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 
 
 @pytest.fixture(autouse=True)
