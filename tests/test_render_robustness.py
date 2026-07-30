@@ -161,3 +161,62 @@ class TestFeeFormatting:
         data = dict(FULL["node"], fees_sat_vb={"fast": None, "hour": 2.3, "day": 0.7})
         line = next(l for l in node.render_lines(data) if "fees" in l)
         assert "n/a/2.3/0.7" in line
+
+
+class TestMultipleMovingAverages:
+    """20/50/200 day SMAs, with the same coverage rule as the flow windows."""
+
+    def test_all_three_render_on_one_line(self):
+        data = dict(FULL["price"], smas=[
+            {"days": 20, "covered": True, "value": 66540.0, "pct": -4.1,
+             "position": "below", "days_available": 201},
+            {"days": 50, "covered": True, "value": 69102.0, "pct": -7.7,
+             "position": "below", "days_available": 201},
+            {"days": 200, "covered": True, "value": 71707.0, "pct": -11.0,
+             "position": "below", "days_available": 201},
+        ])
+        line = next(l for l in price.render_lines(data) if l.startswith("SMA"))
+        assert "20d $66,540 -4.1%" in line
+        assert "50d $69,102 -7.7%" in line
+        assert "200d $71,707 -11.0%" in line
+        # The regime classifier appears once, on the primary window only.
+        assert line.count("below") == 1
+
+    def test_uncovered_window_is_na_not_a_shorter_mean(self):
+        """60 days of history must not yield a "200d" average."""
+        data = dict(FULL["price"], smas=[
+            {"days": 20, "covered": True, "value": 66540.0, "pct": -4.1,
+             "position": "below", "days_available": 60},
+            {"days": 200, "covered": False, "value": None, "pct": None,
+             "position": None, "days_available": 60},
+        ])
+        line = next(l for l in price.render_lines(data) if l.startswith("SMA"))
+        assert "200d n/a (60d)" in line
+
+        ctx = " ".join(price.context_lines(data))
+        assert "200d SMA: not available" in ctx
+        assert "Do not treat this as zero" in ctx
+
+    def test_a_pre_smas_snapshot_still_renders(self):
+        """An ingested payload from before `smas` existed keeps its SMA line."""
+        data = {k: v for k, v in FULL["price"].items()}
+        data.pop("smas", None)
+        line = next(l for l in price.render_lines(data) if l.startswith("SMA"))
+        assert "200d $71,840" in line
+
+    def test_warehouse_shows_its_own_three(self):
+        data = dict(FULL["warehouse"], smas=[
+            {"days": 20, "covered": True, "value": 66000.0, "pct": -3.2},
+            {"days": 50, "covered": True, "value": 69000.0, "pct": -7.4},
+            {"days": 200, "covered": True, "value": 71862.0, "pct": -11.1},
+        ])
+        lines = warehouse.render_lines(data)
+        assert any("daily close $63,900 (warehouse)" in l for l in lines)
+        sma = next(l for l in lines if l.startswith("SMA"))
+        assert "20d $66,000 -3.2%" in sma and "200d $71,862 -11.1%" in sma
+
+    def test_windows_are_ordered_short_to_long(self):
+        from btc_dashboard.sources import price as p
+        assert p.SMA_WINDOWS == (20, 50, 200)
+        assert p.PRIMARY_SMA == 200
+        assert warehouse.SMA_WINDOWS == p.SMA_WINDOWS

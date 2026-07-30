@@ -17,7 +17,10 @@ from . import SourceResult, fmt, unavailable
 
 NAME = "price"
 
-SMA_WINDOW = 200
+# Short, intermediate, and long trend. The last is the primary: it drives the
+# above/near/below classifier and the legacy flat `sma200*` fields.
+SMA_WINDOWS = (20, 50, 200)
+PRIMARY_SMA = SMA_WINDOWS[-1]
 UA = "btc_dashboard/0.1 (+https://github.com/)"
 
 COINGECKO = (
@@ -69,52 +72,98 @@ def collect(cfg) -> SourceResult:
         return unavailable(NAME, "; ".join(errors) or "no price source returned data")
 
     spot = closes[-1]
-    # The last entry is today's in-progress candle on both providers, so the SMA
-    # window excludes it. Averaging a partial day into a 200-day mean would let
-    # an intraday move leak into the level that move is being measured against.
-    window = closes[-(SMA_WINDOW + 1):-1] if len(closes) > SMA_WINDOW else []
-    if len(window) < SMA_WINDOW:
-        return SourceResult(
-            name=NAME,
-            available=True,
-            data={
-                "spot": round(spot, 2),
-                "source": source,
-                "sma200": None,
-                "sma200_pct": None,
-                "sma200_position": None,
-                "days_available": len(closes),
-            },
-        )
+    # The last entry is today's in-progress candle on both providers, so every
+    # SMA window excludes it. Averaging a partial day into a mean would let an
+    # intraday move leak into the level that move is being measured against.
+    completed = closes[:-1]
 
-    sma = sum(window) / len(window)
-    pct = (spot - sma) / sma * 100
+    smas = [_sma(completed, spot, days) for days in SMA_WINDOWS]
+    primary = next(s for s in smas if s["days"] == PRIMARY_SMA)
+
     return SourceResult(
         name=NAME,
         available=True,
         data={
             "spot": round(spot, 2),
             "source": source,
-            "sma200": round(sma, 2),
-            "sma200_pct": round(pct, 2),
-            "sma200_position": classify(pct),
-            "days_available": len(closes),
+            "smas": smas,
+            # Flat aliases for the primary window, kept so an existing consumer
+            # of the schema keeps working while `smas` becomes the general form.
+            "sma200": primary["value"],
+            "sma200_pct": primary["pct"],
+            "sma200_position": primary["position"],
+            "days_available": len(completed),
         },
     )
 
 
+def _sma(completed: list[float], spot: float, days: int) -> dict:
+    """One simple moving average and the spot price's distance from it.
+
+    An unfillable window reports `covered: False` with null figures rather than
+    averaging whatever is available — a 60-day mean labelled "200d" is worse
+    than no answer, because it looks like one.
+    """
+    window = completed[-days:] if len(completed) >= days else []
+    if not window:
+        return {
+            "days": days,
+            "days_available": len(completed),
+            "covered": False,
+            "value": None,
+            "pct": None,
+            "position": None,
+        }
+    value = sum(window) / days
+    pct = (spot - value) / value * 100
+    return {
+        "days": days,
+        "days_available": len(completed),
+        "covered": True,
+        "value": round(value, 2),
+        "pct": round(pct, 2),
+        "position": classify(pct),
+    }
+
+
+def _sma_entries(d: dict) -> list[dict]:
+    """The `smas` list, reconstructed from the flat aliases if it is absent.
+
+    A snapshot produced before `smas` existed still renders, rather than losing
+    the SMA line entirely.
+    """
+    entries = d.get("smas")
+    if isinstance(entries, list) and entries:
+        return [e for e in entries if isinstance(e, dict)]
+    if d.get("sma200") is None:
+        return []
+    return [{
+        "days": PRIMARY_SMA, "covered": True, "value": d.get("sma200"),
+        "pct": d.get("sma200_pct"), "position": d.get("sma200_position"),
+        "days_available": d.get("days_available"),
+    }]
+
+
 def render_lines(d: dict) -> list[str]:
     out = [f"spot {fmt(d.get('spot'), ',.0f', prefix='$')} ({d.get('source') or 'unknown'})"]
-    if d.get("sma200") is not None:
-        out.append(
-            f"200d SMA {fmt(d.get('sma200'), ',.0f', prefix='$')} | "
-            f"{fmt(d.get('sma200_pct'), '+.1f', suffix='%')} "
-            f"({d.get('sma200_position') or 'n/a'})"
-        )
-    else:
-        out.append(
-            f"200d SMA n/a ({fmt(d.get('days_available'), missing='?')}d available)"
-        )
+
+    parts = []
+    for s in _sma_entries(d):
+        if s.get("covered"):
+            parts.append(
+                f"{fmt(s.get('days'))}d {fmt(s.get('value'), ',.0f', prefix='$')} "
+                f"{fmt(s.get('pct'), '+.1f', suffix='%')}"
+            )
+        else:
+            parts.append(
+                f"{fmt(s.get('days'))}d n/a "
+                f"({fmt(s.get('days_available'), missing='?')}d)"
+            )
+    if parts:
+        # The classifier rides the primary window only — it is the regime
+        # marker, and repeating above/near/below three times reads as noise.
+        pos = d.get("sma200_position")
+        out.append("SMA " + " | ".join(parts) + (f" ({pos} 200d)" if pos else ""))
     return out
 
 
@@ -122,10 +171,19 @@ def context_lines(d: dict) -> list[str]:
     out = []
     if d.get("spot") is not None:
         out.append(f"BTC spot: {fmt(d.get('spot'), ',.0f', prefix='$')}")
-    if d.get("sma200") is not None:
-        out.append(
-            f"BTC 200d SMA: {fmt(d.get('sma200'), ',.0f', prefix='$')} | price is "
-            f"{fmt(d.get('sma200_pct'), '+.1f', suffix='%')} vs SMA "
-            f"({d.get('sma200_position') or 'position unknown'} the 200d)"
-        )
+    for s in _sma_entries(d):
+        days = fmt(s.get("days"))
+        if s.get("covered"):
+            out.append(
+                f"BTC {days}d SMA: {fmt(s.get('value'), ',.0f', prefix='$')}, spot is "
+                f"{fmt(s.get('pct'), '+.1f', suffix='%')} vs it "
+                f"({s.get('position') or 'position unknown'})"
+            )
+        else:
+            out.append(
+                f"BTC {days}d SMA: not available — only "
+                f"{fmt(s.get('days_available'), missing='an unknown number of')} "
+                f"completed days were returned. Do not treat this as zero or "
+                f"substitute a shorter average."
+            )
     return out

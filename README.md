@@ -10,8 +10,8 @@ $ btc-dashboard
 BTC DASHBOARD — 2026-07-29 23:22:31 UTC
 ────────────────────────────────────────────────────────────
 PRICE
-  spot $63,960 (coingecko)
-  200d SMA $71,865 | -11.0% (below)
+  spot $63,666 (coingecko)
+  SMA 20d $64,444 -1.2% | 50d $63,336 +0.5% | 200d $71,707 -11.2% (below 200d)
 
 NETWORK (live)
   height 903,142 | hashrate 812.44 EH/s (+1.20% 7d) | difficulty 110.57T
@@ -22,7 +22,8 @@ NETWORK (live)
 ON-CHAIN (last complete UTC day)
   day (UTC 2026-07-28 Tue): 127 blks | 97% full | p50 1.0 sat/vB | fee/subsidy 0.75% | miner rev 399.8 BTC
   signal: fee/subsidy 26th pctile 2y (7d) | apathy 22d | hashrate -16.0% off 90d high
-  daily close $63,860 | 200d SMA $71,862 (warehouse)
+  daily close $63,860 (warehouse)
+  SMA 20d $64,420 -0.6% | 50d $65,020 -1.5% | 200d $71,862 -11.1%
   block pace 127/144 (-11.8%, ±8% day-to-day noise)
 
 ETF FLOWS
@@ -261,6 +262,8 @@ every figure and surfaced separately.
 **An unfillable window reports `n/a`, never a shorter sum.** A 60-day net over
 40 available days is a 40-day net wearing a 60-day label — worse than no answer,
 because it looks like one. The analyst is told explicitly not to read it as zero.
+The same rule governs the moving averages: with 60 days of history you get a
+20d and a 50d SMA and `200d n/a`, never a 60-day mean labelled 200d.
 
 **Weekly seasonality is corrected, two different ways.** `fee_subsidy` runs
 materially lower at weekends, so a raw daily percentile substantially reports
@@ -365,7 +368,7 @@ substitute for any of them.
 .venv/bin/pytest
 ```
 
-139 tests. The warehouse tests run against a real DuckDB file built per-test
+144 tests. The warehouse tests run against a real DuckDB file built per-test
 rather than a mock — the signal definitions are the part most worth pinning
 down, and a mock would only assert that we called ourselves.
 

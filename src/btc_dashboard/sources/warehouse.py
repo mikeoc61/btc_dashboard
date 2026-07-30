@@ -40,7 +40,8 @@ NAME = "warehouse"
 FEE_WINDOW_DAYS = 730
 VOL_WINDOW_DAYS = 730
 HASHRATE_WINDOW_DAYS = 90
-SMA_WINDOW = 200
+SMA_WINDOWS = (20, 50, 200)
+SMA_WINDOW = SMA_WINDOWS[-1]
 APATHY_MAX = 1.0
 # A percentile threshold fires (100-N)% of days by construction, so 95 means
 # roughly 18 days a year rather than ~36 at 90 — rare enough that surfacing it
@@ -198,12 +199,21 @@ def apathy_streak(con, threshold: float = APATHY_MAX) -> int:
     return n
 
 
-def sma200(con) -> tuple[float | None, float | None]:
+def moving_average(con, days: int) -> tuple[float | None, float | None]:
+    """SMA over the last `days` closes, and the latest close's % distance.
+
+    Unlike the price source this includes the latest row: warehouse bars are
+    completed daily closes, not an in-progress candle.
+
+    Returns `(None, None)` when fewer than `days` closes exist — a short window
+    must never be averaged and labelled with the longer period.
+    """
+    n_days = int(days)
     row = con.execute(
         f"""
         WITH recent AS (
             SELECT close FROM btc WHERE close IS NOT NULL
-            ORDER BY date DESC LIMIT {SMA_WINDOW}
+            ORDER BY date DESC LIMIT {n_days}
         )
         SELECT (SELECT count(*) FROM recent), (SELECT avg(close) FROM recent),
                (SELECT close FROM btc WHERE close IS NOT NULL ORDER BY date DESC LIMIT 1)
@@ -212,9 +222,13 @@ def sma200(con) -> tuple[float | None, float | None]:
     if not row:
         return None, None
     n, sma, latest = row
-    if n < SMA_WINDOW or not sma or latest is None:
+    if n < n_days or not sma or latest is None:
         return None, None
     return sma, (latest - sma) / sma * 100
+
+
+def sma200(con) -> tuple[float | None, float | None]:
+    return moving_average(con, SMA_WINDOW)
 
 
 def latest_close(con) -> float | None:
@@ -262,7 +276,17 @@ def collect(cfg) -> SourceResult:
             return unavailable(NAME, "no usable row in onchain")
 
         date = row["date"]
-        sma, sma_pct = _try(sma200, con) or (None, None)
+        smas = []
+        for days in SMA_WINDOWS:
+            value, pct = _try(moving_average, con, days) or (None, None)
+            smas.append({
+                "days": days,
+                "covered": value is not None,
+                "value": round(value, 2) if value is not None else None,
+                "pct": round(pct, 2) if pct is not None else None,
+            })
+        primary = next(s for s in smas if s["days"] == SMA_WINDOW)
+        sma, sma_pct = primary["value"], primary["pct"]
         data = {
             "date": date.isoformat(),
             "onchain": {
@@ -292,8 +316,10 @@ def collect(cfg) -> SourceResult:
                 ),
             },
             "close": _try(latest_close, con),
-            "sma200": round(sma, 2) if sma else None,
-            "sma200_pct": round(sma_pct, 2) if sma_pct is not None else None,
+            "smas": smas,
+            # Flat aliases for the primary window, kept for schema continuity.
+            "sma200": sma,
+            "sma200_pct": sma_pct,
             "day_pace_retarget": _try(day_pace_retarget, con),
         }
 
@@ -385,18 +411,25 @@ def render_lines(d: dict) -> list[str]:
     # Every value below is guarded independently. A partially-populated
     # warehouse is normal — the price and on-chain tables advance separately,
     # and one lagging must not cost the whole block.
-    close, sma = d.get("close"), d.get("sma200")
-    if close is not None and sma is not None:
+    close = d.get("close")
+    if close is not None:
         # Labelled as the daily bar to keep it distinct from the live spot in
         # the PRICE block, which comes from a different source and time.
-        out.append(
-            f"daily close {fmt(close, ',.0f', prefix='$')} | "
-            f"200d SMA {fmt(sma, ',.0f', prefix='$')} (warehouse)"
-        )
-    elif close is not None:
-        out.append(
-            f"daily close {fmt(close, ',.0f', prefix='$')} (warehouse; 200d SMA n/a)"
-        )
+        out.append(f"daily close {fmt(close, ',.0f', prefix='$')} (warehouse)")
+
+    parts = []
+    for s in d.get("smas") or []:
+        if not isinstance(s, dict):
+            continue
+        if s.get("covered"):
+            parts.append(
+                f"{fmt(s.get('days'))}d {fmt(s.get('value'), ',.0f', prefix='$')} "
+                f"{fmt(s.get('pct'), '+.1f', suffix='%')}"
+            )
+        else:
+            parts.append(f"{fmt(s.get('days'))}d n/a")
+    if parts:
+        out.append("SMA " + " | ".join(parts))
 
     # Described as that day's block pace, not as a "retarget projection". The
     # node block already carries a cumulative projection computed over the full
