@@ -15,6 +15,10 @@ examples:
   btc-dashboard --only flows,price       just those blocks
   btc-dashboard --ask "is the flow picture consistent with the price move?"
   btc-dashboard --context                what the analyst would be told, without asking
+  btc-dashboard --refresh                bypass the cache and re-collect
+
+on-chain and ETF flow data are cached for 60 minutes (both change at most
+daily); price and node are live tip state and never cached.
 
   # ingest a snapshot instead of collecting one, then analyse it locally
   btc-dashboard --from https://pi.local/btc/snapshot.json --ask "what changed?"
@@ -60,6 +64,17 @@ def parse_args(argv=None):
         help="reasoning effort for --ask (default: high)",
     )
     p.add_argument("--timeout", type=int, help="per-source network timeout, seconds")
+    p.add_argument(
+        "--refresh",
+        action="store_true",
+        help="bypass the cache and re-collect (on-chain and ETF flows are cached 60m)",
+    )
+    p.add_argument(
+        "--cache-ttl",
+        type=int,
+        metavar="SECONDS",
+        help="cache lifetime for cached sources (default 3600; 0 disables)",
+    )
     p.add_argument("--quiet", action="store_true", help="hide unavailable-source notes")
     return p.parse_args(argv)
 
@@ -87,7 +102,10 @@ def main(argv=None) -> int:
             return 2
 
     cfg = Config.from_env(
-        db_path=args.db, model=args.model, effort=args.effort, timeout=args.timeout
+        db_path=args.db, model=args.model, effort=args.effort, timeout=args.timeout,
+        # 0 is a meaningful value here (cache disabled), so it is passed through
+        # explicitly rather than filtered out as falsy by Config.replace.
+        cache_ttl=args.cache_ttl if args.cache_ttl is not None else None,
     )
 
     if args.origin:
@@ -100,7 +118,7 @@ def main(argv=None) -> int:
             print(f"could not fetch {args.origin}: {e}", file=sys.stderr)
             return 2
     else:
-        snap = snapshot.build(cfg, only=only)
+        snap = snapshot.build(cfg, only=only, refresh=args.refresh)
 
     if args.json:
         print(json.dumps(snap, indent=2, default=str))

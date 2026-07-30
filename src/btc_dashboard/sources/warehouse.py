@@ -48,6 +48,15 @@ VOL_PCTILE_MIN = 95.0
 MIN_WINDOW_ROWS = 30
 STALE_AFTER_DAYS = 2
 
+# The ingester appends one row per UTC day, so the underlying data changes at
+# most daily — but each collection runs several full-table scans (two 730-day
+# percentiles, a 90-day drawdown, a 200-row SMA, and a streak walk over every
+# row). An hour's cache removes that work from the common path entirely.
+#
+# Note this caches the *derived* view, not the database: `--refresh` re-reads,
+# and the file is still opened read-only, so a running ingester is unaffected.
+CACHE_TTL = 3600
+
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -286,6 +295,23 @@ def collect(cfg) -> SourceResult:
         )
     finally:
         con.close()
+
+
+def refresh_derived(data: dict) -> dict:
+    """Recompute how far behind the warehouse is, against the clock now.
+
+    `days_behind` and `warehouse_stale` describe the gap between the newest
+    stored day and today, so they age with the cache. Recomputed on every
+    cache read, in UTC — the warehouse buckets by UTC calendar day.
+    """
+    try:
+        date = datetime.date.fromisoformat(data["date"])
+    except (KeyError, TypeError, ValueError):
+        return data
+    behind = (datetime.datetime.now(datetime.timezone.utc).date() - date).days
+    data["days_behind"] = behind
+    data["warehouse_stale"] = behind > STALE_AFTER_DAYS
+    return data
 
 
 def _ordinal(p: float) -> str:

@@ -35,6 +35,7 @@ import datetime
 import re
 from concurrent.futures import ThreadPoolExecutor
 
+from . import cache
 from .sources import SourceResult, flows, node, price, warehouse
 
 SCHEMA_VERSION = 1
@@ -56,28 +57,31 @@ TITLES = {
 }
 
 
-def _collect_one(mod, cfg) -> SourceResult:
+def _collect_one(mod, cfg, refresh: bool) -> SourceResult:
     # collect() is documented never to raise, but a source is one bad edit away
     # from breaking that promise, and one source must never take down the
     # snapshot.
     try:
-        return mod.collect(cfg)
+        return cache.collect(mod, cfg, refresh=refresh)
     except Exception as e:
         return SourceResult(
             name=mod.NAME, available=False, error=f"collector raised {type(e).__name__}: {e}"
         )
 
 
-def build(cfg, only: tuple[str, ...] | None = None) -> dict:
+def build(cfg, only: tuple[str, ...] | None = None, *, refresh: bool = False) -> dict:
     """Collect all sources and return the snapshot.
 
     Sources are independent and three of the four are I/O-bound on different
     hosts, so they run concurrently — total time is the slowest source, not the
     sum.
+
+    Sources declaring a `CACHE_TTL` are served from disk when a fresh copy
+    exists; `refresh=True` bypasses that and rewrites the cache.
     """
     mods = [m for m in SOURCES if only is None or m.NAME in only]
     with ThreadPoolExecutor(max_workers=len(mods) or 1) as pool:
-        results = list(pool.map(lambda m: _collect_one(m, cfg), mods))
+        results = list(pool.map(lambda m: _collect_one(m, cfg, refresh), mods))
 
     return {
         "schema_version": SCHEMA_VERSION,

@@ -39,7 +39,12 @@ ALL_DATA_URL = "https://farside.co.uk/bitcoin-etf-flow-all-data/"
 LEAD = "IBIT"
 FUNDS = ("IBIT", "FBTC", "ARKB", "GBTC")
 WINDOWS = (5, 20, 60)
-CACHE_NAME = "flows_btc.json"
+
+# Farside publishes a trading day's flows once, in the evening — so a scrape
+# more than once an hour buys nothing and only adds load to someone else's
+# site. The cache layer also provides the stale-fallback when the site is
+# unreachable, which is why this module no longer keeps its own cache file.
+CACHE_TTL = 3600
 
 DATE_RE = re.compile(r"^\d{1,2}\s+[A-Za-z]{3}\s+\d{4}$")
 
@@ -268,53 +273,44 @@ def summarize(rows: list[dict]) -> dict:
     }
 
 
-def _cache_file(cfg) -> Path:
-    return Path(cfg.cache_dir) / CACHE_NAME
-
-
 def collect(cfg) -> SourceResult:
+    """Scrape and summarize the flow table.
+
+    Caching — both the within-TTL read path and the stale-on-failure fallback —
+    is handled by `btc_dashboard.cache`, not here. This function's only job is
+    to return live data or say why it couldn't.
+    """
     errors = []
     for url in (ALL_DATA_URL, NAV_URL):
         try:
             rows = parse_table(fetch_html(url, cfg.timeout))
             summary = summarize(rows)
-            payload = {
-                "source": url,
-                "fetched_at": datetime.now(timezone.utc).isoformat(),
-                **summary,
-            }
-            try:
-                path = _cache_file(cfg)
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(json.dumps(payload, indent=2))
-            except Exception:
-                pass  # a cache we can't write is not a reason to lose a good fetch
             return SourceResult(
-                name=NAME, available=True, data=payload, as_of=summary["as_of"]
+                name=NAME,
+                available=True,
+                data={
+                    "source": url,
+                    "fetched_at": datetime.now(timezone.utc).isoformat(),
+                    **summary,
+                },
+                as_of=summary["as_of"],
             )
         except Exception as e:
             errors.append(f"{url}: {e}")
+    return unavailable(NAME, "; ".join(errors))
 
-    # Live fetch failed on every page. Serve the last good payload, flagged —
-    # yesterday's finalized flows are far more useful than nothing, provided
-    # the reader is told they're old.
-    try:
-        cached = json.loads(_cache_file(cfg).read_text())
-    except Exception:
-        return unavailable(NAME, "; ".join(errors))
 
-    # age_days was computed when the cache was written and would understate how
-    # old this is; re-derive it against today.
-    if cached.get("as_of"):
-        cached["age_days"] = age_days(cached["as_of"])
-    return SourceResult(
-        name=NAME,
-        available=True,
-        data=cached,
-        stale=True,
-        error="; ".join(errors),
-        as_of=cached.get("as_of"),
-    )
+def refresh_derived(data: dict) -> dict:
+    """Recompute `age_days` against today's market date.
+
+    Called by the cache layer whenever this payload is served from disk. Age is
+    relative to when it is *read*, not when it was fetched — without this, a
+    cache served on the stale-fallback path would report a three-day-old
+    trading day as "1d ago", which is precisely when the reader needs it least.
+    """
+    if data.get("as_of"):
+        data["age_days"] = age_days(data["as_of"])
+    return data
 
 
 def _m(v: float | None) -> str:

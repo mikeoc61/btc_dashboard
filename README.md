@@ -67,6 +67,51 @@ read-only. Third-party libraries plus upstream `bitcoin-cli`, nothing else.
 Sources are collected concurrently, so a run costs the slowest source rather
 than the sum.
 
+### Caching
+
+On-chain and ETF flow data are cached for **60 minutes**; price and node are
+never cached.
+
+That split is the whole design. The warehouse gains one row per UTC day and
+Farside publishes a trading day once, in the evening — so refetching either
+more than hourly buys nothing and, for Farside, just adds load to someone
+else's site. Spot price and mempool depth are live tip state, where serving a
+40-minute-old reading as current would be worse than not showing it.
+
+```
+$ btc-dashboard --only flows      # cold
+  1.80s
+$ btc-dashboard --only flows      # warm
+ETF FLOWS [cached 3m]
+  0.07s
+$ btc-dashboard --only flows --refresh   # forced re-collect
+  1.10s
+```
+
+**`cached` and `stale` are different states**, and both appear in the snapshot:
+
+| Marker | Meaning |
+| --- | --- |
+| *(none)* | Collected live this run |
+| `[cached 15m]` | Served from disk within its TTL — as good as when fetched |
+| `[STALE 3d]` | TTL expired *and* the live refresh failed; serving the old copy anyway, with the failure reason shown |
+
+The stale path is why the cache is worth having beyond speed: when Farside is
+unreachable, yesterday's finalized flows still render rather than the block
+disappearing. The analyst is told which state applies, so it can't describe an
+hour-old reading as "right now".
+
+**Time-relative fields are recomputed on every cache read.** `age_days` and
+`days_behind` are relative to when they are *read*, not when they were
+fetched — otherwise a three-day-old stale payload would report a trading day
+as "1d ago", exactly when accuracy matters most. A source with such fields
+exposes `refresh_derived(data)`.
+
+Cache files live in `~/.cache/btc_dashboard/<source>.json`. Writes are atomic
+(temp file + `os.replace`), so concurrent readers never see
+a partial payload. An unreadable or corrupt cache file is treated as a miss,
+never an error.
+
 ### Adding a source
 
 One new file in `sources/` exposing four names, plus one entry in
@@ -74,9 +119,11 @@ One new file in `sources/` exposing four names, plus one entry in
 
 ```python
 NAME = "mysource"
+CACHE_TTL = 3600                        # optional; omit for live data
 def collect(cfg) -> SourceResult: ...   # never raises
 def render_lines(data) -> list[str]:    # terminal text
 def context_lines(data) -> list[str]:   # facts phrased for the LLM
+def refresh_derived(data) -> dict:      # optional; only if fields age
 ```
 
 Keeping both presentations next to the collector is deliberate: the caveats a
@@ -117,6 +164,8 @@ see [Credential boundary](#credential-boundary-the-llm-is-client-side-only).
 | `--db PATH` | Warehouse path |
 | `--model ID` | Model for `--ask` |
 | `--effort L` | `low`/`medium`/`high`/`xhigh`/`max` (default `high`) |
+| `--refresh` | Bypass the cache and re-collect |
+| `--cache-ttl N` | Cache lifetime in seconds (default 3600; `0` disables) |
 | `--quiet` | Hide unavailable-source detail |
 
 Exit codes: `0` ok, `1` no source available, `2` bad usage or analyst failed. The analyst
@@ -128,21 +177,29 @@ failing never costs you the panel — it prints first.
 | --- | --- | --- |
 | `BTC_DASHBOARD_DB` | `~/data/market.duckdb` | Warehouse path (falls back to `MARKET_WAREHOUSE_DB`) |
 | `BTC_DASHBOARD_BITCOIN_CLI` | `bitcoin-cli` | Path to the Core CLI |
-| `BTC_DASHBOARD_CACHE` | `~/.btc_dashboard/cache` | Flow-cache directory |
+| `BTC_DASHBOARD_CACHE` | `~/.cache/btc_dashboard` | Cache directory (honours `XDG_CACHE_HOME`) |
 | `BTC_DASHBOARD_MODEL` | `claude-opus-5` | Analyst model |
 | `BTC_DASHBOARD_EFFORT` | `high` | Analyst reasoning effort |
 | `BTC_DASHBOARD_TIMEOUT` | `20` | Per-source network timeout (s) |
+| `BTC_DASHBOARD_CACHE_TTL` | `3600` | Cache lifetime for cached sources (s) |
 | `ANTHROPIC_API_KEY` | — | Required for `--ask` |
-| `BTC_DASHBOARD_ENV` | `~/.btc_dashboard/env` | Env file read when the key isn't exported |
+| `BTC_DASHBOARD_ENV` | `~/.config/btc_dashboard/env` | Env file read when the key isn't exported (honours `XDG_CONFIG_HOME`) |
 
 A scheduled run starts without a login shell, so nothing from your profile is
 exported. Put the key in the env file for that case:
 
 ```bash
-mkdir -p ~/.btc_dashboard && chmod 700 ~/.btc_dashboard
-echo 'ANTHROPIC_API_KEY=sk-ant-...' > ~/.btc_dashboard/env
-chmod 600 ~/.btc_dashboard/env
+mkdir -p ~/.config/btc_dashboard && chmod 700 ~/.config/btc_dashboard
+echo 'ANTHROPIC_API_KEY=sk-ant-...' > ~/.config/btc_dashboard/env
+chmod 600 ~/.config/btc_dashboard/env
 ```
+
+Paths follow the XDG base directory spec: cache under `$XDG_CACHE_HOME`
+(default `~/.cache/btc_dashboard`), config under `$XDG_CONFIG_HOME` (default
+`~/.config/btc_dashboard`). The pre-XDG `~/.btc_dashboard/env` is still read as
+a fallback, since it may hold a key; the old cache directory is not — cache is
+disposable, so an upgraded install simply refetches once. If you have one left
+over, `rm -rf ~/.btc_dashboard` after moving any env file.
 
 ## Where it runs
 
@@ -284,10 +341,12 @@ prompt, and it's handled as such:
 
 ### Still required before exposing it
 
-Authentication, TLS, rate limiting, and a cache/TTL layer so N clients don't
-each trigger a Farside scrape. Not built. Don't expose it publicly until they
-are — note the service is read-only and secret-free, which limits the blast
-radius but is not a substitute for any of the above.
+Authentication, TLS, and rate limiting. **The cache/TTL layer is now built**
+(see [Caching](#caching)) — N clients hitting the service share one hourly
+Farside scrape and one hourly warehouse read rather than each triggering their
+own. The rest is not built: don't expose it publicly until it is. The service
+being read-only and secret-free limits the blast radius but does not
+substitute for any of them.
 
 ## Tests
 
@@ -295,7 +354,7 @@ radius but is not a substitute for any of the above.
 .venv/bin/pytest
 ```
 
-55 tests. The warehouse tests run against a real DuckDB file built per-test
+132 tests. The warehouse tests run against a real DuckDB file built per-test
 rather than a mock — the signal definitions are the part most worth pinning
 down, and a mock would only assert that we called ourselves.
 

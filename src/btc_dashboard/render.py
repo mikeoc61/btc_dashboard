@@ -11,6 +11,36 @@ from . import snapshot as snap
 RULE = "─" * 60
 
 
+def human_age(seconds) -> str:
+    """Compact age for a cache marker: 45s, 12m, 3h, 2d."""
+    try:
+        s = int(seconds)
+    except (TypeError, ValueError):
+        return "?"
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m"
+    if s < 86400:
+        return f"{s // 3600}h"
+    return f"{s // 86400}d"
+
+
+def _cache_flag(block: dict) -> str:
+    """Marker distinguishing a within-TTL cache hit from an expired fallback.
+
+    Both are served from disk, but they mean different things to the reader:
+    `cached` is normal operation, `STALE` means the live path failed and this
+    is older than policy allows.
+    """
+    if block.get("stale"):
+        age = block.get("cache_age_seconds")
+        return f" [STALE {human_age(age)}]" if age is not None else " [STALE]"
+    if block.get("cached"):
+        return f" [cached {human_age(block.get('cache_age_seconds'))}]"
+    return ""
+
+
 def render(snapshot: dict, *, show_errors: bool = True) -> str:
     lines: list[str] = []
     generated = snapshot["generated_at"][:19].replace("T", " ")
@@ -27,8 +57,7 @@ def render(snapshot: dict, *, show_errors: bool = True) -> str:
                 lines.append("")
             continue
 
-        flag = " [STALE]" if block.get("stale") else ""
-        lines.append(f"{title}{flag}")
+        lines.append(f"{title}{_cache_flag(block)}")
         mod = snap.module_for(name)
         if mod is None:
             # An ingested snapshot from a newer service can carry a source this
@@ -40,8 +69,8 @@ def render(snapshot: dict, *, show_errors: bool = True) -> str:
             except Exception as e:
                 body = [f"render failed: {type(e).__name__}: {e}"]
         lines.extend(f"  {line}" for line in body)
-        if block.get("stale") and block.get("error"):
-            lines.append(f"  served from cache — live fetch failed: {block['error']}")
+        if block.get("stale") and block.get("error") and show_errors:
+            lines.append(f"  live refresh failed: {block['error']}")
         lines.append("")
 
     missing = snap.missing(snapshot)

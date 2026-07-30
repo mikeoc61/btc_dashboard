@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import snapshot as snap
+from .config import default_config_dir
 
 MAX_TOKENS = 16000
 
@@ -87,6 +88,13 @@ def _quote_untrusted(text) -> str:
     return s
 
 
+def _age(block: dict) -> str:
+    from .render import human_age
+
+    seconds = block.get("cache_age_seconds")
+    return human_age(seconds) if seconds is not None else "an unknown time"
+
+
 def build_context(snapshot: dict) -> str:
     """Flatten the snapshot into the fact list the model reasons over.
 
@@ -120,8 +128,16 @@ def build_context(snapshot: dict) -> str:
             continue
         if block.get("stale"):
             lines.append(
-                f"[{label}] NOTE: served from cache after a failed live fetch — "
-                f"these figures are not current."
+                f"[{label}] WARNING: the live refresh failed, so these figures come "
+                f"from a cache written {_quote_untrusted(_age(block))} ago and may "
+                f"no longer be current. Say so if it affects your answer."
+            )
+        elif block.get("cached"):
+            # Worth stating even though it is within policy: the model should
+            # not describe an hour-old reading as "right now".
+            lines.append(
+                f"[{label}] Figures were collected {_quote_untrusted(_age(block))} "
+                f"ago (within the normal refresh interval)."
             )
         lines.extend(f"[{label}] {f}" for f in facts)
     return "\n".join(lines)
@@ -138,11 +154,12 @@ def _api_key() -> str | None:
     key = os.environ.get("ANTHROPIC_API_KEY")
     if key:
         return key
-    path = Path(
-        os.environ.get("BTC_DASHBOARD_ENV", Path.home() / ".btc_dashboard" / "env")
-    )
-    try:
-        for line in path.read_text().splitlines():
+    for path in _env_file_candidates():
+        try:
+            lines = path.read_text().splitlines()
+        except OSError:
+            continue
+        for line in lines:
             line = line.strip()
             if line.startswith("ANTHROPIC_API_KEY="):
                 value = line.split("=", 1)[1].strip().strip("'\"")
@@ -151,9 +168,24 @@ def _api_key() -> str | None:
                     # than passing it separately.
                     os.environ["ANTHROPIC_API_KEY"] = value
                     return value
-    except OSError:
-        pass
     return None
+
+
+def _env_file_candidates() -> list[Path]:
+    """Where to look for the env file, in order.
+
+    An explicit `BTC_DASHBOARD_ENV` wins outright. Otherwise the XDG config
+    location is preferred, with the pre-XDG path still read so an existing
+    install keeps working — this file may hold the operator's API key, and
+    silently ceasing to find it is a bad way to learn about a path change.
+    """
+    explicit = os.environ.get("BTC_DASHBOARD_ENV")
+    if explicit:
+        return [Path(explicit)]
+    return [
+        default_config_dir() / "env",
+        Path.home() / ".btc_dashboard" / "env",
+    ]
 
 
 def ask(snapshot: dict, question: str, cfg) -> AnalystResult:
@@ -166,7 +198,7 @@ def ask(snapshot: dict, question: str, cfg) -> AnalystResult:
         return AnalystResult(
             None,
             "ANTHROPIC_API_KEY is not set — export it, or put it in "
-            "~/.btc_dashboard/env",
+            f"{default_config_dir() / 'env'}",
         )
 
     context = build_context(snapshot)

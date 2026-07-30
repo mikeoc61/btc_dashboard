@@ -18,7 +18,7 @@ analyst) gets to see rather than a silent gap.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 
@@ -26,9 +26,16 @@ from typing import Any
 class SourceResult:
     """One source's contribution to the snapshot.
 
-    `data` is only meaningful when `available` is True. `stale` marks data
-    served from cache after a live fetch failed — available, but older than it
-    looks, so consumers can flag it rather than treating it as current.
+    `data` is only meaningful when `available` is True.
+
+    `cached` and `stale` are distinct and both can appear:
+
+    - `cached` — served from disk within its TTL. As good as when it was
+      fetched; `cache_age_seconds` says how long ago that was.
+    - `stale` — served from disk *after the live path failed*, with the TTL
+      already expired. Available, but older than it looks.
+
+    Stale implies cached; cached does not imply stale.
     """
 
     name: str
@@ -37,15 +44,45 @@ class SourceResult:
     error: str | None = None
     stale: bool = False
     as_of: str | None = None
+    cached: bool = False
+    cache_age_seconds: int | None = None
+    cache_ttl_seconds: int | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
             "available": self.available,
             "stale": self.stale,
+            "cached": self.cached,
+            "cache_age_seconds": self.cache_age_seconds,
+            "cache_ttl_seconds": self.cache_ttl_seconds,
             "as_of": self.as_of,
             "error": self.error,
             "data": self.data if self.available else None,
         }
+
+    def as_cached(self, age_seconds: float, ttl_seconds: int) -> "SourceResult":
+        """Same data, marked as served from a within-TTL cache."""
+        return replace(
+            self,
+            cached=True,
+            stale=False,
+            cache_age_seconds=int(age_seconds),
+            cache_ttl_seconds=ttl_seconds,
+        )
+
+    def as_stale(self, age_seconds: float, error: str | None) -> "SourceResult":
+        """Same data, marked as an expired copy serving after a failed refresh.
+
+        The live failure's error is carried through so the reason is visible
+        rather than being replaced by silence.
+        """
+        return replace(
+            self,
+            cached=True,
+            stale=True,
+            cache_age_seconds=int(age_seconds) if age_seconds != float("inf") else None,
+            error=error,
+        )
 
 
 def unavailable(name: str, error: str) -> SourceResult:

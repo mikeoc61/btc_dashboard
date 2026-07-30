@@ -1,0 +1,30 @@
+"""Test isolation from the developer's real environment.
+
+Without this, tests that build a snapshot read and write the operator's actual
+cache directory: results would depend on whether the CLI had been run recently,
+and the suite would overwrite real cached data. Both fixtures are autouse
+because the failure mode is silent — a test passes locally and fails on a
+machine where a cache happens to exist.
+"""
+from __future__ import annotations
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def isolated_cache(tmp_path_factory, monkeypatch):
+    """Point every test at its own empty cache directory."""
+    path = tmp_path_factory.mktemp("btc_cache")
+    monkeypatch.setenv("BTC_DASHBOARD_CACHE", str(path))
+    return path
+
+
+@pytest.fixture(autouse=True)
+def no_api_credentials(monkeypatch):
+    """Make an accidental live API call impossible.
+
+    The analyst reads a key from the environment or an env file; a test that
+    reached the network would be slow, flaky, and would spend real money.
+    """
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("BTC_DASHBOARD_ENV", "/nonexistent/btc_dashboard_env")
