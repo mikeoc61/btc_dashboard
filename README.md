@@ -17,11 +17,13 @@ NETWORK (live)
   height 903,142 | hashrate 812.44 EH/s (+1.20% 7d) | difficulty 110.57T
   retarget 1,204 blks (~8.4d) | proj -1.83%
   mempool 14,203 tx / 8.1 vMB
-  fees 2/2/1 sat/vB (fast/1hr/1d)
+  fees 4.0/2.3/0.7 sat/vB (fast/1hr/1d)
 
 ON-CHAIN (last complete UTC day)
-  day (UTC 2026-07-28 Tue): 147 blks | 96% full | p50 2.0 sat/vB | fee/subsidy 0.84% | miner rev 452.1 BTC
-  signal: fee/subsidy 3rd pctile 2y (7d) | apathy 41d
+  day (UTC 2026-07-28 Tue): 127 blks | 97% full | p50 1.0 sat/vB | fee/subsidy 0.75% | miner rev 399.8 BTC
+  signal: fee/subsidy 26th pctile 2y (7d) | apathy 22d | hashrate -16.0% off 90d high
+  daily close $63,860 | 200d SMA $71,862 (warehouse)
+  block pace 127/144 (-11.8%, ±8% day-to-day noise)
 
 ETF FLOWS
   latest -49.7M total | -54.8M IBIT (28 Jul 2026, 1d ago)
@@ -275,6 +277,15 @@ differ in their last bits — a strict comparison split a perfectly flat series
 across the 58th percentile. Ties are now counted and halved, so a value equal to
 everything else reads 50th.
 
+**A single day's block count is noise, and is labelled as such.** Block
+discovery is Poisson, so one day at the 144-block target has a standard
+deviation of 12 blocks — about 8%. A day at -12% is only 1.4sd low, which
+happens roughly one day in twelve by chance. It is therefore rendered as
+`block pace 127/144 (-11.8%, ±8% day-to-day noise)` rather than as a second
+"retarget projection" competing with the node's cumulative estimate, which is
+computed over the whole difficulty period and is the number to trust for
+direction.
+
 Absolute and relative thresholds are kept distinct on purpose. A percentile
 recalibrates to the window it measures, so by construction only N% of days can
 sit below the Nth percentile however depressed the regime — it finds a *new low*
@@ -354,7 +365,7 @@ substitute for any of them.
 .venv/bin/pytest
 ```
 
-132 tests. The warehouse tests run against a real DuckDB file built per-test
+139 tests. The warehouse tests run against a real DuckDB file built per-test
 rather than a mock — the signal definitions are the part most worth pinning
 down, and a mock would only assert that we called ourselves.
 

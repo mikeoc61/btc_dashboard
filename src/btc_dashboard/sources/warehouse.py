@@ -29,6 +29,7 @@ uses an absolute threshold precisely so it can say "N days in the basement".
 from __future__ import annotations
 
 import datetime
+import math
 import re
 from pathlib import Path
 
@@ -47,6 +48,17 @@ APATHY_MAX = 1.0
 VOL_PCTILE_MIN = 95.0
 MIN_WINDOW_ROWS = 30
 STALE_AFTER_DAYS = 2
+
+# Blocks per day at the 10-minute target.
+BLOCKS_PER_DAY = 144
+# Block discovery is Poisson, so one day's count has sd = sqrt(144) = 12
+# blocks — about 8% of the target. A single day therefore says almost nothing
+# about difficulty direction: a day at -12% sits ~1.4sd low, which happens
+# roughly one day in twelve by chance alone. The band is rendered next to the
+# figure so it is read as one day's outcome rather than as a projection; the
+# node's cumulative estimate, computed over the whole difficulty period, is
+# the number to trust for direction.
+PACE_NOISE_PCT = 100 / math.sqrt(BLOCKS_PER_DAY)
 
 # The ingester appends one row per UTC day, so the underlying data changes at
 # most daily — but each collection runs several full-table scans (two 730-day
@@ -386,8 +398,21 @@ def render_lines(d: dict) -> list[str]:
             f"daily close {fmt(close, ',.0f', prefix='$')} (warehouse; 200d SMA n/a)"
         )
 
-    if d.get("day_pace_retarget") is not None:
-        out.append(f"day-pace retarget {fmt(d.get('day_pace_retarget'), '+.2f')}%")
+    # Described as that day's block pace, not as a "retarget projection". The
+    # node block already carries a cumulative projection computed over the full
+    # difficulty period; showing a second, far noisier number under the same
+    # name invites reading the unreliable one as the trend.
+    pace, blocks = d.get("day_pace_retarget"), oc.get("blocks_day")
+    if pace is not None and blocks is not None:
+        out.append(
+            f"block pace {fmt(blocks)}/{BLOCKS_PER_DAY} "
+            f"({fmt(pace, '+.1f')}%, ±{PACE_NOISE_PCT:.0f}% day-to-day noise)"
+        )
+    elif pace is not None:
+        out.append(
+            f"block pace {fmt(pace, '+.1f')}% vs target "
+            f"(one day, ±{PACE_NOISE_PCT:.0f}% noise)"
+        )
 
     if d.get("warehouse_stale"):
         out.append(f"warehouse {fmt(d.get('days_behind'), missing='?')}d behind")

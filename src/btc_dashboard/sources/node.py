@@ -122,6 +122,18 @@ def collect(cfg) -> SourceResult:
         return unavailable(NAME, f"{type(e).__name__}: {e}")
 
 
+def _fee(v) -> str:
+    """Fee rate for display, at a consistent width.
+
+    A `g` format drops the trailing zero, so 4.0 rendered as `4` while its
+    neighbours kept a decimal and the three didn't line up. Below 10 sat/vB one
+    decimal is meaningful; above it, the tenths are noise on an estimate.
+    """
+    if not isinstance(v, (int, float)):
+        return "n/a"
+    return fmt(v, ".1f") if v < 10 else fmt(v, ".0f")
+
+
 def render_lines(d: dict) -> list[str]:
     hr = f"hashrate {fmt(d.get('hash_rate_ehs'), ',.2f')} EH/s"
     if d.get("hash_rate_7d_pct") is not None:
@@ -135,7 +147,7 @@ def render_lines(d: dict) -> list[str]:
     eta = f", ~{fmt(rt.get('eta_days'))}d" if rt.get("eta_days") is not None else ""
 
     f = d.get("fees_sat_vb") or {}
-    fee_txt = "/".join(fmt(f.get(k), "g") for k in ("fast", "hour", "day"))
+    fee_txt = "/".join(_fee(f.get(k)) for k in ("fast", "hour", "day"))
 
     mp = d.get("mempool") or {}
     return [

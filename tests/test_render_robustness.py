@@ -111,3 +111,53 @@ def test_context_lines_survive_everything_being_none(name):
         MODULES[name].context_lines(_blank(FULL[name]))
     except Exception as e:
         pytest.fail(f"{name}.context_lines raised on an all-None payload: {e!r}")
+
+
+class TestBlockPaceIsPresentedAsOneDay:
+    """A single day's block count is Poisson noise, not a difficulty forecast.
+
+    The node block already shows a cumulative projection over the whole
+    difficulty period. Labelling this one "day-pace retarget" put a far noisier
+    number under the same name, and the bigger figure reads as the trend.
+    """
+
+    def test_shows_the_count_and_the_noise_band(self):
+        data = dict(FULL["warehouse"], day_pace_retarget=-11.81)
+        data["onchain"] = dict(FULL["warehouse"]["onchain"], blocks_day=127)
+        line = next(l for l in warehouse.render_lines(data) if "block pace" in l)
+
+        assert "127/144" in line
+        assert "-11.8%" in line
+        assert "±8%" in line
+        assert "retarget" not in line, "must not read as a difficulty projection"
+
+    def test_noise_band_is_derived_not_hardcoded(self):
+        # sd of a Poisson count with mean 144 is 12 blocks = 8.33% of target.
+        assert warehouse.PACE_NOISE_PCT == pytest.approx(100 / 12)
+
+    def test_falls_back_when_the_block_count_is_missing(self):
+        data = dict(FULL["warehouse"], day_pace_retarget=-11.81)
+        data["onchain"] = dict(FULL["warehouse"]["onchain"], blocks_day=None)
+        line = next(l for l in warehouse.render_lines(data) if "block pace" in l)
+        assert "one day" in line and "±8%" in line
+
+    def test_omitted_entirely_when_there_is_no_pace(self):
+        data = dict(FULL["warehouse"], day_pace_retarget=None)
+        assert not any("block pace" in l for l in warehouse.render_lines(data))
+
+
+class TestFeeFormatting:
+    def test_sub_ten_keeps_one_decimal_so_columns_line_up(self):
+        data = dict(FULL["node"], fees_sat_vb={"fast": 4.0, "hour": 2.3, "day": 0.7})
+        line = next(l for l in node.render_lines(data) if "fees" in l)
+        assert "4.0/2.3/0.7" in line
+
+    def test_above_ten_drops_meaningless_tenths(self):
+        data = dict(FULL["node"], fees_sat_vb={"fast": 124.6, "hour": 40.0, "day": 9.5})
+        line = next(l for l in node.render_lines(data) if "fees" in l)
+        assert "125/40/9.5" in line
+
+    def test_missing_rate_is_na(self):
+        data = dict(FULL["node"], fees_sat_vb={"fast": None, "hour": 2.3, "day": 0.7})
+        line = next(l for l in node.render_lines(data) if "fees" in l)
+        assert "n/a/2.3/0.7" in line
