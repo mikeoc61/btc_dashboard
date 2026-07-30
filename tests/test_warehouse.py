@@ -15,6 +15,15 @@ from btc_dashboard.config import Config
 from btc_dashboard.sources import warehouse
 
 
+def _utc_today() -> datetime.date:
+    """The warehouse buckets by UTC calendar day, so tests must anchor to UTC.
+
+    Using local date().today() here made these tests fail during the hours when
+    the local date and the UTC date differ.
+    """
+    return datetime.datetime.now(datetime.timezone.utc).date()
+
+
 def _build_db(path, days=400, fee=lambda i: 2.0, hashrate=lambda i: 800.0,
               vol=lambda i: 1000.0, close=lambda i: 90000.0, end_date=None):
     """Write a synthetic warehouse ending on `end_date` (default today), oldest first."""
@@ -29,7 +38,7 @@ def _build_db(path, days=400, fee=lambda i: 2.0, hashrate=lambda i: 800.0,
         "CREATE TABLE btc (date DATE PRIMARY KEY, close DOUBLE, "
         "kraken_vol DOUBLE, kraken_trades BIGINT)"
     )
-    today = end_date or datetime.date.today()
+    today = end_date or _utc_today()
     for i in range(days):
         d = today - datetime.timedelta(days=days - 1 - i)
         con.execute(
@@ -218,7 +227,7 @@ class TestCollect:
     def test_collect_shape(self, db):
         r = warehouse.collect(Config.from_env(db_path=db))
         assert r.available
-        assert r.data["date"] == datetime.date.today().isoformat()
+        assert r.data["date"] == _utc_today().isoformat()
         assert r.data["signals"]["apathy_days"] == 0
         assert r.data["warehouse_stale"] is False
         assert r.data["onchain"]["fee_subsidy"] == 2.0
@@ -233,7 +242,7 @@ class TestCollect:
         )
         con.execute("CREATE TABLE btc (date DATE PRIMARY KEY, close DOUBLE, "
                     "kraken_vol DOUBLE, kraken_trades BIGINT)")
-        old = datetime.date.today() - datetime.timedelta(days=10)
+        old = _utc_today() - datetime.timedelta(days=10)
         con.execute("INSERT INTO onchain VALUES (?, 800, 100, 144, 95, 2, 450, 2.0, 6.5, 0)",
                     [old])
         con.close()

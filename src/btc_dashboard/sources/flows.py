@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from . import SourceResult, fmt, unavailable
@@ -43,6 +43,15 @@ CACHE_NAME = "flows_btc.json"
 
 DATE_RE = re.compile(r"^\d{1,2}\s+[A-Za-z]{3}\s+\d{4}$")
 
+# Flow dates are U.S. market trading days, so age is measured against the
+# market's own calendar rather than UTC. UTC runs 4-5 hours ahead of New York,
+# so a UTC anchor reports yesterday's flows as "2d ago" for the first hours of
+# every UTC day — and for a reader west of Greenwich that window covers a large
+# part of their afternoon. The market clock is also the right answer
+# independent of where the reader sits: a viewer in London and one in Hawaii
+# should agree on how old a trading day is.
+MARKET_TZ = "America/New_York"
+
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -57,6 +66,32 @@ HEADERS = {
 # flagship actually did; below 60% the move is broad rather than lead-driven.
 CONVICTION_MIN = 0.60
 OFFSETTING_MIN = 1.20
+
+
+def _market_today() -> date:
+    """Today on the U.S. market calendar.
+
+    Falls back to UTC if the zone is unavailable (a container with no tzdata),
+    which reproduces the old off-by-one rather than crashing — wrong by a day
+    beats no flow data at all.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+
+        return datetime.now(ZoneInfo(MARKET_TZ)).date()
+    except Exception:
+        return datetime.now(timezone.utc).date()
+
+
+def age_days(date_str: str | None) -> int | None:
+    """Whole days between a `D MMM YYYY` flow date and today, market calendar."""
+    if not date_str:
+        return None
+    try:
+        d = datetime.strptime(date_str, "%d %b %Y").date()
+    except (TypeError, ValueError):
+        return None
+    return (_market_today() - d).days
 
 
 def parse_flow(s: str) -> float | None:
@@ -217,18 +252,11 @@ def summarize(rows: list[dict]) -> dict:
     streak_days, streak_sign = _streak(complete)
 
     latest = complete[-1] if complete else None
-    age = None
-    if latest:
-        try:
-            d = datetime.strptime(latest["date"], "%d %b %Y").date()
-            age = (datetime.now(timezone.utc).date() - d).days
-        except ValueError:
-            pass
 
     return {
         "lead": LEAD,
         "as_of": latest["date"] if latest else None,
-        "age_days": age,
+        "age_days": age_days(latest["date"]) if latest else None,
         "latest_total": latest["Total"] if latest else None,
         "latest_lead": latest[LEAD] if latest else None,
         "days_complete": len(complete),
@@ -278,11 +306,7 @@ def collect(cfg) -> SourceResult:
     # age_days was computed when the cache was written and would understate how
     # old this is; re-derive it against today.
     if cached.get("as_of"):
-        try:
-            d = datetime.strptime(cached["as_of"], "%d %b %Y").date()
-            cached["age_days"] = (datetime.now(timezone.utc).date() - d).days
-        except ValueError:
-            pass
+        cached["age_days"] = age_days(cached["as_of"])
     return SourceResult(
         name=NAME,
         available=True,

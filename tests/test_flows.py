@@ -119,3 +119,52 @@ class TestParseTable:
     def test_missing_table_raises(self):
         with pytest.raises(ValueError, match="flow table not found"):
             flows.parse_table("<html><body><p>nothing here</p></body></html>")
+
+
+class TestAgeUsesTheMarketCalendar:
+    """Flow dates are U.S. trading days, so age is measured in New York.
+
+    Regression: age was measured against UTC, which runs 4-5h ahead of New
+    York. At 20:04 EDT on 29 Jul it was already 30 Jul in UTC, so the 28 Jul
+    flows reported as "2d ago" when they were yesterday's.
+    """
+
+    def _at(self, monkeypatch, iso_utc):
+        """Freeze the market clock at a given UTC instant."""
+        from datetime import datetime as dt, timezone as tz
+        from zoneinfo import ZoneInfo
+        moment = dt.fromisoformat(iso_utc).replace(tzinfo=tz.utc)
+        monkeypatch.setattr(
+            flows, "_market_today",
+            lambda: moment.astimezone(ZoneInfo(flows.MARKET_TZ)).date(),
+        )
+
+    def test_evening_in_new_york_is_still_the_same_day(self, monkeypatch):
+        # 00:04 UTC on 30 Jul == 20:04 EDT on 29 Jul. The 28th is yesterday.
+        self._at(monkeypatch, "2026-07-30T00:04:00")
+        assert flows.age_days("28 Jul 2026") == 1
+
+    def test_utc_would_have_said_two(self):
+        """The old behaviour, pinned so the difference stays visible."""
+        from datetime import datetime as dt, timezone as tz, date
+        utc_today = dt.fromisoformat("2026-07-30T00:04:00").replace(tzinfo=tz.utc).date()
+        assert (utc_today - date(2026, 7, 28)).days == 2
+
+    def test_after_midnight_in_new_york_it_ages(self, monkeypatch):
+        # 05:00 UTC on 30 Jul == 01:00 EDT on 30 Jul — now genuinely 2 days.
+        self._at(monkeypatch, "2026-07-30T05:00:00")
+        assert flows.age_days("28 Jul 2026") == 2
+
+    def test_same_day_flows_are_zero_not_one(self, monkeypatch):
+        self._at(monkeypatch, "2026-07-30T00:04:00")
+        assert flows.age_days("29 Jul 2026") == 0
+
+    @pytest.mark.parametrize("bad", [None, "", "not a date", "2026-07-28"])
+    def test_unparseable_dates_yield_none(self, bad):
+        assert flows.age_days(bad) is None
+
+    def test_summary_and_cache_agree(self, monkeypatch):
+        """Both call sites must use the same clock — they were duplicated."""
+        self._at(monkeypatch, "2026-07-30T00:04:00")
+        rows = [_day("28 Jul 2026", -10.0, 0.0, 0.0, 0.0, -10.0)]
+        assert flows.summarize(rows)["age_days"] == flows.age_days("28 Jul 2026") == 1
