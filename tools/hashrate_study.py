@@ -118,15 +118,50 @@ def forward_return(close: list[float], i: int, days: int) -> float | None:
 
 @dataclass
 class Episode:
+    # The high the drawdown is measured from. Distinct from `start`, which is
+    # only the day price first crossed the threshold — typically days or weeks
+    # after the top. Durations run from the peak, since "how long did this
+    # drawdown last" means from the high, not from an arbitrary trigger level.
+    peak_date: datetime.date
     start: datetime.date
     trough_date: datetime.date
     depth_pct: float
     recovered: datetime.date | None
     era: str
+    # Duration split in two, because the halves behave differently: the fall to
+    # the trough and the climb back are not symmetric, and a single total hides
+    # which half a given episode spent its time in.
+    days_to_trough: int = 0
+    days_to_recovery: int | None = None
+    total_days: int | None = None
+    # Always set, including while unresolved — an episode in progress has a
+    # duration worth comparing even though it has no total yet.
+    elapsed_days: int = 0
+    # True when this episode falls from the same peak as the one before it:
+    # price recovered into the band but never made a new high before dropping
+    # again. Its durations are measured from a peak that belongs to the earlier
+    # episode, so counting it as an independent observation would distort the
+    # duration range (a 27-day dip in Jan 2017 reported 1,139 days to trough).
+    continuation: bool = False
 
     @property
     def resolved(self) -> bool:
         return self.recovered is not None
+
+
+def _episode(peak_date, start, trough_date, depth, recovered, as_of) -> Episode:
+    return Episode(
+        peak_date=peak_date,
+        start=start,
+        trough_date=trough_date,
+        depth_pct=depth,
+        recovered=recovered,
+        era="ETF" if start >= ETF_LAUNCH else "pre-ETF",
+        days_to_trough=(trough_date - peak_date).days,
+        days_to_recovery=(recovered - trough_date).days if recovered else None,
+        total_days=(recovered - peak_date).days if recovered else None,
+        elapsed_days=((recovered or as_of) - peak_date).days,
+    )
 
 
 def drawdown_episodes(
@@ -138,29 +173,67 @@ def drawdown_episodes(
     Derived rather than hardcoded so the study does not bake in a list of dates
     picked with hindsight — the failure mode the whole exercise is about.
     """
-    peak = close[0]
+    as_of = dates[-1]
+    peak, peak_date = close[0], dates[0]
     current: dict | None = None
     out: list[Episode] = []
-    for i, (d, c) in enumerate(zip(dates, close)):
-        peak = max(peak, c)
+    for d, c in zip(dates, close):
+        if c > peak:
+            peak, peak_date = c, d
         dd = (c - peak) / peak * 100
         if dd <= -abs(min_depth) and current is None:
-            current = {"start": d, "trough": dd, "trough_date": d}
+            # Capture the peak this drawdown falls from, not the day the
+            # threshold was crossed — the two differ by days or weeks.
+            current = {"peak_date": peak_date, "start": d, "trough": dd, "trough_date": d}
         elif current is not None:
             if dd < current["trough"]:
                 current["trough"], current["trough_date"] = dd, d
             if dd > recovery:
-                out.append(Episode(
-                    current["start"], current["trough_date"], current["trough"], d,
-                    "ETF" if current["start"] >= ETF_LAUNCH else "pre-ETF",
+                out.append(_episode(
+                    current["peak_date"], current["start"], current["trough_date"],
+                    current["trough"], d, as_of,
                 ))
                 current = None
     if current is not None:
-        out.append(Episode(
-            current["start"], current["trough_date"], current["trough"], None,
-            "ETF" if current["start"] >= ETF_LAUNCH else "pre-ETF",
+        out.append(_episode(
+            current["peak_date"], current["start"], current["trough_date"],
+            current["trough"], None, as_of,
         ))
+    for prev, e in zip(out, out[1:]):
+        e.continuation = e.peak_date == prev.peak_date
     return out
+
+
+def duration_summary(episodes: list[Episode]) -> dict:
+    """Range of resolved-episode durations, plus any episode still running.
+
+    Deliberately min/median/max rather than a mean with a standard deviation:
+    with a handful of episodes a mean implies a distribution that has not been
+    established, while a range states exactly what was observed.
+    """
+    # Continuations fall from a peak that belongs to the previous episode, so
+    # their durations are not comparable and must not enter the range.
+    done = [e for e in episodes if e.resolved and not e.continuation]
+
+    def spread(values):
+        return {
+            "min": min(values), "median": int(st.median(values)), "max": max(values)
+        } if values else None
+
+    running = next((e for e in episodes if not e.resolved), None)
+    return {
+        "resolved_count": len(done),
+        "to_trough": spread([e.days_to_trough for e in done]),
+        "to_recovery": spread([e.days_to_recovery for e in done]),
+        "total": spread([e.total_days for e in done]),
+        "unresolved": {
+            "peak_date": running.peak_date,
+            "start": running.start,
+            "trough_date": running.trough_date,
+            "days_to_trough": running.days_to_trough,
+            "elapsed_days": running.elapsed_days,
+        } if running else None,
+    }
 
 
 def percentile_of(values: list[float], value: float) -> float:
@@ -317,6 +390,7 @@ def analyse(s: Series, horizons, min_depth: float) -> dict:
             "gaps": s.gaps,
         },
         "episodes": [asdict(e) for e in episodes],
+        "durations": duration_summary(episodes),
         "signals": [
             {"date": s.dates[i], "close": s.close[i],
              "returns": {h: forward_return(s.close, i, h) for h in horizons}}
@@ -354,11 +428,38 @@ def report(a: dict, horizons) -> str:
       f"({cov['joined'][2]:,} days, {cov['gaps']} gaps)")
 
     w("\nDRAWDOWN EPISODES (derived from price, not hardcoded)")
-    w(f"  {'start':>12} {'trough':>12} {'depth':>8} {'recovered':>12}  era")
+    w(f"  {'peak':>12} {'trough':>12} {'depth':>8} {'to trough':>10} "
+      f"{'to recovery':>12} {'total':>8} {'recovered':>12}  era")
     for e in a["episodes"]:
         rec = e["recovered"] or "UNRESOLVED"
-        w(f"  {str(e['start']):>12} {str(e['trough_date']):>12} "
-          f"{e['depth_pct']:>7.1f}% {str(rec):>12}  {e['era']}")
+        to_rec = f"{e['days_to_recovery']}d" if e["days_to_recovery"] is not None else "—"
+        # An unresolved episode has no total, so show elapsed-so-far with a "+"
+        # rather than a blank — the duration is the point of the comparison.
+        total = f"{e['total_days']}d" if e["total_days"] is not None else f"{e['elapsed_days']}d+"
+        mark = " †" if e["continuation"] else ""
+        w(f"  {str(e['peak_date']):>12} {str(e['trough_date']):>12} "
+          f"{e['depth_pct']:>7.1f}% {str(e['days_to_trough']) + 'd':>10} "
+          f"{to_rec:>12} {total:>8} {str(rec):>12}  {e['era']}{mark}")
+    if any(e["continuation"] for e in a["episodes"]):
+        w("  † falls from the same peak as the row above — price re-entered")
+        w("    before making a new high, so its durations are measured from a")
+        w("    peak belonging to the earlier episode and it is excluded below.")
+
+    d = a["durations"]
+    if d["resolved_count"]:
+        w(f"\n  across {d['resolved_count']} resolved, independent episodes:")
+        w(f"    to trough    min {d['to_trough']['min']:>5}d   "
+          f"median {d['to_trough']['median']:>5}d   max {d['to_trough']['max']:>5}d")
+        w(f"    to recovery  min {d['to_recovery']['min']:>5}d   "
+          f"median {d['to_recovery']['median']:>5}d   max {d['to_recovery']['max']:>5}d")
+        w(f"    total        min {d['total']['min']:>5}d   "
+          f"median {d['total']['median']:>5}d   max {d['total']['max']:>5}d")
+    if d["unresolved"]:
+        u = d["unresolved"]
+        w(f"\n  in progress: peaked {u['peak_date']} — {u['elapsed_days']}d elapsed, "
+          f"{u['days_to_trough']}d to its low so far")
+        w(f"    'total' above is elapsed, not final. Only {d['resolved_count']} "
+          f"resolved episodes back the range, so treat it as context, not a forecast.")
 
     w(f"\nHASH RIBBON ({FAST_MA}d MA crossing back above {SLOW_MA}d) — {len(a['signals'])} signals")
     hdr = " ".join(f"{str(h) + 'd':>9}" for h in horizons)

@@ -398,6 +398,11 @@ study normally misleads:
   forward windows overlap, so a decile of ~380 days holds barely one
   independent 365-day observation. Printing `n=386` alone would imply a
   precision the data cannot support.
+- **Durations measured from the peak, not the trigger.** `start` is the day
+  price crossed the threshold, typically days or weeks after the top;
+  measuring from it understates every decline. The table reports peak → trough
+  and trough → recovery separately, since the two halves are not symmetric,
+  and shows elapsed-so-far for an episode still running.
 - **A bounded signal-to-trough association.** An unbounded "nearest signal"
   always finds one; it matched the 2017 corrections to signals 200–390 days
   away. Beyond 90 days the tool reports none rather than inventing a link.
@@ -413,7 +418,7 @@ moves, so no single hashrate metric can confirm a bottom on its own.
 .venv/bin/pytest
 ```
 
-181 tests. The warehouse tests run against a real DuckDB file built per-test
+190 tests. The warehouse tests run against a real DuckDB file built per-test
 rather than a mock — the signal definitions are the part most worth pinning
 down, and a mock would only assert that we called ourselves.
 

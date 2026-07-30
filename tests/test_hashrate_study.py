@@ -212,3 +212,98 @@ class TestSignalAssociationIsBounded:
         troughs = self._run(gap_days=10)["troughs"]
         assert troughs
         assert any(t["signal_lag_days"] is not None for t in troughs)
+
+
+class TestEpisodeDurations:
+    def _series(self, closes, start=datetime.date(2020, 1, 1)):
+        return [start + datetime.timedelta(days=i) for i in range(len(closes))], closes
+
+    def test_durations_run_from_the_peak_not_the_threshold_crossing(self):
+        """`start` is the day price crossed -25%, days after the top. Measuring
+        from it would understate every decline."""
+        dates, closes = self._series([100, 90, 70, 50, 70, 85, 95])
+        e = hashrate_study.drawdown_episodes(dates, closes, min_depth=25)[0]
+        assert e.peak_date == dates[0], "peak is the high, not the trigger"
+        assert e.start == dates[2], "start is where -25% was crossed"
+        assert e.days_to_trough == 3
+        assert e.days_to_recovery == 3
+        assert e.total_days == 6
+        assert e.total_days == e.days_to_trough + e.days_to_recovery
+
+    def test_unresolved_reports_elapsed_not_total(self):
+        """An episode in progress still has a duration worth comparing."""
+        dates, closes = self._series([100, 90, 60, 55, 58, 57])
+        e = hashrate_study.drawdown_episodes(dates, closes, min_depth=25)[0]
+        assert e.total_days is None and e.days_to_recovery is None
+        assert e.elapsed_days == 5      # peak -> last observation
+        assert e.days_to_trough == 3    # peak -> trough
+
+    def test_resolved_elapsed_equals_total(self):
+        dates, closes = self._series([100, 50, 70, 95])
+        e = hashrate_study.drawdown_episodes(dates, closes, min_depth=25)[0]
+        assert e.elapsed_days == e.total_days
+
+
+class TestDurationSummary:
+    def _ep(self, to_trough, to_recovery, resolved=True):
+        start = datetime.date(2020, 1, 1)
+        trough = start + datetime.timedelta(days=to_trough)
+        rec = trough + datetime.timedelta(days=to_recovery) if resolved else None
+        return hashrate_study._episode(start, start, trough, -50.0, rec,
+                                       datetime.date(2020, 12, 31))
+
+    def test_reports_a_range_not_a_mean(self):
+        eps = [self._ep(10, 20), self._ep(30, 40), self._ep(50, 60)]
+        d = hashrate_study.duration_summary(eps)
+        assert d["resolved_count"] == 3
+        assert d["to_trough"] == {"min": 10, "median": 30, "max": 50}
+        assert d["to_recovery"] == {"min": 20, "median": 40, "max": 60}
+        assert d["total"]["median"] == 70
+
+    def test_unresolved_is_excluded_from_the_range(self):
+        eps = [self._ep(10, 20), self._ep(300, 0, resolved=False)]
+        d = hashrate_study.duration_summary(eps)
+        assert d["resolved_count"] == 1
+        assert d["to_trough"]["max"] == 10, "in-progress episode must not skew the range"
+        assert d["unresolved"]["days_to_trough"] == 300
+
+    def test_no_episodes_is_empty_not_an_error(self):
+        d = hashrate_study.duration_summary([])
+        assert d["resolved_count"] == 0
+        assert d["to_trough"] is None and d["unresolved"] is None
+
+
+class TestContinuationEpisodes:
+    """Price can re-enter a drawdown without ever making a new high.
+
+    Those episodes fall from the *previous* episode's peak, so their durations
+    are measured from a top that is not theirs — a 27-day dip in Jan 2017
+    reported 1,139 days to trough and dragged the summary's max with it.
+    """
+
+    def _series(self, closes, start=datetime.date(2020, 1, 1)):
+        return [start + datetime.timedelta(days=i) for i in range(len(closes))], closes
+
+    def _episodes(self):
+        # peak 100, crash to 50, recover to 95 (inside the -10% band, still no
+        # new high), dip to 60 again, recover.
+        dates, closes = self._series([100, 50, 95, 60, 95, 99])
+        return hashrate_study.drawdown_episodes(dates, closes, min_depth=25)
+
+    def test_second_episode_is_flagged_as_a_continuation(self):
+        eps = self._episodes()
+        assert len(eps) == 2
+        assert eps[0].continuation is False
+        assert eps[1].continuation is True
+        assert eps[1].peak_date == eps[0].peak_date
+
+    def test_continuations_are_excluded_from_the_duration_range(self):
+        d = hashrate_study.duration_summary(self._episodes())
+        assert d["resolved_count"] == 1, "only the independent episode counts"
+
+    def test_a_new_high_between_dips_is_not_a_continuation(self):
+        dates, closes = self._series([100, 50, 120, 80, 125])
+        eps = hashrate_study.drawdown_episodes(dates, closes, min_depth=25)
+        assert len(eps) == 2
+        assert all(e.continuation is False for e in eps)
+        assert eps[1].peak_date != eps[0].peak_date
