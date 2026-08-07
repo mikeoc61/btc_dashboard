@@ -13,7 +13,12 @@ from pathlib import Path
 
 DEFAULT_DB_PATH = Path.home() / "data" / "market.duckdb"
 APP_NAME = "btc_dashboard"
-DEFAULT_MODEL = "claude-opus-5"
+DEFAULT_PROVIDER = "anthropic"
+# Deliberately no default model here: it belongs to the provider, not to the
+# config. A default of "claude-opus-5" would be silently applied to whatever
+# provider was selected, so `--provider openai` would request an Anthropic
+# model id from OpenAI. Unset means "use the chosen provider's own default".
+DEFAULT_MODEL = None
 DEFAULT_EFFORT = "high"
 DEFAULT_TIMEOUT = 20
 # Per-source default; a source opts in by declaring CACHE_TTL.
@@ -50,7 +55,8 @@ class Config:
     bitcoin_cli: str
     cache_dir: Path
     timeout: int
-    model: str
+    provider: str
+    model: str | None
     effort: str
     cache_ttl: int
 
@@ -71,7 +77,8 @@ class Config:
                 os.environ.get("BTC_DASHBOARD_CACHE") or default_cache_dir()
             ),
             timeout=int(os.environ.get("BTC_DASHBOARD_TIMEOUT", DEFAULT_TIMEOUT)),
-            model=os.environ.get("BTC_DASHBOARD_MODEL", DEFAULT_MODEL),
+            provider=os.environ.get("BTC_DASHBOARD_PROVIDER", DEFAULT_PROVIDER),
+            model=os.environ.get("BTC_DASHBOARD_MODEL") or DEFAULT_MODEL,
             effort=os.environ.get("BTC_DASHBOARD_EFFORT", DEFAULT_EFFORT),
             cache_ttl=int(
                 os.environ.get("BTC_DASHBOARD_CACHE_TTL", DEFAULT_CACHE_TTL)

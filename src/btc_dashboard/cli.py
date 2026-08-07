@@ -16,6 +16,8 @@ examples:
   btc-dashboard --ask "is the flow picture consistent with the price move?"
   btc-dashboard --context                what the analyst would be told, without asking
   btc-dashboard --refresh                bypass the cache and re-collect
+  btc-dashboard --ask "..." --model deepseek/deepseek-chat
+  btc-dashboard --ask "..." --provider ollama --model llama3
 
 on-chain and ETF flow data are cached for 60 minutes (both change at most
 daily); price and node are live tip state and never cached.
@@ -24,8 +26,9 @@ daily); price and node are live tip state and never cached.
   btc-dashboard --from https://pi.local/btc/snapshot.json --ask "what changed?"
   btc-dashboard --json > snap.json && btc-dashboard --from snap.json
 
-the LLM never runs server-side: --ask reads ANTHROPIC_API_KEY on THIS machine
+the LLM never runs server-side: --ask reads the provider's key on THIS machine
 and sends the snapshot from here. A snapshot service serves raw JSON only.
+providers: anthropic (default), openai, deepseek, openrouter, ollama (local).
 
 exit codes:
   0  ok        1  no source available        2  bad usage / analyst failed
@@ -57,7 +60,11 @@ def parse_args(argv=None):
         help="print the analyst's context block and exit (no API call)",
     )
     p.add_argument("--db", help="warehouse path (default: ~/data/market.duckdb)")
-    p.add_argument("--model", help="model id for --ask")
+    p.add_argument(
+        "--provider",
+        help="LLM provider for --ask (a 'provider/model' prefix on --model wins)",
+    )
+    p.add_argument("--model", help="model id for --ask, optionally 'provider/model'")
     p.add_argument(
         "--effort",
         choices=("low", "medium", "high", "xhigh", "max"),
@@ -102,7 +109,8 @@ def main(argv=None) -> int:
             return 2
 
     cfg = Config.from_env(
-        db_path=args.db, model=args.model, effort=args.effort, timeout=args.timeout,
+        db_path=args.db, provider=args.provider, model=args.model,
+        effort=args.effort, timeout=args.timeout,
         # 0 is a meaningful value here (cache disabled), so it is passed through
         # explicitly rather than filtered out as falsy by Config.replace.
         cache_ttl=args.cache_ttl if args.cache_ttl is not None else None,
@@ -141,7 +149,7 @@ def main(argv=None) -> int:
             return 2
         print(f"\nANALYSIS\n{'─' * 60}\n{result.text}")
         print(
-            f"\n[{result.model} · {result.input_tokens} in / "
+            f"\n[{result.provider}/{result.model} · {result.input_tokens} in / "
             f"{result.output_tokens} out]",
             file=sys.stderr,
         )

@@ -386,41 +386,45 @@ class TestCachePathFollowsXDG:
 
 
 class TestEnvFileLookup:
-    """The key file is NOT disposable, so the pre-XDG path stays readable."""
+    """The key file is NOT disposable, so the pre-XDG path stays readable.
+
+    Lives with the providers now: each provider reads its own key, so the
+    lookup could no longer be Anthropic-specific.
+    """
 
     def test_prefers_xdg_config_but_falls_back(self, monkeypatch, tmp_path):
-        from btc_dashboard import analyst
+        from btc_dashboard import providers
         monkeypatch.delenv("BTC_DASHBOARD_ENV", raising=False)
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
-        monkeypatch.setattr(analyst.Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setattr(providers.Path, "home", staticmethod(lambda: tmp_path))
 
-        paths = analyst._env_file_candidates()
+        paths = providers._env_files(None)
         assert paths[0] == tmp_path / "cfg" / "btc_dashboard" / "env"
         assert paths[1] == tmp_path / ".btc_dashboard" / "env"
 
     def test_explicit_path_wins_outright(self, monkeypatch, tmp_path):
-        from btc_dashboard import analyst
+        from btc_dashboard import providers
         monkeypatch.setenv("BTC_DASHBOARD_ENV", str(tmp_path / "only"))
-        assert analyst._env_file_candidates() == [tmp_path / "only"]
+        assert providers._env_files(None) == [tmp_path / "only"]
 
     def test_key_is_read_from_the_legacy_location(self, monkeypatch, tmp_path):
-        from btc_dashboard import analyst
+        from btc_dashboard import providers
         monkeypatch.delenv("BTC_DASHBOARD_ENV", raising=False)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
-        monkeypatch.setattr(analyst.Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setattr(providers.Path, "home", staticmethod(lambda: tmp_path))
 
         legacy = tmp_path / ".btc_dashboard" / "env"
         legacy.parent.mkdir(parents=True)
         legacy.write_text("ANTHROPIC_API_KEY=sk-ant-legacy\n")
-        assert analyst._api_key() == "sk-ant-legacy"
+        assert providers.api_key(providers.PROVIDERS["anthropic"]) == "sk-ant-legacy"
 
     def test_xdg_location_takes_precedence(self, monkeypatch, tmp_path):
-        from btc_dashboard import analyst
+        from btc_dashboard import providers
         monkeypatch.delenv("BTC_DASHBOARD_ENV", raising=False)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
-        monkeypatch.setattr(analyst.Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setattr(providers.Path, "home", staticmethod(lambda: tmp_path))
 
         for path, key in (
             (tmp_path / "cfg" / "btc_dashboard" / "env", "sk-ant-new"),
@@ -428,4 +432,4 @@ class TestEnvFileLookup:
         ):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(f"ANTHROPIC_API_KEY={key}\n")
-        assert analyst._api_key() == "sk-ant-new"
+        assert providers.api_key(providers.PROVIDERS["anthropic"]) == "sk-ant-new"

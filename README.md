@@ -2,8 +2,9 @@
 
 BTC-focused analytics. Collects live network state, deep on-chain history, spot
 price against its 200-day SMA, and U.S. spot ETF flows into a **single JSON
-snapshot**, renders it as a terminal panel, and — only when you ask — answers ad-hoc
-questions about it through Claude, using credentials on your own machine.
+snapshot**, renders it as a terminal panel, and — only when you ask — answers
+ad-hoc questions about it through the LLM provider of your choice, using
+credentials on your own machine.
 
 ```
 $ btc-dashboard
@@ -50,7 +51,7 @@ nothing re-fetches a source:
        ┌─ price      (CoinGecko → Binance)
        ├─ node       (bitcoin-cli)                        ┌─► render  → terminal
 sources┤                                    ├─► snapshot ─┼─► JSON    → --json / service
-       ├─ warehouse  (DuckDB, read-only)                  └─► analyst → Claude  [--ask only]
+       ├─ warehouse  (DuckDB, read-only)                  └─► analyst → LLM    [--ask only]
        └─ flows      (Farside + cache)
 ```
 
@@ -150,7 +151,7 @@ btc-dashboard                          # full panel
 btc-dashboard --json                   # the snapshot, for piping
 btc-dashboard --only flows,price       # subset
 btc-dashboard --context                # what the analyst would be told (no API call)
-btc-dashboard --ask "QUESTION"         # send the snapshot to Claude (local key, opt-in)
+btc-dashboard --ask "QUESTION"         # send the snapshot to an LLM (local key, opt-in)
 btc-dashboard --from URL|PATH|-        # ingest a snapshot instead of collecting one
 ```
 
@@ -165,7 +166,8 @@ see [Credential boundary](#credential-boundary-the-llm-is-client-side-only).
 | `--ask Q` | Run the analyst over the snapshot |
 | `--context` | Print the analyst's fact list and exit — use this to debug what it sees |
 | `--db PATH` | Warehouse path |
-| `--model ID` | Model for `--ask` |
+| `--provider P` | LLM provider for `--ask` (`anthropic`, `openai`, `deepseek`, `openrouter`, `ollama`) |
+| `--model ID` | Model for `--ask`, optionally `provider/model` |
 | `--effort L` | `low`/`medium`/`high`/`xhigh`/`max` (default `high`) |
 | `--refresh` | Bypass the cache and re-collect |
 | `--cache-ttl N` | Cache lifetime in seconds (default 3600; `0` disables) |
@@ -181,11 +183,12 @@ failing never costs you the panel — it prints first.
 | `BTC_DASHBOARD_DB` | `~/data/market.duckdb` | Warehouse path (falls back to `MARKET_WAREHOUSE_DB`) |
 | `BTC_DASHBOARD_BITCOIN_CLI` | `bitcoin-cli` | Path to the Core CLI |
 | `BTC_DASHBOARD_CACHE` | `~/.cache/btc_dashboard` | Cache directory (honours `XDG_CACHE_HOME`) |
-| `BTC_DASHBOARD_MODEL` | `claude-opus-5` | Analyst model |
+| `BTC_DASHBOARD_PROVIDER` | `anthropic` | Analyst provider |
+| `BTC_DASHBOARD_MODEL` | provider's default | Analyst model, optionally `provider/model` |
 | `BTC_DASHBOARD_EFFORT` | `high` | Analyst reasoning effort |
 | `BTC_DASHBOARD_TIMEOUT` | `20` | Per-source network timeout (s) |
 | `BTC_DASHBOARD_CACHE_TTL` | `3600` | Cache lifetime for cached sources (s) |
-| `ANTHROPIC_API_KEY` | — | Required for `--ask` |
+| `ANTHROPIC_API_KEY` etc. | — | The selected provider's key; required for `--ask` |
 | `BTC_DASHBOARD_ENV` | `~/.config/btc_dashboard/env` | Env file read when the key isn't exported (honours `XDG_CONFIG_HOME`) |
 
 A scheduled run starts without a login shell, so nothing from your profile is
@@ -310,6 +313,32 @@ per file, and this tool opens it `read_only=True` everywhere — that is what
 keeps it from ever contending with the writer. Nothing here writes, and nothing
 here should.
 
+### Choosing a provider
+
+`--ask` is the only thing that contacts an LLM, and the provider is yours to
+pick. `anthropic` is the default; `openai`, `deepseek` and `openrouter` speak
+the OpenAI chat-completions shape; `ollama` runs locally and needs no key.
+
+```bash
+btc-dashboard --ask "..."                                   # anthropic default
+btc-dashboard --ask "..." --model deepseek/deepseek-chat    # provider in the id
+btc-dashboard --ask "..." --provider ollama --model llama3  # local, no key
+```
+
+A `provider/` prefix on `--model` beats `--provider`, so `BTC_DASHBOARD_MODEL`
+can carry both in one variable for a scheduled run. Each provider reads its own
+key (`ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, …) from the environment or the
+env file.
+
+**There is no config-level default model.** An unset model means "use the
+chosen provider's default" — a shared default would be silently applied to
+whichever provider was selected, so `--provider openai` would have requested an
+Anthropic model id from OpenAI. Providers without a stable default (OpenAI,
+OpenRouter) ask you to name one rather than guessing at an id that moves.
+
+Only Anthropic receives `--effort`; the OpenAI-shaped path never sends it, and
+`max_tokens` is omitted where a provider rejects it.
+
 ## Credential boundary: the LLM is client-side only
 
 **The analyst never runs server-side.** This is the load-bearing rule of the
@@ -325,9 +354,11 @@ design, not an implementation detail:
 - The service **collects and serves JSON, nothing else.** It holds no
   `ANTHROPIC_API_KEY`, imports no model client, and makes no outbound LLM call.
   There is no credential on it to steal and no way to make it spend yours.
-- **`--ask` is opt-in and always local.** It reads `ANTHROPIC_API_KEY` on the
-  machine you run it from and uses the model and effort configured *there*. Two
-  people can point at the same service and use different models.
+- **`--ask` is opt-in and always local.** It reads the selected provider's key
+  on the machine you run it from, and uses the provider, model and effort
+  configured *there*. Two people can point at the same service and use
+  different providers entirely — including a local one, where the snapshot
+  never leaves the machine that collected it.
 - `snapshot.py` and every source are LLM-free by construction; `analyst.py` is
   the only module that touches the API, and a service must not import it.
 
@@ -418,7 +449,7 @@ moves, so no single hashrate metric can confirm a bottom on its own.
 .venv/bin/pytest
 ```
 
-190 tests. The warehouse tests run against a real DuckDB file built per-test
+224 tests. The warehouse tests run against a real DuckDB file built per-test
 rather than a mock — the signal definitions are the part most worth pinning
 down, and a mock would only assert that we called ourselves.
 

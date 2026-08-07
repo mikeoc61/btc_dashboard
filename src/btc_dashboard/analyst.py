@@ -1,10 +1,11 @@
-"""Ad-hoc analysis over a snapshot, via the Claude API.
+"""Ad-hoc analysis over a snapshot.
 
 **This module is client-side only, and opt-in.** It runs when the operator
-passes `--ask`, on their machine, under their own `ANTHROPIC_API_KEY` and their
-own model choice. A deployed snapshot service must never import it: the data
-plane serves raw JSON and holds no credential, so it cannot be induced to spend
-one. Nothing in `snapshot.py` or the sources reaches an LLM.
+passes `--ask`, on their machine, under their own credential and their own
+choice of provider and model — see `providers.py`. A deployed snapshot service
+must never import it: the data plane serves raw JSON and holds no credential,
+so it cannot be induced to spend one. Nothing in `snapshot.py` or the sources
+reaches an LLM.
 
 The model sees a flat list of facts built from the snapshot — never raw JSON.
 Each source phrases its own `context_lines`, which is where the caveats live:
@@ -19,14 +20,10 @@ is unreachable will say what it cannot see.
 """
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
-from pathlib import Path
 
+from . import providers
 from . import snapshot as snap
-from .config import default_config_dir
-
-MAX_TOKENS = 16000
 
 SYSTEM = (
     "You are a Bitcoin market analyst working for a long-horizon investor who "
@@ -61,6 +58,7 @@ class AnalystResult:
     text: str | None
     error: str | None = None
     model: str | None = None
+    provider: str | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
 
@@ -143,104 +141,25 @@ def build_context(snapshot: dict) -> str:
     return "\n".join(lines)
 
 
-def _api_key() -> str | None:
-    """ANTHROPIC_API_KEY from the environment, else from an env file.
-
-    The file fallback exists because a scheduled run (cron, systemd) starts
-    without a login shell and so without anything exported from a profile. The
-    path is this tool's own — deliberately not another application's env file,
-    so nothing here depends on an unrelated project being installed.
-    """
-    key = os.environ.get("ANTHROPIC_API_KEY")
-    if key:
-        return key
-    for path in _env_file_candidates():
-        try:
-            lines = path.read_text().splitlines()
-        except OSError:
-            continue
-        for line in lines:
-            line = line.strip()
-            if line.startswith("ANTHROPIC_API_KEY="):
-                value = line.split("=", 1)[1].strip().strip("'\"")
-                if value:
-                    # The SDK reads the environment, so publish it there rather
-                    # than passing it separately.
-                    os.environ["ANTHROPIC_API_KEY"] = value
-                    return value
-    return None
-
-
-def _env_file_candidates() -> list[Path]:
-    """Where to look for the env file, in order.
-
-    An explicit `BTC_DASHBOARD_ENV` wins outright. Otherwise the XDG config
-    location is preferred, with the pre-XDG path still read so an existing
-    install keeps working — this file may hold the operator's API key, and
-    silently ceasing to find it is a bad way to learn about a path change.
-    """
-    explicit = os.environ.get("BTC_DASHBOARD_ENV")
-    if explicit:
-        return [Path(explicit)]
-    return [
-        default_config_dir() / "env",
-        Path.home() / ".btc_dashboard" / "env",
-    ]
-
-
 def ask(snapshot: dict, question: str, cfg) -> AnalystResult:
+    """Ask the configured provider a question about the snapshot."""
     try:
-        import anthropic
-    except ImportError:
-        return AnalystResult(None, "anthropic SDK not installed — pip install anthropic")
+        provider, model = providers.resolve(cfg.model, getattr(cfg, "provider", None))
+    except providers.ProviderError as e:
+        return AnalystResult(None, str(e))
 
-    if not _api_key():
-        return AnalystResult(
-            None,
-            "ANTHROPIC_API_KEY is not set — export it, or put it in "
-            f"{default_config_dir() / 'env'}",
-        )
-
-    context = build_context(snapshot)
-    prompt = f"Current BTC data:\n{context}\n\nQuestion: {question}"
-
-    client = anthropic.Anthropic()
+    prompt = f"Current BTC data:\n{build_context(snapshot)}\n\nQuestion: {question}"
     try:
-        resp = client.messages.create(
-            model=cfg.model,
-            # Thinking is on by default on Opus 5 and max_tokens caps thinking
-            # plus response text together, so this is sized well above the
-            # answer length to keep a long deliberation from truncating it.
-            max_tokens=MAX_TOKENS,
-            output_config={"effort": cfg.effort},
-            system=SYSTEM,
-            messages=[{"role": "user", "content": prompt}],
+        done = providers.complete(
+            provider, model, SYSTEM, prompt, effort=cfg.effort,
         )
-    except anthropic.AuthenticationError:
-        return AnalystResult(None, "ANTHROPIC_API_KEY was rejected")
-    except anthropic.NotFoundError:
-        return AnalystResult(None, f"unknown model: {cfg.model}")
-    except anthropic.RateLimitError as e:
-        retry = e.response.headers.get("retry-after", "?") if e.response else "?"
-        return AnalystResult(None, f"rate limited — retry after {retry}s")
-    except anthropic.APIStatusError as e:
-        return AnalystResult(None, f"API error {e.status_code}: {e.message}")
-    except anthropic.APIConnectionError:
-        return AnalystResult(None, "could not reach the Claude API")
-
-    # Check before reading content: a refusal returns HTTP 200 with content
-    # empty or partial, so indexing straight into content[0] would break here.
-    if resp.stop_reason == "refusal":
-        cat = getattr(resp.stop_details, "category", None) if resp.stop_details else None
-        return AnalystResult(None, f"request declined by safety classifiers ({cat})")
-
-    text = "\n".join(b.text for b in resp.content if b.type == "text").strip()
-    if not text:
-        return AnalystResult(None, f"empty response (stop_reason={resp.stop_reason})")
+    except providers.ProviderError as e:
+        return AnalystResult(None, str(e))
 
     return AnalystResult(
-        text=text,
-        model=resp.model,
-        input_tokens=resp.usage.input_tokens,
-        output_tokens=resp.usage.output_tokens,
+        text=done.text,
+        model=done.model,
+        provider=provider.name,
+        input_tokens=done.input_tokens,
+        output_tokens=done.output_tokens,
     )
