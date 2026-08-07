@@ -32,6 +32,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import config
+
 # LLM calls are slow and are not the per-source network fetches, so they do not
 # share the collection timeout.
 TIMEOUT = 120
@@ -133,33 +135,11 @@ def api_key(provider: Provider, env_file: Path | None = None) -> str | None:
     """
     if provider.env_key is None:
         return None
-    key = os.environ.get(provider.env_key)
-    if key:
-        return key
-    for path in _env_files(env_file):
-        try:
-            lines = path.read_text().splitlines()
-        except OSError:
-            continue
-        for line in lines:
-            line = line.strip()
-            if line.startswith(provider.env_key + "="):
-                value = line.split("=", 1)[1].strip().strip("'\"")
-                if value:
-                    os.environ[provider.env_key] = value
-                    return value
-    return None
-
-
-def _env_files(explicit: Path | None) -> list[Path]:
-    if explicit:
-        return [explicit]
-    from .config import default_config_dir
-
-    override = os.environ.get("BTC_DASHBOARD_ENV")
-    if override:
-        return [Path(override)]
-    return [default_config_dir() / "env", Path.home() / ".btc_dashboard" / "env"]
+    # Idempotent, and a no-op for anything already in the real environment.
+    # Called here too so a library caller that never builds a Config still
+    # picks the file up.
+    config.load_env_file(env_file)
+    return os.environ.get(provider.env_key) or None
 
 
 @dataclass(frozen=True)
@@ -285,11 +265,9 @@ def _openai(provider, model, system, prompt, timeout) -> Completion:
 
 
 def _missing_key(provider: Provider) -> str:
-    from .config import default_config_dir
-
     return (
         f"{provider.env_key} is not set — export it, or put it in "
-        f"{default_config_dir() / 'env'}"
+        f"{config.default_config_dir() / 'env'}"
     )
 
 

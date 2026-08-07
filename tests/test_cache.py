@@ -393,26 +393,26 @@ class TestEnvFileLookup:
     """
 
     def test_prefers_xdg_config_but_falls_back(self, monkeypatch, tmp_path):
-        from btc_dashboard import providers
+        from btc_dashboard import config
         monkeypatch.delenv("BTC_DASHBOARD_ENV", raising=False)
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
-        monkeypatch.setattr(providers.Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setattr(config.Path, "home", staticmethod(lambda: tmp_path))
 
-        paths = providers._env_files(None)
+        paths = config.env_file_candidates()
         assert paths[0] == tmp_path / "cfg" / "btc_dashboard" / "env"
         assert paths[1] == tmp_path / ".btc_dashboard" / "env"
 
     def test_explicit_path_wins_outright(self, monkeypatch, tmp_path):
-        from btc_dashboard import providers
+        from btc_dashboard import config
         monkeypatch.setenv("BTC_DASHBOARD_ENV", str(tmp_path / "only"))
-        assert providers._env_files(None) == [tmp_path / "only"]
+        assert config.env_file_candidates() == [tmp_path / "only"]
 
     def test_key_is_read_from_the_legacy_location(self, monkeypatch, tmp_path):
         from btc_dashboard import providers
         monkeypatch.delenv("BTC_DASHBOARD_ENV", raising=False)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
-        monkeypatch.setattr(providers.Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setattr(providers.config.Path, "home", staticmethod(lambda: tmp_path))
 
         legacy = tmp_path / ".btc_dashboard" / "env"
         legacy.parent.mkdir(parents=True)
@@ -424,7 +424,7 @@ class TestEnvFileLookup:
         monkeypatch.delenv("BTC_DASHBOARD_ENV", raising=False)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
-        monkeypatch.setattr(providers.Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setattr(providers.config.Path, "home", staticmethod(lambda: tmp_path))
 
         for path, key in (
             (tmp_path / "cfg" / "btc_dashboard" / "env", "sk-ant-new"),

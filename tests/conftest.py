@@ -8,6 +8,7 @@ machine where a cache happens to exist.
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -17,6 +18,21 @@ import pytest
 # the import path by default. Adding it here lets them be unit-tested without
 # turning every script into a package.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+
+
+@pytest.fixture(autouse=True)
+def restore_environment():
+    """Undo direct writes to os.environ made by the code under test.
+
+    `config.load_env_file` sets variables with `os.environ.setdefault`, which
+    is right in production — one process, loaded once — but monkeypatch only
+    reverts what monkeypatch itself changed, so without this one test's env
+    file leaks into the next and the failure looks like a bug in the code.
+    """
+    saved = os.environ.copy()
+    yield
+    os.environ.clear()
+    os.environ.update(saved)
 
 
 @pytest.fixture(autouse=True)

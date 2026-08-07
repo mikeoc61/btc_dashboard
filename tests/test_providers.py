@@ -246,3 +246,82 @@ class TestDefaultModelBelongsToTheProvider:
         cfg = Config.from_env(provider="ollama", model="llama3")
         p, m = providers.resolve(cfg.model, cfg.provider)
         assert (p.name, m) == ("ollama", "llama3")
+
+
+class TestEnvFileSetsAnyVariable:
+    """The file is named `env` and holds KEY=value lines, so it must behave
+    like one.
+
+    Regression: it was only scanned for API keys, so
+    `BTC_DASHBOARD_MODEL=openai/...` in it was silently ignored while the
+    OPENAI_API_KEY line beside it worked — the tool quietly fell back to the
+    Anthropic default.
+    """
+
+    def _file(self, monkeypatch, tmp_path, text):
+        f = tmp_path / "env"
+        f.write_text(text)
+        monkeypatch.setenv("BTC_DASHBOARD_ENV", str(f))
+        return f
+
+    def test_model_from_the_env_file_is_used(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("BTC_DASHBOARD_MODEL", raising=False)
+        self._file(monkeypatch, tmp_path, "BTC_DASHBOARD_MODEL=openai/gpt-5.6-luna\n")
+        cfg = Config.from_env()
+        p, m = providers.resolve(cfg.model, cfg.provider)
+        assert (p.name, m) == ("openai", "gpt-5.6-luna")
+
+    def test_any_setting_is_read_not_just_keys(self, monkeypatch, tmp_path):
+        for var in ("BTC_DASHBOARD_EFFORT", "BTC_DASHBOARD_CACHE_TTL",
+                    "BTC_DASHBOARD_PROVIDER"):
+            monkeypatch.delenv(var, raising=False)
+        self._file(monkeypatch, tmp_path,
+                   "BTC_DASHBOARD_EFFORT=low\nBTC_DASHBOARD_CACHE_TTL=60\n"
+                   "BTC_DASHBOARD_PROVIDER=deepseek\n")
+        cfg = Config.from_env()
+        assert (cfg.effort, cfg.cache_ttl, cfg.provider) == ("low", 60, "deepseek")
+
+    def test_the_real_environment_wins(self, monkeypatch, tmp_path):
+        """An explicit export or `VAR=x btc-dashboard` must beat the file."""
+        self._file(monkeypatch, tmp_path, "BTC_DASHBOARD_MODEL=from-file\n")
+        monkeypatch.setenv("BTC_DASHBOARD_MODEL", "from-env")
+        assert Config.from_env().model == "from-env"
+
+    def test_keys_still_work_alongside_settings(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+        self._file(monkeypatch, tmp_path,
+                   "BTC_DASHBOARD_MODEL=deepseek/deepseek-chat\nDEEPSEEK_API_KEY=k\n")
+        assert providers.api_key(providers.PROVIDERS["deepseek"]) == "k"
+        assert Config.from_env().model == "deepseek/deepseek-chat"
+
+    @pytest.mark.parametrize("line,key,value", [
+        ("export BTC_DASHBOARD_EFFORT=low", "BTC_DASHBOARD_EFFORT", "low"),
+        ("BTC_DASHBOARD_EFFORT='low'", "BTC_DASHBOARD_EFFORT", "low"),
+        ('BTC_DASHBOARD_EFFORT="low"', "BTC_DASHBOARD_EFFORT", "low"),
+        ("  BTC_DASHBOARD_EFFORT = low  ", "BTC_DASHBOARD_EFFORT", "low"),
+    ])
+    def test_tolerates_common_shell_spellings(self, monkeypatch, tmp_path,
+                                              line, key, value):
+        monkeypatch.delenv(key, raising=False)
+        self._file(monkeypatch, tmp_path, line + "\n")
+        from btc_dashboard import config
+        assert config.load_env_file().get(key) == value
+
+    @pytest.mark.parametrize("junk", ["", "   ", "# a comment", "no-equals-here"])
+    def test_blanks_comments_and_junk_are_skipped(self, monkeypatch, tmp_path, junk):
+        self._file(monkeypatch, tmp_path, junk + "\nBTC_DASHBOARD_EFFORT=low\n")
+        monkeypatch.delenv("BTC_DASHBOARD_EFFORT", raising=False)
+        from btc_dashboard import config
+        assert config.load_env_file()["BTC_DASHBOARD_EFFORT"] == "low"
+
+    def test_the_file_cannot_redirect_which_file_is_read(self, monkeypatch, tmp_path):
+        """BTC_DASHBOARD_ENV selects the file, so setting it from inside would
+        be circular."""
+        self._file(monkeypatch, tmp_path, "BTC_DASHBOARD_ENV=/somewhere/else\n")
+        from btc_dashboard import config
+        assert "BTC_DASHBOARD_ENV" not in config.load_env_file()
+
+    def test_a_missing_file_is_not_an_error(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("BTC_DASHBOARD_ENV", str(tmp_path / "absent"))
+        from btc_dashboard import config
+        assert config.load_env_file() == {}

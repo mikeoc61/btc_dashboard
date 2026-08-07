@@ -189,10 +189,28 @@ failing never costs you the panel — it prints first.
 | `BTC_DASHBOARD_TIMEOUT` | `20` | Per-source network timeout (s) |
 | `BTC_DASHBOARD_CACHE_TTL` | `3600` | Cache lifetime for cached sources (s) |
 | `ANTHROPIC_API_KEY` etc. | — | The selected provider's key; required for `--ask` |
-| `BTC_DASHBOARD_ENV` | `~/.config/btc_dashboard/env` | Env file read when the key isn't exported (honours `XDG_CONFIG_HOME`) |
+| `BTC_DASHBOARD_ENV` | `~/.config/btc_dashboard/env` | Path to the env file (honours `XDG_CONFIG_HOME`) |
+
+### The env file
 
 A scheduled run starts without a login shell, so nothing from your profile is
-exported. Put the key in the env file for that case:
+exported. The env file covers that case, and it sets **any** variable in the
+table above — not only API keys:
+
+```
+# ~/.config/btc_dashboard/env
+BTC_DASHBOARD_PROVIDER=openai
+BTC_DASHBOARD_MODEL=openai/gpt-5.6-luna
+BTC_DASHBOARD_EFFORT=medium
+OPENAI_API_KEY=sk-...
+```
+
+A variable already set in the real environment wins, so an explicit `export`
+or a one-off `BTC_DASHBOARD_MODEL=x btc-dashboard` still overrides the file.
+`export` prefixes, quotes, comments and blank lines are all tolerated; nothing
+in the file is executed, so it can only set variables.
+
+Create it with restrictive permissions, since it may hold a key:
 
 ```bash
 mkdir -p ~/.config/btc_dashboard && chmod 700 ~/.config/btc_dashboard
@@ -449,7 +467,7 @@ moves, so no single hashrate metric can confirm a bottom on its own.
 .venv/bin/pytest
 ```
 
-224 tests. The warehouse tests run against a real DuckDB file built per-test
+238 tests. The warehouse tests run against a real DuckDB file built per-test
 rather than a mock — the signal definitions are the part most worth pinning
 down, and a mock would only assert that we called ourselves.
 

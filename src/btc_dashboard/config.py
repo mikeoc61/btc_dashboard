@@ -47,6 +47,63 @@ def default_config_dir() -> Path:
     return (Path(base) if base else Path.home() / ".config") / APP_NAME
 
 
+def env_file_candidates(explicit: str | Path | None = None) -> list[Path]:
+    """Where the env file may live, in order.
+
+    `BTC_DASHBOARD_ENV` wins outright. Otherwise the XDG config location is
+    preferred, with the pre-XDG path still read so an install predating the
+    move keeps working — that file may hold an API key, and silently ceasing
+    to find it is a bad way to learn about a path change.
+    """
+    if explicit:
+        return [Path(explicit)]
+    override = os.environ.get("BTC_DASHBOARD_ENV")
+    if override:
+        return [Path(override)]
+    return [default_config_dir() / "env", Path.home() / ".btc_dashboard" / "env"]
+
+
+def load_env_file(explicit: str | Path | None = None) -> dict[str, str]:
+    """Read `KEY=value` lines from the env file into the process environment.
+
+    The file is named `env` and holds `KEY=value` lines, so it should behave
+    like one: it sets *any* variable, not only API keys. It previously fed
+    only the credential lookup, which meant a `BTC_DASHBOARD_MODEL=` line in
+    it was silently ignored while the key beside it worked.
+
+    A variable already present in the real environment is left alone, so an
+    explicit `export` or a one-off `VAR=x btc-dashboard` still wins over the
+    file. Parsing is deliberately dumb — split on the first `=`, strip one
+    layer of quotes, skip blanks, comments and anything malformed. Nothing is
+    executed, so the file cannot do more than set variables.
+    """
+    loaded: dict[str, str] = {}
+    for path in env_file_candidates(explicit):
+        try:
+            text = path.read_text()
+        except OSError:
+            continue
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):].lstrip()
+            key, sep, value = line.partition("=")
+            key = key.strip()
+            if not sep or not key:
+                continue
+            # Setting this from inside the file it selects would be circular.
+            if key == "BTC_DASHBOARD_ENV":
+                continue
+            value = value.strip().strip("'\"")
+            loaded[key] = value
+            os.environ.setdefault(key, value)
+        # First readable file wins; the second path is a fallback, not a merge.
+        break
+    return loaded
+
+
 @dataclass(frozen=True)
 class Config:
     """Resolved paths and settings for one invocation."""
@@ -62,6 +119,9 @@ class Config:
 
     @classmethod
     def from_env(cls, **overrides) -> "Config":
+        # Fold the env file in first so its settings are visible below. Real
+        # environment variables are left untouched, so this only fills gaps.
+        load_env_file()
         # The warehouse file is shared with the ingester that writes it, so its
         # own env var is honoured as a fallback — a host that has already set
         # MARKET_WAREHOUSE_DB shouldn't need to set a second variable naming
