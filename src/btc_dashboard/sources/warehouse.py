@@ -42,6 +42,15 @@ VOL_WINDOW_DAYS = 730
 HASHRATE_WINDOW_DAYS = 90
 SMA_WINDOWS = (20, 50, 200)
 SMA_WINDOW = SMA_WINDOWS[-1]
+
+# Realised volatility windows, short to long. The long end gives the term
+# structure: short sitting below long is compression.
+VOL_WINDOWS = (7, 30, 90, 180, 360)
+# Bitcoin trades every day, so a year is 365 periods. Using 252 (an equities
+# convention) understates annualised vol by ~17% — enough to move a reading
+# across a published threshold, which is exactly how two correct calculations
+# come to disagree. The figure is labelled in the output for that reason.
+VOL_ANNUALISATION = 365
 APATHY_MAX = 1.0
 # A percentile threshold fires (100-N)% of days by construction, so 95 means
 # roughly 18 days a year rather than ~36 at 90 — rare enough that surfacing it
@@ -231,6 +240,66 @@ def sma200(con) -> tuple[float | None, float | None]:
     return moving_average(con, SMA_WINDOW)
 
 
+def realized_vol(con, days: int) -> dict:
+    """Close-to-close realised volatility over `days`, and its percentile.
+
+    Returns the annualised level *and* where it sits in the full history,
+    because the two answer different questions and only one of them travels.
+    An absolute level depends on the annualisation convention, the price
+    source, and the close time; a percentile does not. Comparing a level
+    against someone else's published threshold silently compares conventions
+    as much as markets.
+
+    Close-only by necessity: the warehouse has no OHLC, so the range-based
+    estimators (Parkinson, Garman-Klass) that are several times more efficient
+    per observation are unavailable. This is a noisier estimate than one built
+    from intraday highs and lows.
+    """
+    w = int(days)
+    eps = "1e-9 * greatest(abs(latest.vol), 1)"
+    row = con.execute(
+        f"""
+        WITH r AS (
+            SELECT date, ln(close / lag(close) OVER (ORDER BY date)) AS lr
+            FROM btc WHERE close IS NOT NULL
+        ),
+        s AS (SELECT date, lr FROM r WHERE lr IS NOT NULL),
+        v AS (
+            SELECT date,
+                   stddev_samp(lr) OVER (
+                       ORDER BY date ROWS BETWEEN {w - 1} PRECEDING AND CURRENT ROW
+                   ) * sqrt({VOL_ANNUALISATION}) * 100 AS vol,
+                   count(lr) OVER (
+                       ORDER BY date ROWS BETWEEN {w - 1} PRECEDING AND CURRENT ROW
+                   ) AS n
+            FROM s
+        ),
+        fw AS (SELECT date, vol FROM v WHERE n >= {w} AND vol IS NOT NULL),
+        latest AS (SELECT vol FROM fw ORDER BY date DESC LIMIT 1)
+        SELECT (SELECT count(*) FROM fw),
+               (SELECT vol FROM latest),
+               (SELECT count(*) FROM fw, latest WHERE fw.vol < latest.vol - {eps}),
+               (SELECT count(*) FROM fw, latest WHERE abs(fw.vol - latest.vol) <= {eps})
+        """
+    ).fetchone()
+
+    out = {"days": w, "covered": False, "value": None,
+           "percentile": None, "days_available": 0}
+    if not row:
+        return out
+    n, value, below, ties = row
+    out["days_available"] = n or 0
+    if not n or value is None:
+        return out
+    out["covered"] = True
+    out["value"] = round(value, 1)
+    # Mid-ranked, like the other percentiles here, so a value tied with its
+    # neighbours reads as the middle rather than as an extreme.
+    if n >= MIN_WINDOW_ROWS:
+        out["percentile"] = round(100.0 * (below + ties / 2.0) / n, 1)
+    return out
+
+
 def latest_close(con) -> float | None:
     """Most recent daily close from the `btc` table.
 
@@ -287,6 +356,16 @@ def collect(cfg) -> SourceResult:
             })
         primary = next(s for s in smas if s["days"] == SMA_WINDOW)
         sma, sma_pct = primary["value"], primary["pct"]
+
+        vol = {
+            "annualisation_days": VOL_ANNUALISATION,
+            "windows": [
+                _try(realized_vol, con, w)
+                or {"days": w, "covered": False, "value": None,
+                    "percentile": None, "days_available": 0}
+                for w in VOL_WINDOWS
+            ],
+        }
         data = {
             "date": date.isoformat(),
             "onchain": {
@@ -317,6 +396,7 @@ def collect(cfg) -> SourceResult:
             },
             "close": _try(latest_close, con),
             "smas": smas,
+            "volatility": vol,
             # Flat aliases for the primary window, kept for schema continuity.
             "sma200": sma,
             "sma200_pct": sma_pct,
@@ -431,6 +511,25 @@ def render_lines(d: dict) -> list[str]:
     if parts:
         out.append("SMA " + " | ".join(parts))
 
+    vol = d.get("volatility") or {}
+    vparts = []
+    for w in vol.get("windows") or []:
+        if not isinstance(w, dict):
+            continue
+        if not w.get("covered"):
+            vparts.append(f"{fmt(w.get('days'))}d n/a")
+            continue
+        pct = w.get("percentile")
+        tail = f" ({_ordinal(pct)})" if pct is not None else ""
+        vparts.append(f"{fmt(w.get('days'))}d {fmt(w.get('value'), '.0f')}%{tail}")
+    if vparts:
+        # The annualisation is named because the level is meaningless without
+        # it: the same series on a 252-day convention reads ~17% lower, which
+        # is enough to put a reading the wrong side of a published threshold.
+        out.append(
+            f"vol (ann √{fmt(vol.get('annualisation_days'))}): " + " | ".join(vparts)
+        )
+
     # Described as that day's block pace, not as a "retarget projection". The
     # node block already carries a cumulative projection computed over the full
     # difficulty period; showing a second, far noisier number under the same
@@ -488,6 +587,35 @@ def context_lines(d: dict) -> list[str]:
             f"bear bottoms and at every euphoria peak, so it flags the panic itself, "
             f"not the low, which typically follows days later."
         )
+    vol = d.get("volatility") or {}
+    covered = [w for w in (vol.get("windows") or [])
+               if isinstance(w, dict) and w.get("covered")]
+    if covered:
+        levels = ", ".join(
+            f"{fmt(w.get('days'))}d {fmt(w.get('value'), '.0f')}%"
+            + (f" ({_ordinal(w['percentile'])} pctile of all history)"
+               if w.get("percentile") is not None else "")
+            for w in covered
+        )
+        out.append(
+            f"BTC realised volatility, annualised on a "
+            f"{fmt(vol.get('annualisation_days'))}-day year: {levels}."
+        )
+        out.append(
+            "Volatility describes the SIZE of moves, not their direction. A low "
+            "reading says the next move is more likely to be large than that it "
+            "will be upward, and it is not a bottom signal. Historically both "
+            "very low and very high readings preceded larger moves than mid-range "
+            "ones, while the sign of those moves did not separate."
+        )
+        out.append(
+            "These are close-to-close estimates from daily bars — no intraday "
+            "high/low, so they are noisier than range-based estimators, and the "
+            "level depends on the annualisation convention. Compare the "
+            "percentile rather than the level against any externally published "
+            "volatility threshold."
+        )
+
     if out:
         out.append(
             f"The on-chain day above is {_day_label(d.get('date'))}, a complete day. "

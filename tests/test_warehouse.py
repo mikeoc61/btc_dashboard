@@ -292,3 +292,102 @@ class TestPriceComesFromTheBtcTable:
         lines = warehouse.render_lines(r.data)          # must not raise
         assert any("blks" in line for line in lines)
         assert not any("daily close" in line for line in lines)
+
+
+class TestRealizedVolatility:
+    def _walk(self, n, calm_from=None, sd=0.04, calm_sd=0.005, seed=7):
+        import math, random
+        random.seed(seed)
+        px = [50000.0]
+        for i in range(n - 1):
+            s = calm_sd if (calm_from is not None and i >= calm_from) else sd
+            px.append(px[-1] * math.exp(random.gauss(0, s)))
+        return px
+
+    def test_flat_prices_have_zero_volatility(self, tmp_path):
+        path = _build_db(tmp_path / "flat.duckdb", days=400, close=lambda i: 70000.0)
+        con = _con(path)
+        try:
+            assert warehouse.realized_vol(con, 30)["value"] == pytest.approx(0.0)
+        finally:
+            con.close()
+
+    def test_matches_a_hand_computed_figure(self, tmp_path):
+        """Pin the annualisation: sd of log returns times sqrt(365), as a %."""
+        import math, statistics as st
+        px = self._walk(400)
+        path = _build_db(tmp_path / "w.duckdb", days=400, close=lambda i: px[i])
+        lr = [math.log(px[i] / px[i - 1]) for i in range(1, len(px))]
+        expected = st.stdev(lr[-30:]) * math.sqrt(365) * 100
+
+        con = _con(path)
+        try:
+            assert warehouse.realized_vol(con, 30)["value"] == pytest.approx(
+                expected, abs=0.05
+            )
+        finally:
+            con.close()
+
+    def test_a_252_day_year_would_read_lower(self):
+        """Why the convention is labelled: same series, ~17% lower reading."""
+        import math
+        assert math.sqrt(252) / math.sqrt(365) == pytest.approx(0.831, abs=0.001)
+
+    def test_calm_recent_stretch_ranks_at_a_low_percentile(self, tmp_path):
+        px = self._walk(800, calm_from=650)
+        path = _build_db(tmp_path / "calm.duckdb", days=800, close=lambda i: px[i])
+        con = _con(path)
+        try:
+            v30 = warehouse.realized_vol(con, 30)
+        finally:
+            con.close()
+        assert v30["covered"] and v30["percentile"] < 20
+
+    def test_compression_shows_in_the_term_structure(self, tmp_path):
+        """Short below long is the compression setup the windows exist for."""
+        px = self._walk(800, calm_from=650)
+        path = _build_db(tmp_path / "term.duckdb", days=800, close=lambda i: px[i])
+        con = _con(path)
+        try:
+            short = warehouse.realized_vol(con, 30)["value"]
+            long_ = warehouse.realized_vol(con, 360)["value"]
+        finally:
+            con.close()
+        assert short < long_
+
+    def test_uncovered_window_reports_na_not_a_short_estimate(self, tmp_path):
+        path = _build_db(tmp_path / "short.duckdb", days=100)
+        con = _con(path)
+        try:
+            v = warehouse.realized_vol(con, 360)
+        finally:
+            con.close()
+        assert v["covered"] is False
+        assert v["value"] is None and v["percentile"] is None
+
+    def test_percentile_needs_a_minimum_history(self, tmp_path):
+        """A level can be computed long before its rank means anything."""
+        path = _build_db(tmp_path / "thin.duckdb", days=40)
+        con = _con(path)
+        try:
+            v = warehouse.realized_vol(con, 30)
+        finally:
+            con.close()
+        assert v["covered"] and v["value"] is not None
+        assert v["percentile"] is None
+
+    def test_collect_and_render(self, tmp_path):
+        px = self._walk(800, calm_from=650)
+        path = _build_db(tmp_path / "c.duckdb", days=800, close=lambda i: px[i])
+        r = warehouse.collect(Config.from_env(db_path=path, cache_dir=tmp_path / "cc"))
+
+        assert r.data["volatility"]["annualisation_days"] == 365
+        assert [w["days"] for w in r.data["volatility"]["windows"]] == [7, 30, 90, 180, 360]
+
+        line = next(l for l in warehouse.render_lines(r.data) if l.startswith("vol "))
+        assert "ann √365" in line and "30d" in line
+
+        ctx = " ".join(warehouse.context_lines(r.data))
+        assert "SIZE of moves, not their direction" in ctx
+        assert "not a bottom signal" in ctx
+        assert "close-to-close" in ctx

@@ -25,6 +25,7 @@ ON-CHAIN (last complete UTC day)
   signal: fee/subsidy 26th pctile 2y (7d) | apathy 22d | hashrate -16.0% off 90d high
   daily close $63,860 (warehouse)
   SMA 20d $64,420 -0.6% | 50d $65,020 -1.5% | 200d $71,862 -11.1%
+  vol (ann √365): 7d 16% (3rd) | 30d 28% (7th) | 90d 34% (5th) | 180d 38% (5th) | 360d 43% (5th)
   block pace 127/144 (-11.8%, ±8% day-to-day noise)
 
 ETF FLOWS
@@ -318,6 +319,28 @@ happens roughly one day in twelve by chance. It is therefore rendered as
 computed over the whole difficulty period and is the number to trust for
 direction.
 
+**Volatility is reported as a level *and* a percentile, with the annualisation
+named.** The level is not portable: the same series on a 252-day year reads
+~17% lower, and the price source and close time move it further. So a level
+compared against someone else's published threshold silently compares
+conventions as much as markets — a reading of 28% here and 18% elsewhere can
+be the same market. The percentile travels; the level does not. Both are
+shown, and `ann √365` is printed so a disagreement is diagnosable rather than
+mysterious.
+
+The estimates are close-to-close, because the warehouse holds no OHLC.
+Range-based estimators (Parkinson, Garman-Klass) are several times more
+efficient per observation and are simply unavailable here — worth knowing when
+comparing against a vendor figure. There is no options data either, so this is
+realised volatility only, never implied.
+
+And the caveat that belongs next to the numbers: **volatility describes the
+size of moves, not their direction.** Conditioning next-30d outcomes on the
+current 30d vol quintile gives a U-shape in the *absolute* move — the lowest
+and highest quintiles both precede larger moves than mid-range ones — while
+the signed move barely separates. It is not a bottom indicator, and the
+analyst is told so explicitly.
+
 Absolute and relative thresholds are kept distinct on purpose. A percentile
 recalibrates to the window it measures, so by construction only N% of days can
 sit below the Nth percentile however depressed the regime — it finds a *new low*
@@ -467,7 +490,7 @@ moves, so no single hashrate metric can confirm a bottom on its own.
 .venv/bin/pytest
 ```
 
-238 tests. The warehouse tests run against a real DuckDB file built per-test
+246 tests. The warehouse tests run against a real DuckDB file built per-test
 rather than a mock — the signal definitions are the part most worth pinning
 down, and a mock would only assert that we called ourselves.
 
