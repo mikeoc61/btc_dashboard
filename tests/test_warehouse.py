@@ -341,7 +341,7 @@ class TestRealizedVolatility:
             v30 = warehouse.realized_vol(con, 30)
         finally:
             con.close()
-        assert v30["covered"] and v30["percentile"] < 20
+        assert v30["covered"] and v30["percentile_recent"] < 20
 
     def test_compression_shows_in_the_term_structure(self, tmp_path):
         """Short below long is the compression setup the windows exist for."""
@@ -363,7 +363,8 @@ class TestRealizedVolatility:
         finally:
             con.close()
         assert v["covered"] is False
-        assert v["value"] is None and v["percentile"] is None
+        assert v["value"] is None
+        assert v["percentile_recent"] is None and v["percentile_all"] is None
 
     def test_percentile_needs_a_minimum_history(self, tmp_path):
         """A level can be computed long before its rank means anything."""
@@ -374,7 +375,7 @@ class TestRealizedVolatility:
         finally:
             con.close()
         assert v["covered"] and v["value"] is not None
-        assert v["percentile"] is None
+        assert v["percentile_recent"] is None and v["percentile_all"] is None
 
     def test_collect_and_render(self, tmp_path):
         px = self._walk(800, calm_from=650)
@@ -391,3 +392,57 @@ class TestRealizedVolatility:
         assert "SIZE of moves, not their direction" in ctx
         assert "not a bottom signal" in ctx
         assert "close-to-close" in ctx
+
+
+class TestVolatilityPercentileWindows:
+    """Ranked against two histories, because they disagree materially.
+
+    Bitcoin's volatility fell as the market matured, so ranking today against
+    2014-17 partly measures that decline. On the real series the 360d reading
+    is 5th percentile of all history and 24th of the last two years.
+    """
+
+    def _regime_shift(self, tmp_path, name):
+        """Old era genuinely wild, recent era merely quiet."""
+        import math, random
+        random.seed(11)
+        px = [50000.0]
+        for i in range(1099):
+            sd = 0.012 if i >= 730 else 0.05      # calm recent 2y, wild before
+            px.append(px[-1] * math.exp(random.gauss(0, sd)))
+        return _build_db(tmp_path / name, days=1100, close=lambda i: px[i])
+
+    def test_recent_window_ranks_higher_than_all_history(self, tmp_path):
+        path = self._regime_shift(tmp_path, "shift.duckdb")
+        con = _con(path)
+        try:
+            v = warehouse.realized_vol(con, 90)
+        finally:
+            con.close()
+        assert v["percentile_all"] < v["percentile_recent"], (
+            "against a wilder past the reading must look more extreme than it "
+            "does against the recent regime"
+        )
+
+    def test_window_length_is_reported(self, tmp_path):
+        path = self._regime_shift(tmp_path, "w.duckdb")
+        con = _con(path)
+        try:
+            v = warehouse.realized_vol(con, 30)
+        finally:
+            con.close()
+        assert v["percentile_window_days"] == warehouse.VOL_PERCENTILE_RECENT_DAYS
+
+    def test_render_labels_both_windows(self, tmp_path):
+        path = self._regime_shift(tmp_path, "r.duckdb")
+        r = warehouse.collect(Config.from_env(db_path=path, cache_dir=tmp_path / "c"))
+        line = next(l for l in warehouse.render_lines(r.data) if l.startswith("vol "))
+        assert "pctile 2y/all" in line, "an unlabelled percentile is ambiguous"
+        assert "ann √365" in line
+
+    def test_analyst_is_steered_to_the_recent_window(self, tmp_path):
+        path = self._regime_shift(tmp_path, "a.duckdb")
+        r = warehouse.collect(Config.from_env(db_path=path, cache_dir=tmp_path / "c2"))
+        ctx = " ".join(warehouse.context_lines(r.data))
+        assert "Prefer the 2-year percentile" in ctx
+        assert "declined structurally" in ctx

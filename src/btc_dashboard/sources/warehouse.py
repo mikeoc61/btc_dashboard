@@ -51,6 +51,14 @@ VOL_WINDOWS = (7, 30, 90, 180, 360)
 # across a published threshold, which is exactly how two correct calculations
 # come to disagree. The figure is labelled in the output for that reason.
 VOL_ANNUALISATION = 365
+# Volatility is ranked twice. Against all history it looks more extreme than it
+# is, because Bitcoin's volatility has structurally declined — median 30d vol
+# ran 79% in 2014 and 38% in 2026 — so ranking today against the 2014-17 era
+# partly measures the market's maturation rather than current conditions. The
+# gap is largest at the long windows: 360d vol reads 5th percentile against all
+# history and 24th against two years. The recent window matches the 2y used by
+# the fee/subsidy signal, so the two lines mean the same thing by "percentile".
+VOL_PERCENTILE_RECENT_DAYS = 730
 APATHY_MAX = 1.0
 # A percentile threshold fires (100-N)% of days by construction, so 95 means
 # roughly 18 days a year rather than ~36 at 90 — rare enough that surfacing it
@@ -275,28 +283,45 @@ def realized_vol(con, days: int) -> dict:
             FROM s
         ),
         fw AS (SELECT date, vol FROM v WHERE n >= {w} AND vol IS NOT NULL),
-        latest AS (SELECT vol FROM fw ORDER BY date DESC LIMIT 1)
+        latest AS (SELECT vol FROM fw ORDER BY date DESC LIMIT 1),
+        recent AS (
+            SELECT vol FROM fw
+            WHERE date > (SELECT max(date) FROM fw)
+                        - INTERVAL '{VOL_PERCENTILE_RECENT_DAYS}' DAY
+        )
         SELECT (SELECT count(*) FROM fw),
                (SELECT vol FROM latest),
                (SELECT count(*) FROM fw, latest WHERE fw.vol < latest.vol - {eps}),
-               (SELECT count(*) FROM fw, latest WHERE abs(fw.vol - latest.vol) <= {eps})
+               (SELECT count(*) FROM fw, latest WHERE abs(fw.vol - latest.vol) <= {eps}),
+               (SELECT count(*) FROM recent),
+               (SELECT count(*) FROM recent, latest WHERE recent.vol < latest.vol - {eps}),
+               (SELECT count(*) FROM recent, latest
+                WHERE abs(recent.vol - latest.vol) <= {eps})
         """
     ).fetchone()
 
     out = {"days": w, "covered": False, "value": None,
-           "percentile": None, "days_available": 0}
+           "percentile_recent": None, "percentile_all": None,
+           "percentile_window_days": VOL_PERCENTILE_RECENT_DAYS,
+           "days_available": 0}
     if not row:
         return out
-    n, value, below, ties = row
-    out["days_available"] = n or 0
-    if not n or value is None:
+    n_all, value, below_all, ties_all, n_rec, below_rec, ties_rec = row
+    out["days_available"] = n_all or 0
+    if not n_all or value is None:
         return out
     out["covered"] = True
     out["value"] = round(value, 1)
+
     # Mid-ranked, like the other percentiles here, so a value tied with its
     # neighbours reads as the middle rather than as an extreme.
-    if n >= MIN_WINDOW_ROWS:
-        out["percentile"] = round(100.0 * (below + ties / 2.0) / n, 1)
+    def rank(n, below, ties):
+        if not n or n < MIN_WINDOW_ROWS:
+            return None
+        return round(100.0 * (below + ties / 2.0) / n, 1)
+
+    out["percentile_all"] = rank(n_all, below_all, ties_all)
+    out["percentile_recent"] = rank(n_rec, below_rec, ties_rec)
     return out
 
 
@@ -519,15 +544,22 @@ def render_lines(d: dict) -> list[str]:
         if not w.get("covered"):
             vparts.append(f"{fmt(w.get('days'))}d n/a")
             continue
-        pct = w.get("percentile")
-        tail = f" ({_ordinal(pct)})" if pct is not None else ""
+        rec, all_ = w.get("percentile_recent"), w.get("percentile_all")
+        tail = ""
+        if rec is not None or all_ is not None:
+            tail = f" ({fmt(rec, '.0f', missing='-')}/{fmt(all_, '.0f', missing='-')})"
         vparts.append(f"{fmt(w.get('days'))}d {fmt(w.get('value'), '.0f')}%{tail}")
     if vparts:
         # The annualisation is named because the level is meaningless without
         # it: the same series on a 252-day convention reads ~17% lower, which
         # is enough to put a reading the wrong side of a published threshold.
+        # Both percentile windows are shown because they diverge by up to 19
+        # points at the long end, where the all-history figure is substantially
+        # reporting Bitcoin's declining volatility rather than today.
+        years = fmt(vol.get("percentile_window_days", 730) // 365)
         out.append(
-            f"vol (ann √{fmt(vol.get('annualisation_days'))}): " + " | ".join(vparts)
+            f"vol (ann √{fmt(vol.get('annualisation_days'))}, pctile {years}y/all): "
+            + " | ".join(vparts)
         )
 
     # Described as that day's block pace, not as a "retarget projection". The
@@ -591,15 +623,26 @@ def context_lines(d: dict) -> list[str]:
     covered = [w for w in (vol.get("windows") or [])
                if isinstance(w, dict) and w.get("covered")]
     if covered:
+        years = fmt(vol.get("percentile_window_days", 730) // 365)
         levels = ", ".join(
             f"{fmt(w.get('days'))}d {fmt(w.get('value'), '.0f')}%"
-            + (f" ({_ordinal(w['percentile'])} pctile of all history)"
-               if w.get("percentile") is not None else "")
+            + (f" ({_ordinal(w['percentile_recent'])} pctile of the last {years}y"
+               + (f", {_ordinal(w['percentile_all'])} of all history)"
+                  if w.get("percentile_all") is not None else ")")
+               if w.get("percentile_recent") is not None else "")
             for w in covered
         )
         out.append(
             f"BTC realised volatility, annualised on a "
             f"{fmt(vol.get('annualisation_days'))}-day year: {levels}."
+        )
+        out.append(
+            f"Prefer the {years}-year percentile. Bitcoin's volatility has "
+            f"declined structurally as the market matured — median 30d vol ran "
+            f"about 79% in 2014 against 38% in 2026 — so the all-history figure "
+            f"partly reports that decline rather than current conditions, and "
+            f"reads more extreme than the recent one, especially at the long "
+            f"windows."
         )
         out.append(
             "Volatility describes the SIZE of moves, not their direction. A low "

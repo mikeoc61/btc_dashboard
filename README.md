@@ -25,7 +25,7 @@ ON-CHAIN (last complete UTC day)
   signal: fee/subsidy 26th pctile 2y (7d) | apathy 22d | hashrate -16.0% off 90d high
   daily close $63,860 (warehouse)
   SMA 20d $64,420 -0.6% | 50d $65,020 -1.5% | 200d $71,862 -11.1%
-  vol (ann √365): 7d 16% (3rd) | 30d 28% (7th) | 90d 34% (5th) | 180d 38% (5th) | 360d 43% (5th)
+  vol (ann √365, pctile 2y/all): 7d 16% (3/3) | 30d 28% (11/7) | 90d 34% (14/5) | 180d 38% (20/5) | 360d 43% (24/5)
   block pace 127/144 (-11.8%, ±8% day-to-day noise)
 
 ETF FLOWS
@@ -319,14 +319,26 @@ happens roughly one day in twelve by chance. It is therefore rendered as
 computed over the whole difficulty period and is the number to trust for
 direction.
 
-**Volatility is reported as a level *and* a percentile, with the annualisation
-named.** The level is not portable: the same series on a 252-day year reads
+**Volatility is reported as a level *and two* percentiles, with the
+annualisation named.** The level is not portable: the same series on a 252-day year reads
 ~17% lower, and the price source and close time move it further. So a level
 compared against someone else's published threshold silently compares
 conventions as much as markets — a reading of 28% here and 18% elsewhere can
 be the same market. The percentile travels; the level does not. Both are
 shown, and `ann √365` is printed so a disagreement is diagnosable rather than
 mysterious.
+
+The two percentile windows — `2y/all` — exist because they disagree by up to
+19 points. Bitcoin's volatility has declined structurally as the market
+matured (median 30d vol: 79% in 2014, 38% in 2026), so ranking today against
+the 2014–17 era substantially reports that decline rather than current
+conditions. On the live series 360d vol reads **5th percentile of all history
+and 24th of the last two years** — the first number is mostly about
+maturation, the second about now. Short windows barely move (7d is 3rd
+either way), so the divergence is concentrated exactly where the all-history
+figure is least trustworthy. The 2-year window matches the one the
+`signal:` line already uses, so "percentile" means the same thing on both
+lines, and the analyst is told to prefer it.
 
 The estimates are close-to-close, because the warehouse holds no OHLC.
 Range-based estimators (Parkinson, Garman-Klass) are several times more
@@ -490,7 +502,7 @@ moves, so no single hashrate metric can confirm a bottom on its own.
 .venv/bin/pytest
 ```
 
-246 tests. The warehouse tests run against a real DuckDB file built per-test
+250 tests. The warehouse tests run against a real DuckDB file built per-test
 rather than a mock — the signal definitions are the part most worth pinning
 down, and a mock would only assert that we called ourselves.
 
