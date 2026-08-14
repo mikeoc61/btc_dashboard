@@ -457,6 +457,29 @@ def refresh_derived(data: dict) -> dict:
     return data
 
 
+def _pctile(value) -> str:
+    """Percentile for the panel, without letting rounding overstate an extreme.
+
+    A mid-ranked percentile can never actually reach 0 or 100: the single
+    lowest of 730 observations ranks 0.07, not 0. Rounding to an integer
+    therefore prints "0" for anything in the bottom half-percent, which reads
+    as "the lowest ever recorded" when it may be the second-lowest of two
+    years. The extremes report as a band instead.
+
+    The rounded text is compared rather than the number because Python rounds
+    halves to even, so 0.5 formats as "0" and a threshold test on the value
+    alone would miss it.
+    """
+    if not isinstance(value, (int, float)):
+        return "-"
+    text = f"{value:.0f}"
+    if text == "0" and value > 0:
+        return "<1"
+    if text == "100" and value < 100:
+        return ">99"
+    return text
+
+
 def _ordinal(p: float) -> str:
     n = max(1, round(p))
     suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
@@ -547,7 +570,7 @@ def render_lines(d: dict) -> list[str]:
         rec, all_ = w.get("percentile_recent"), w.get("percentile_all")
         tail = ""
         if rec is not None or all_ is not None:
-            tail = f" ({fmt(rec, '.0f', missing='-')}/{fmt(all_, '.0f', missing='-')})"
+            tail = f" ({_pctile(rec)}/{_pctile(all_)})"
         vparts.append(f"{fmt(w.get('days'))}d {fmt(w.get('value'), '.0f')}%{tail}")
     if vparts:
         # The annualisation is named because the level is meaningless without

@@ -446,3 +446,46 @@ class TestVolatilityPercentileWindows:
         ctx = " ".join(warehouse.context_lines(r.data))
         assert "Prefer the 2-year percentile" in ctx
         assert "declined structurally" in ctx
+
+
+class TestPercentileDisplayAtTheExtremes:
+    """A mid-ranked percentile never reaches 0 or 100, so integer rounding
+    printed "0" for the second-lowest reading of two years — indistinguishable
+    from an all-time floor."""
+
+    @pytest.mark.parametrize("value,expected", [
+        (0.068, "<1"),   # the single lowest of ~730 observations
+        (0.2, "<1"),     # second-lowest
+        (0.5, "<1"),     # rounds to "0" under banker's rounding
+        (0.9, "1"),      # rounds honestly to 1; no band needed
+        (1.0, "1"),
+        (11.0, "11"),
+        (99.0, "99"),
+        (99.6, ">99"),
+        (99.93, ">99"),
+    ])
+    def test_extremes_report_as_a_band(self, value, expected):
+        assert warehouse._pctile(value) == expected
+
+    def test_true_zero_and_hundred_are_left_alone(self):
+        """Only a value that is genuinely at the bound prints the bound."""
+        assert warehouse._pctile(0) == "0"
+        assert warehouse._pctile(100) == "100"
+
+    def test_missing_is_a_dash(self):
+        assert warehouse._pctile(None) == "-"
+
+    def test_render_uses_the_band(self, tmp_path):
+        data = {
+            "date": "2026-08-13", "onchain": {}, "signals": {},
+            "volatility": {
+                "annualisation_days": 365, "percentile_window_days": 730,
+                "windows": [
+                    {"days": 30, "covered": True, "value": 22.4,
+                     "percentile_recent": 0.2, "percentile_all": 2.0},
+                ],
+            },
+        }
+        line = next(l for l in warehouse.render_lines(data) if l.startswith("vol "))
+        assert "(<1/2)" in line
+        assert "(0/2)" not in line

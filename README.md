@@ -340,6 +340,11 @@ figure is least trustworthy. The 2-year window matches the one the
 `signal:` line already uses, so "percentile" means the same thing on both
 lines, and the analyst is told to prefer it.
 
+At the extremes the percentile reports as a band (`<1`, `>99`) rather than a
+rounded bound. A mid-ranked percentile can never actually reach 0 — the single
+lowest of 730 observations ranks 0.07 — so printing `0` claimed an all-time
+floor for what was the second-lowest reading of two years.
+
 The estimates are close-to-close, because the warehouse holds no OHLC.
 Range-based estimators (Parkinson, Garman-Klass) are several times more
 efficient per observation and are simply unavailable here — worth knowing when
@@ -502,7 +507,7 @@ moves, so no single hashrate metric can confirm a bottom on its own.
 .venv/bin/pytest
 ```
 
-250 tests. The warehouse tests run against a real DuckDB file built per-test
+263 tests. The warehouse tests run against a real DuckDB file built per-test
 rather than a mock — the signal definitions are the part most worth pinning
 down, and a mock would only assert that we called ourselves.
 
