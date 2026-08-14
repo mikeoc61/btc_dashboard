@@ -507,7 +507,7 @@ moves, so no single hashrate metric can confirm a bottom on its own.
 .venv/bin/pytest
 ```
 
-263 tests. The warehouse tests run against a real DuckDB file built per-test
+262 tests. The warehouse tests run against a real DuckDB file built per-test
 rather than a mock — the signal definitions are the part most worth pinning
 down, and a mock would only assert that we called ourselves.
 
