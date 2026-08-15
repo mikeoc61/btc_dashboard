@@ -314,7 +314,8 @@ class TestTimeDerivedFieldsAreRecomputed:
         cache.collect(mod, cfg)
 
         result = cache.collect(mod, cfg)
-        assert result.data["days_behind"] == 9
+        # 9 days before today is 8 complete days missing: today is never stored.
+        assert result.data["days_behind"] == 8
         assert result.data["warehouse_stale"] is True
 
     def test_rederive_also_runs_on_the_stale_fallback_path(self, tmp_path, monkeypatch):

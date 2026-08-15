@@ -249,7 +249,7 @@ class TestCollect:
 
         r = warehouse.collect(Config.from_env(db_path=tmp_path / "old.duckdb"))
         assert r.available and r.stale
-        assert r.data["days_behind"] == 10
+        assert r.data["days_behind"] == 9   # 10 days before today, 9 days missing
 
 
 class TestIdentGuard:
@@ -489,3 +489,50 @@ class TestPercentileDisplayAtTheExtremes:
         line = next(l for l in warehouse.render_lines(data) if l.startswith("vol "))
         assert "(<1/2)" in line
         assert "(0/2)" not in line
+
+
+class TestFreshnessIsMeasuredAgainstTheLastCompleteDay:
+    """The warehouse only stores finished days, so it is structurally at least
+    one day behind today. Measuring against today reported a fully current
+    warehouse as "2d behind" and pushed the stale threshold out by a day.
+    """
+
+    def _at(self, hour_utc, day=15):
+        return datetime.datetime(2026, 8, day, hour_utc, tzinfo=datetime.timezone.utc)
+
+    def test_holding_the_last_complete_day_is_zero_behind(self):
+        # On 15 Aug the last complete day is the 14th.
+        assert warehouse.days_behind(datetime.date(2026, 8, 14), self._at(12)) == 0
+
+    def test_the_pre_ingest_window_is_one_behind(self):
+        """00:00-02:00 UTC daily: the day has completed, the ingester has not
+        yet run. One behind is correct here, and must not warn."""
+        behind = warehouse.days_behind(datetime.date(2026, 8, 13), self._at(1))
+        assert behind == 1
+        assert behind <= warehouse.STALE_AFTER_DAYS, "must not warn in the normal window"
+
+    def test_a_missed_run_warns(self):
+        behind = warehouse.days_behind(datetime.date(2026, 8, 12), self._at(12))
+        assert behind == 2
+        assert behind > warehouse.STALE_AFTER_DAYS
+
+    def test_never_negative(self):
+        """A row dated today (or ahead) is not 'minus one day behind'."""
+        assert warehouse.days_behind(datetime.date(2026, 8, 15), self._at(12)) == 0
+        assert warehouse.days_behind(datetime.date(2026, 8, 20), self._at(12)) == 0
+
+    def test_the_real_case_that_prompted_this(self):
+        """2026-08-15 01:53 UTC, warehouse holding 13 Aug: one run missed."""
+        assert warehouse.days_behind(
+            datetime.date(2026, 8, 13),
+            datetime.datetime(2026, 8, 15, 1, 53, tzinfo=datetime.timezone.utc),
+        ) == 1
+
+    def test_the_render_says_what_it_is_behind(self, tmp_path):
+        data = {
+            "date": "2026-08-10", "onchain": {}, "signals": {},
+            "days_behind": 3, "warehouse_stale": True,
+        }
+        line = next(l for l in warehouse.render_lines(data) if "behind" in l)
+        assert "last complete UTC day" in line
+        assert "missed a run" in line

@@ -65,7 +65,16 @@ APATHY_MAX = 1.0
 # still means something.
 VOL_PCTILE_MIN = 95.0
 MIN_WINDOW_ROWS = 30
-STALE_AFTER_DAYS = 2
+# Days behind the last COMPLETE UTC day before the panel says so. Not days
+# behind *today*: the warehouse only ever stores finished days, so it is
+# structurally at least one day behind today and measuring against today
+# inflates every reading by one.
+#
+# 1 rather than 0 because there is a legitimate window each day — between a UTC
+# day completing at 00:00 and the ingester collecting it — when being one day
+# behind is correct. Warning at 0 would fire daily for that whole window; this
+# fires only once a scheduled run has actually been missed.
+STALE_AFTER_DAYS = 1
 
 # Blocks per day at the 10-minute target.
 BLOCKS_PER_DAY = 144
@@ -428,7 +437,7 @@ def collect(cfg) -> SourceResult:
             "day_pace_retarget": _try(day_pace_retarget, con),
         }
 
-        behind = (datetime.datetime.now(datetime.timezone.utc).date() - date).days
+        behind = days_behind(date)
         data["days_behind"] = behind
         data["warehouse_stale"] = behind > STALE_AFTER_DAYS
 
@@ -440,18 +449,31 @@ def collect(cfg) -> SourceResult:
         con.close()
 
 
+def days_behind(date: datetime.date, now: datetime.datetime | None = None) -> int:
+    """How many complete UTC days the warehouse is missing. 0 = fully current.
+
+    Measured against the last *complete* day rather than today, because today
+    is never in the warehouse by construction — only finished days are stored.
+    Measuring against today reported a healthy warehouse as "2d behind" while
+    it was missing exactly one day.
+    """
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    last_complete = now.date() - datetime.timedelta(days=1)
+    return max(0, (last_complete - date).days)
+
+
 def refresh_derived(data: dict) -> dict:
     """Recompute how far behind the warehouse is, against the clock now.
 
-    `days_behind` and `warehouse_stale` describe the gap between the newest
-    stored day and today, so they age with the cache. Recomputed on every
-    cache read, in UTC — the warehouse buckets by UTC calendar day.
+    `days_behind` and `warehouse_stale` are relative to the current date, so
+    they age with the cache. Recomputed on every cache read, in UTC — the
+    warehouse buckets by UTC calendar day.
     """
     try:
         date = datetime.date.fromisoformat(data["date"])
     except (KeyError, TypeError, ValueError):
         return data
-    behind = (datetime.datetime.now(datetime.timezone.utc).date() - date).days
+    behind = days_behind(date)
     data["days_behind"] = behind
     data["warehouse_stale"] = behind > STALE_AFTER_DAYS
     return data
@@ -602,7 +624,10 @@ def render_lines(d: dict) -> list[str]:
         )
 
     if d.get("warehouse_stale"):
-        out.append(f"warehouse {fmt(d.get('days_behind'), missing='?')}d behind")
+        out.append(
+            f"warehouse {fmt(d.get('days_behind'), missing='?')}d behind the last "
+            f"complete UTC day — the ingester has missed a run"
+        )
     return out
 
 
@@ -690,7 +715,8 @@ def context_lines(d: dict) -> list[str]:
         )
     if d.get("warehouse_stale"):
         out.append(
-            f"WARNING: warehouse is {fmt(d.get('days_behind'), missing='an unknown number of')} "
-            f"days behind; on-chain figures are not current."
+            f"WARNING: the warehouse is missing "
+            f"{fmt(d.get('days_behind'), missing='an unknown number of')} complete "
+            f"UTC day(s); the on-chain figures are not current."
         )
     return out

@@ -52,7 +52,7 @@ SOURCE_NAMES = tuple(s.NAME for s in SOURCES)
 TITLES = {
     "price": "PRICE",
     "node": "NETWORK (live)",
-    "warehouse": "ON-CHAIN (last complete UTC day)",
+    "warehouse": "ON-CHAIN (daily)",
     "flows": "ETF FLOWS",
 }
 
