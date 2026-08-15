@@ -1,0 +1,58 @@
+# Local web dashboard with the analyst box.
+#
+#   cp deploy/systemd/btc-dashboard-web.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now btc-dashboard-web
+#   journalctl -u btc-dashboard-web -f
+#
+# Reach it from another machine over SSH rather than by widening the bind:
+#   ssh -L 8001:localhost:8001 <host>
+#
+# Adjust User/Group and the two /home/mikeoc paths if yours differ.
+
+[Unit]
+Description=BTC Dashboard (web + analyst)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mikeoc
+Group=mikeoc
+
+# Loopback only, deliberately. This process holds an LLM provider key and the
+# /ask endpoint spends money on every request, so a wider bind would let anyone
+# who can reach the port spend it. Use an SSH tunnel instead of --host 0.0.0.0.
+ExecStart=/home/mikeoc/.local/bin/btc-dashboard-web --host 127.0.0.1 --port 8001
+
+# HOME is what locates the warehouse (~/data/market.duckdb), the cache
+# (~/.cache/btc_dashboard) and the env file holding the API key. systemd starts
+# services with a minimal environment, so it is set explicitly rather than
+# assumed.
+Environment=HOME=/home/mikeoc
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=/home/mikeoc/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# The API key is deliberately NOT set here. `systemctl show` prints a unit's
+# environment in full, so a key in this file is readable by any local user.
+# It is read from ~/.config/btc_dashboard/env instead, which can be chmod 600.
+
+Restart=always
+RestartSec=5
+
+# Modest hardening — this process holds a credential. ProtectSystem=strict
+# makes the filesystem read-only, so the cache directory is granted back; the
+# leading '-' keeps a missing path from failing the unit on first start.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=-/home/mikeoc/.cache/btc_dashboard
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

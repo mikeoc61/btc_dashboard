@@ -167,6 +167,12 @@ ssh -L 8000:localhost:8000 -L 8001:localhost:8001 pibot
 A taken port fails with a message naming the likely culprit and the flag to
 fix it, rather than uvicorn's bare `[Errno 98]`.
 
+To keep it running, `deploy/systemd/btc-dashboard-web.service` is a unit that
+binds loopback, runs the console script rather than `uvicorn` directly (so the
+safe defaults and the port check still apply), and keeps the API key out of the
+unit file — `systemctl show` prints a unit's environment in full. See
+[`deploy/README.md`](deploy/README.md).
+
 Same page as `--html`, plus an **ask box** wired to the analyst. A question is
 a form POST that redirects back to `/`, so reloading never re-submits and the
 page's auto-refresh keeps working.
