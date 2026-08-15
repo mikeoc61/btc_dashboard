@@ -40,6 +40,9 @@ SNAPSHOT_TTL = 120
 # not a determined human — this is a single-user local page, not a public API.
 ASK_COOLDOWN = 5.0
 PAGE_REFRESH = 60
+# Not 8000: bitcoin_peer_monitor conventionally takes that, and two local
+# dashboards on one host should not fight over a port by default.
+DEFAULT_PORT = 8001
 
 
 class SnapshotCache:
@@ -124,6 +127,19 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 app = None  # populated by main(); uvicorn users should call create_app()
 
 
+def _port_free(host: str, port: int) -> bool:
+    """Whether the port can be bound, so the failure can explain itself."""
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind((host if host != "localhost" else "127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+
 def main(argv=None) -> int:
     import argparse
 
@@ -135,13 +151,24 @@ def main(argv=None) -> int:
     # process can spend money and the example is what gets copied.
     p.add_argument("--host", default="127.0.0.1",
                    help="bind address (default 127.0.0.1 — loopback only)")
-    p.add_argument("--port", type=int, default=8000)
+    p.add_argument("--port", type=int, default=DEFAULT_PORT)
     args = p.parse_args(argv)
 
     try:
         import uvicorn
     except ImportError:
         print('uvicorn is not installed — pip install -e ".[web]"')
+        return 1
+
+    if not _port_free(args.host, args.port):
+        # uvicorn reports this as a bare errno, which does not say what to do
+        # about it. On a host already running another local dashboard, a port
+        # clash is the most likely first-run failure.
+        print(
+            f"port {args.port} on {args.host} is already in use — something else "
+            f"is listening there (bitcoin_peer_monitor uses 8000 by default).\n"
+            f"    btc-dashboard-web --port {args.port + 1}"
+        )
         return 1
 
     if args.host not in ("127.0.0.1", "localhost", "::1"):

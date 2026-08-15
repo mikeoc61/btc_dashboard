@@ -153,9 +153,19 @@ snapshot's error strings are controlled by whoever produced it.
 
 ```bash
 pip install -e ".[web]"
-btc-dashboard-web                 # http://127.0.0.1:8000
-ssh -L 8000:localhost:8000 pibot  # reach the Pi's from a laptop
+btc-dashboard-web                 # http://127.0.0.1:8001
 ```
+
+Port **8001**, not 8000 — `bitcoin_peer_monitor` conventionally takes 8000, and
+two local dashboards on one host shouldn't fight over a port by default. To
+tunnel both from a laptop:
+
+```bash
+ssh -L 8000:localhost:8000 -L 8001:localhost:8001 pibot
+```
+
+A taken port fails with a message naming the likely culprit and the flag to
+fix it, rather than uvicorn's bare `[Errno 98]`.
 
 Same page as `--html`, plus an **ask box** wired to the analyst. A question is
 a form POST that redirects back to `/`, so reloading never re-submits and the

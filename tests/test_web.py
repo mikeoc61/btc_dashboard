@@ -136,3 +136,48 @@ class TestBindDefault:
                             type("U", (), {"run": staticmethod(lambda *a, **k: None)}))
         web.main([])
         assert "WARNING" not in capsys.readouterr().out
+
+
+class TestPortSelection:
+    """Two local dashboards on one host must not collide by default."""
+
+    def test_default_port_avoids_the_peer_monitor(self, monkeypatch):
+        seen = {}
+        monkeypatch.setattr(web, "_port_free", lambda h, p: True)
+        monkeypatch.setitem(
+            __import__("sys").modules, "uvicorn",
+            type("U", (), {"run": staticmethod(lambda app, **kw: seen.update(kw))}))
+        web.main([])
+        assert seen["port"] == web.DEFAULT_PORT
+        assert web.DEFAULT_PORT != 8000, "8000 is peer_monitor's"
+
+    def test_a_taken_port_explains_itself(self, capsys, monkeypatch):
+        monkeypatch.setattr(web, "_port_free", lambda h, p: False)
+        monkeypatch.setitem(
+            __import__("sys").modules, "uvicorn",
+            type("U", (), {"run": staticmethod(lambda *a, **k: None)}))
+
+        assert web.main(["--port", "8000"]) == 1
+        out = capsys.readouterr().out
+        assert "already in use" in out
+        assert "peer_monitor" in out, "name the likely culprit"
+        assert "--port 8001" in out, "offer the fix"
+
+    def test_a_free_port_starts(self, monkeypatch):
+        started = {}
+        monkeypatch.setattr(web, "_port_free", lambda h, p: True)
+        monkeypatch.setitem(
+            __import__("sys").modules, "uvicorn",
+            type("U", (), {"run": staticmethod(lambda app, **kw: started.update(kw))}))
+        assert web.main([]) == 0
+        assert started
+
+    def test_port_free_detects_a_live_listener(self):
+        """Exercised against a real socket, not a stub."""
+        import socket
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            s.listen(1)
+            taken = s.getsockname()[1]
+            assert web._port_free("127.0.0.1", taken) is False
+        assert web._port_free("127.0.0.1", taken) is True
