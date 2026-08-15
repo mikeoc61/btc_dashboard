@@ -434,3 +434,67 @@ class TestEnvFileLookup:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(f"ANTHROPIC_API_KEY={key}\n")
         assert providers.api_key(providers.PROVIDERS["anthropic"]) == "sk-ant-new"
+
+
+class TestColour:
+    """Colour is opt-in by environment, never by accident."""
+
+    def _snap(self, **over):
+        block = {
+            "available": True, "stale": False, "cached": False,
+            "cache_age_seconds": None, "cache_ttl_seconds": None,
+            "as_of": None, "error": None,
+            "data": {"spot": 1.0, "source": "x", "sma200": None, "sma200_pct": None,
+                     "sma200_position": None, "days_available": 5},
+        }
+        block.update(over)
+        return {"schema_version": 1, "generated_at": "2026-08-15T01:53:00+00:00",
+                "asset": "btc", "sources": {"price": block}}
+
+    def test_off_by_default_when_not_a_terminal(self):
+        assert "\033[" not in render.render(self._snap())
+
+    def test_forced_on_emits_codes(self):
+        out = render.render(self._snap(), color=True)
+        assert "\033[" in out and render.RESET in out
+
+    def test_forced_off_beats_a_terminal(self):
+        assert "\033[" not in render.render(self._snap(), color=False)
+
+    def test_no_color_env_wins_over_a_tty(self, monkeypatch):
+        monkeypatch.setenv("NO_COLOR", "")          # any value, even empty
+        monkeypatch.setenv("FORCE_COLOR", "1")
+        assert render.supports_color() is False
+
+    def test_force_color_works_without_a_tty(self, monkeypatch):
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        monkeypatch.setenv("FORCE_COLOR", "1")
+        assert render.supports_color() is True
+
+    def test_dumb_terminals_get_none(self, monkeypatch):
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        monkeypatch.delenv("FORCE_COLOR", raising=False)
+        monkeypatch.setenv("TERM", "dumb")
+        assert render.supports_color() is False
+
+    def test_a_tty_gets_colour(self, monkeypatch):
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        monkeypatch.delenv("FORCE_COLOR", raising=False)
+        monkeypatch.setenv("TERM", "xterm-256color")
+
+        class TTY:
+            def isatty(self): return True
+        assert render.supports_color(TTY()) is True
+
+    def test_the_text_is_identical_once_codes_are_stripped(self):
+        import re
+        snap = self._snap(stale=True, cached=True, cache_age_seconds=7200,
+                          error="site unreachable")
+        coloured = render.render(snap, color=True)
+        plain = render.render(snap, color=False)
+        assert re.sub(r"\033\[[0-9;]*m", "", coloured) == plain
+
+    def test_empty_markers_emit_no_codes(self):
+        """An uncached block has no flag; painting "" would emit a bare pair."""
+        out = render.render(self._snap(), color=True)
+        assert "\033[2m\033[0m" not in out

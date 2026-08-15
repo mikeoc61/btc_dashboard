@@ -6,9 +6,52 @@ output reproducible from a saved `--json` payload.
 """
 from __future__ import annotations
 
+import os
+import sys
+
 from . import snapshot as snap
 
 RULE = "─" * 60
+
+# The basic 8-colour codes only. A terminal maps these through the user's own
+# theme, so they stay legible on light and dark backgrounds alike; 256-colour
+# or truecolour values would pick a specific hue and lose that. Nothing here
+# sets a background, and no colour carries meaning on its own — every marker
+# still reads correctly in plain text.
+BOLD, DIM, RESET = "\033[1m", "\033[2m", "\033[0m"
+CYAN, YELLOW, RED = "\033[36m", "\033[33m", "\033[31m"
+
+
+def supports_color(stream=None) -> bool:
+    """Whether to emit ANSI codes.
+
+    Honours the NO_COLOR convention (any value, including empty, disables) and
+    FORCE_COLOR for pipelines that want them anyway. Otherwise colour only when
+    writing to a real terminal, so `--json`, a redirect to a file, or a pipe
+    into another tool stay clean.
+    """
+    if os.environ.get("NO_COLOR") is not None:
+        return False
+    if os.environ.get("FORCE_COLOR"):
+        return True
+    stream = stream if stream is not None else sys.stdout
+    if os.environ.get("TERM") == "dumb":
+        return False
+    return bool(getattr(stream, "isatty", lambda: False)())
+
+
+class _Paint:
+    """Wraps text in a code, or returns it untouched when colour is off."""
+
+    def __init__(self, enabled: bool):
+        self.enabled = enabled
+
+    def __call__(self, text: str, *codes: str) -> str:
+        # Empty text is passed through unwrapped: painting "" would emit a
+        # bare set-and-reset pair that does nothing but clutter the output.
+        if not self.enabled or not codes or not text:
+            return text
+        return "".join(codes) + text + RESET
 
 
 def human_age(seconds) -> str:
@@ -41,11 +84,13 @@ def _cache_flag(block: dict) -> str:
     return ""
 
 
-def render(snapshot: dict, *, show_errors: bool = True) -> str:
+def render(snapshot: dict, *, show_errors: bool = True, color: bool | None = None) -> str:
+    """Render the panel. `color=None` auto-detects; True/False force it."""
+    paint = _Paint(supports_color() if color is None else color)
     lines: list[str] = []
     generated = snapshot["generated_at"][:19].replace("T", " ")
-    lines.append(f"BTC DASHBOARD — {generated} UTC")
-    lines.append(RULE)
+    lines.append(paint(f"BTC DASHBOARD — {generated} UTC", BOLD))
+    lines.append(paint(RULE, DIM))
 
     for name in snap.ordered_names(snapshot):
         block = snapshot["sources"][name]
@@ -53,11 +98,17 @@ def render(snapshot: dict, *, show_errors: bool = True) -> str:
 
         if not block["available"]:
             if show_errors:
-                lines.append(f"{title}: unavailable — {block.get('error')}")
+                lines.append(
+                    paint(title, DIM, BOLD) + paint(f": unavailable — {block.get('error')}", DIM)
+                )
                 lines.append("")
             continue
 
-        lines.append(f"{title}{_cache_flag(block)}")
+        flag = _cache_flag(block)
+        lines.append(
+            paint(title, BOLD, CYAN)
+            + paint(flag, YELLOW if block.get("stale") else DIM)
+        )
         mod = snap.module_for(name)
         if mod is None:
             # An ingested snapshot from a newer service can carry a source this
@@ -70,10 +121,10 @@ def render(snapshot: dict, *, show_errors: bool = True) -> str:
                 body = [f"render failed: {type(e).__name__}: {e}"]
         lines.extend(f"  {line}" for line in body)
         if block.get("stale") and block.get("error") and show_errors:
-            lines.append(f"  live refresh failed: {block['error']}")
+            lines.append(paint(f"  live refresh failed: {block['error']}", YELLOW))
         lines.append("")
 
     missing = snap.missing(snapshot)
     if missing and not show_errors:
-        lines.append(f"unavailable: {', '.join(missing)}")
+        lines.append(paint(f"unavailable: {', '.join(missing)}", DIM))
     return "\n".join(lines).rstrip() + "\n"

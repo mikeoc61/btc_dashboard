@@ -82,6 +82,12 @@ def parse_args(argv=None):
         metavar="SECONDS",
         help="cache lifetime for cached sources (default 3600; 0 disables)",
     )
+    p.add_argument(
+        "--color",
+        choices=("auto", "always", "never"),
+        default="auto",
+        help="colourise the panel (default: auto — only when writing to a terminal)",
+    )
     p.add_argument("--quiet", action="store_true", help="hide unavailable-source notes")
     return p.parse_args(argv)
 
@@ -136,7 +142,8 @@ def main(argv=None) -> int:
         print(analyst.build_context(snap))
         return 0
 
-    print(render.render(snap, show_errors=not args.quiet), end="")
+    color = {"auto": None, "always": True, "never": False}[args.color]
+    print(render.render(snap, show_errors=not args.quiet, color=color), end="")
 
     if not snapshot.available(snap):
         print("no source returned data", file=sys.stderr)
@@ -147,7 +154,11 @@ def main(argv=None) -> int:
         if not result.ok:
             print(f"\nanalyst unavailable: {result.error}", file=sys.stderr)
             return 2
-        print(f"\nANALYSIS\n{'─' * 60}\n{result.text}")
+        paint = render._Paint(render.supports_color() if color is None else color)
+        print(
+            f"\n{paint('ANALYSIS', render.BOLD, render.CYAN)}\n"
+            f"{paint('─' * 60, render.DIM)}\n{result.text}"
+        )
         print(
             f"\n[{result.provider}/{result.model} · {result.input_tokens} in / "
             f"{result.output_tokens} out]",

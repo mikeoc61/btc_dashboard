@@ -36,6 +36,16 @@ def restore_environment():
 
 
 @pytest.fixture(autouse=True)
+def no_color(monkeypatch):
+    """Keep rendered output plain regardless of how pytest was invoked.
+
+    Colour auto-detects on a TTY, so `pytest -s` would otherwise inject ANSI
+    codes into every string assertion in the suite.
+    """
+    monkeypatch.setenv("NO_COLOR", "1")
+
+
+@pytest.fixture(autouse=True)
 def isolated_cache(tmp_path_factory, monkeypatch):
     """Point every test at its own empty cache directory."""
     path = tmp_path_factory.mktemp("btc_cache")

@@ -21,7 +21,7 @@ NETWORK (live)
   fees 4.0/2.3/0.7 sat/vB (fast/1hr/1d)
 
 ON-CHAIN (last complete UTC day)
-  day (UTC 2026-07-28 Tue): 127 blks | 97% full | p50 1.0 sat/vB | fee/subsidy 0.75% | miner rev 399.8 BTC
+  day (UTC 2026-08-13 Thu): 127 blks | 97% full | p50 1.0 sat/vB | fee/subsidy 0.75% | miner rev 399.8 BTC
   signal: fee/subsidy 26th pctile 2y (7d) | apathy 22d | hashrate -16.0% off 90d high
   daily close $63,860 (warehouse)
   SMA 20d $64,420 -0.6% | 50d $65,020 -1.5% | 200d $71,862 -11.1%
@@ -117,6 +117,20 @@ Cache files live in `~/.cache/btc_dashboard/<source>.json`. Writes are atomic
 a partial payload. An unreadable or corrupt cache file is treated as a miss,
 never an error.
 
+### Colour
+
+Section headers, the rule, and the cache markers are colourised **only when
+writing to a terminal**, so `--json`, a redirect, or a pipe stay clean. The
+`NO_COLOR` convention is honoured (any value disables), `FORCE_COLOR` forces it
+on, and `--color always|never` overrides both.
+
+Only the basic 8 ANSI colours are used, never 256-colour or truecolour: a
+terminal maps those through the user's own theme, so they stay legible on light
+and dark backgrounds alike. **No colour carries meaning on its own** — a
+`[STALE]` marker reads identically in plain text, and stripping the escape
+codes from coloured output reproduces the plain output exactly (there's a test
+for that).
+
 ### Adding a source
 
 One new file in `sources/` exposing four names, plus one entry in
@@ -172,6 +186,7 @@ see [Credential boundary](#credential-boundary-the-llm-is-client-side-only).
 | `--effort L` | `low`/`medium`/`high`/`xhigh`/`max` (default `high`) |
 | `--refresh` | Bypass the cache and re-collect |
 | `--cache-ttl N` | Cache lifetime in seconds (default 3600; `0` disables) |
+| `--color C` | `auto` (default, terminal only) / `always` / `never` |
 | `--quiet` | Hide unavailable-source detail |
 
 Exit codes: `0` ok, `1` no source available, `2` bad usage or analyst failed. The analyst
@@ -507,7 +522,7 @@ moves, so no single hashrate metric can confirm a bottom on its own.
 .venv/bin/pytest
 ```
 
-262 tests. The warehouse tests run against a real DuckDB file built per-test
+277 tests. The warehouse tests run against a real DuckDB file built per-test
 rather than a mock — the signal definitions are the part most worth pinning
 down, and a mock would only assert that we called ourselves.
 
