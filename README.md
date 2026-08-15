@@ -163,7 +163,7 @@ def context_lines(data) -> list[str]:   # facts phrased for the LLM
 def refresh_derived(data) -> dict:      # optional; only if fields age
 ```
 
-Keeping both presentations next to the collector is deliberate: the caveats a
+Keeping the presentations next to the collector is deliberate: the caveats a
 number needs ("this window is n/a, not zero") belong with the code that knows
 why.
 
@@ -541,7 +541,7 @@ moves, so no single hashrate metric can confirm a bottom on its own.
 .venv/bin/pytest
 ```
 
-296 tests. The warehouse tests run against a real DuckDB file built per-test
+291 tests. The warehouse tests run against a real DuckDB file built per-test
 rather than a mock — the signal definitions are the part most worth pinning
 down, and a mock would only assert that we called ourselves.
 
