@@ -20,7 +20,7 @@ NETWORK (live)
   mempool 14,203 tx / 8.1 vMB
   fees 4.0/2.3/0.7 sat/vB (fast/1hr/1d)
 
-ON-CHAIN (last complete UTC day)
+ON-CHAIN (daily)
   day (UTC 2026-08-13 Thu): 127 blks | 97% full | p50 1.0 sat/vB | fee/subsidy 0.75% | miner rev 399.8 BTC
   signal: fee/subsidy 26th pctile 2y (7d) | apathy 22d | hashrate -16.0% off 90d high
   daily close $63,860 (warehouse)
