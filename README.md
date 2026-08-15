@@ -142,6 +142,13 @@ Each source contributes `html_panels()` beside its terminal and LLM
 presentations, so a source that naturally splits (facts, signals, volatility)
 says so itself rather than the page imposing a layout.
 
+**Type is sized for reading, not for density.** The page sets no pixel base, so
+it inherits the browser's own default and a reader who has already turned that
+up gets it. Labels and prose use a UI face; only the figures use monospace,
+where the fixed advance width earns its place aligning columns. Monospace
+everywhere — particularly bold monospace at small sizes on a dark background —
+is what made the first version look fuzzy.
+
 **Qualifiers survive the move.** A row-based layout invites dropping the window
 a percentile was ranked against, or the annualisation behind a volatility
 figure, because the numbers look tidier without them — but those are exactly

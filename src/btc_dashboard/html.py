@@ -29,62 +29,74 @@ REFRESH_SECONDS = 60
 CSS = """
 :root {
   --bg:#0d1117; --card:#161b22; --line:#30363d; --text:#e6edf3;
-  --muted:#8b949e; --accent:#58a6ff; --up:#3fb950; --down:#f85149;
-  --warn:#d29922; --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;
+  --muted:#a3aebb; --accent:#79c0ff; --up:#56d364; --down:#ff7b72;
+  --warn:#e3b341;
+  /* Text in a UI face and numbers in a monospace one. Monospace everywhere
+     smears at small sizes, especially bold on a dark background, and only the
+     figures actually need the fixed advance width for column alignment. */
+  --ui:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
 }
 @media (prefers-color-scheme: light) {
   :root {
     --bg:#f6f8fa; --card:#fff; --line:#d0d7de; --text:#1f2328;
-    --muted:#656d76; --accent:#0969da; --up:#1a7f37; --down:#cf222e;
-    --warn:#9a6700;
+    --muted:#5a6069; --accent:#0550ae; --up:#116329; --down:#a40e26;
+    --warn:#7d4e00;
   }
 }
 * { box-sizing:border-box; }
-body { margin:0; padding:1rem; background:var(--bg); color:var(--text);
-       font-family:var(--mono); font-size:14px; line-height:1.45; }
-header { display:flex; flex-wrap:wrap; gap:.75rem; align-items:baseline;
+body {
+  margin:0; padding:1.1rem; background:var(--bg); color:var(--text);
+  /* No px base: inherit the browser's own default size, so a reader who has
+     already turned it up gets that, and zoom scales everything evenly. */
+  font-family:var(--ui); font-size:1rem; line-height:1.5;
+  -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
+}
+header { display:flex; flex-wrap:wrap; gap:.9rem; align-items:baseline;
          justify-content:space-between; border-bottom:1px solid var(--line);
-         padding-bottom:.6rem; margin-bottom:1rem; }
-h1 { font-size:1rem; margin:0; letter-spacing:.08em; color:var(--accent); }
-.meta { color:var(--muted); font-size:.8rem; }
-.ticks { display:flex; gap:.75rem; font-size:.8rem; }
-.tick.ok::before { content:"\\2713 "; color:var(--up); }
-.tick.no::before { content:"\\2717 "; color:var(--down); }
+         padding-bottom:.7rem; margin-bottom:1.1rem; }
+h1 { font-size:1.05rem; margin:0; letter-spacing:.06em; color:var(--accent); }
+.meta { color:var(--muted); font-size:.85rem; font-family:var(--mono); }
+.ticks { display:flex; gap:1rem; font-size:.85rem; }
+.tick.ok::before { content:"\2713 "; color:var(--up); }
+.tick.no::before { content:"\2717 "; color:var(--down); }
 .tick.no { color:var(--muted); }
-.grid { display:grid; gap:.75rem;
-        grid-template-columns:repeat(auto-fit,minmax(290px,1fr)); }
-.card { background:var(--card); border:1px solid var(--line); border-radius:6px;
-        padding:.7rem .85rem; }
-.card h2 { font-size:.78rem; margin:0 0 .55rem; letter-spacing:.06em;
+.grid { display:grid; gap:.85rem;
+        grid-template-columns:repeat(auto-fit,minmax(310px,1fr)); }
+.card { background:var(--card); border:1px solid var(--line); border-radius:8px;
+        padding:.85rem 1rem; }
+.card h2 { font-size:.85rem; margin:0 0 .7rem; letter-spacing:.05em;
            color:var(--accent); display:flex; justify-content:space-between;
-           align-items:baseline; gap:.5rem; font-weight:600; }
-.badge { font-size:.68rem; font-weight:400; color:var(--muted);
-         white-space:nowrap; }
+           align-items:baseline; gap:.6rem; font-weight:600; }
+.badge { font-size:.78rem; font-weight:400; color:var(--muted);
+         white-space:nowrap; font-family:var(--mono); }
 .badge.warn { color:var(--warn); }
 .row { display:flex; justify-content:space-between; align-items:baseline;
-       gap:.75rem; padding:.2rem 0; }
-.row + .row { border-top:1px solid color-mix(in srgb, var(--line) 45%, transparent); }
-.label { color:var(--muted); font-size:.8rem; }
-.value { font-variant-numeric:tabular-nums; white-space:nowrap; font-weight:600; }
+       gap:1rem; padding:.28rem 0; }
+.row + .row, .note + .row {
+  border-top:1px solid color-mix(in srgb, var(--line) 45%, transparent); }
+.label { color:var(--muted); font-size:.9rem; }
+.value { font-family:var(--mono); font-size:1.02rem; font-variant-numeric:tabular-nums;
+         white-space:nowrap; font-weight:600; letter-spacing:-.01em; }
 .value.up { color:var(--up); } .value.down { color:var(--down); }
 .value.warn { color:var(--warn); }
-.note { color:var(--muted); font-size:.7rem; padding:0 0 .25rem; margin-top:-.15rem;
-        max-width:100%; }
-.err { color:var(--warn); font-size:.78rem; }
+.note { color:var(--muted); font-size:.8rem; line-height:1.45;
+        padding:0 0 .3rem; margin-top:-.1rem; }
+.err { color:var(--warn); font-size:.88rem; }
 .card.wide { grid-column:1/-1; }
-.askform { display:flex; gap:.5rem; }
-.askform input { flex:1; padding:.45rem .6rem; background:var(--bg);
+.askform { display:flex; gap:.6rem; }
+.askform input { flex:1; padding:.6rem .7rem; background:var(--bg);
                  color:var(--text); border:1px solid var(--line);
-                 border-radius:4px; font:inherit; }
-.askform button, .linkish { padding:.45rem .9rem; border:1px solid var(--line);
-                 border-radius:4px; background:var(--accent); color:var(--bg);
-                 font:inherit; font-weight:600; cursor:pointer; }
-.linkish { padding:.1rem .5rem; background:none; color:var(--muted);
-           font-weight:400; font-size:.7rem; }
-.answer { white-space:pre-wrap; margin:.4rem 0; font-family:inherit;
-          line-height:1.5; }
-footer { margin-top:1rem; padding-top:.6rem; border-top:1px solid var(--line);
-         color:var(--muted); font-size:.72rem; }
+                 border-radius:6px; font:inherit; font-size:1rem; }
+.askform button, .linkish { padding:.6rem 1.1rem; border:1px solid var(--line);
+                 border-radius:6px; background:var(--accent); color:var(--bg);
+                 font:inherit; font-size:.95rem; font-weight:600; cursor:pointer; }
+.linkish { padding:.15rem .55rem; background:none; color:var(--muted);
+           font-weight:400; font-size:.8rem; }
+.answer { white-space:pre-wrap; margin:.5rem 0; line-height:1.6;
+          font-size:.98rem; }
+footer { margin-top:1.2rem; padding-top:.7rem; border-top:1px solid var(--line);
+         color:var(--muted); font-size:.8rem; line-height:1.5; }
 """
 
 

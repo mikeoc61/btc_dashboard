@@ -116,6 +116,10 @@ class TestBindDefault:
 
     def test_default_host_is_loopback(self, monkeypatch):
         seen = {}
+        # Stubbed: otherwise this depends on whether the developer's machine
+        # happens to have 8001 free — an SSH tunnel forwarding it is enough to
+        # make the real check refuse and the test fail for the wrong reason.
+        monkeypatch.setattr(web, "_port_free", lambda h, p: True)
         monkeypatch.setitem(
             __import__("sys").modules, "uvicorn",
             type("U", (), {"run": staticmethod(
@@ -124,6 +128,7 @@ class TestBindDefault:
         assert seen["host"] == "127.0.0.1"
 
     def test_a_wider_bind_warns(self, capsys, monkeypatch):
+        monkeypatch.setattr(web, "_port_free", lambda h, p: True)
         monkeypatch.setitem(__import__("sys").modules, "uvicorn",
                             type("U", (), {"run": staticmethod(lambda *a, **k: None)}))
         web.main(["--host", "0.0.0.0"])
@@ -132,6 +137,7 @@ class TestBindDefault:
         assert "ssh -L" in out, "the warning should show the safe alternative"
 
     def test_loopback_does_not_warn(self, capsys, monkeypatch):
+        monkeypatch.setattr(web, "_port_free", lambda h, p: True)
         monkeypatch.setitem(__import__("sys").modules, "uvicorn",
                             type("U", (), {"run": staticmethod(lambda *a, **k: None)}))
         web.main([])
