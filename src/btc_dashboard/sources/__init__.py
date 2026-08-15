@@ -89,6 +89,37 @@ def unavailable(name: str, error: str) -> SourceResult:
     return SourceResult(name=name, available=False, error=error)
 
 
+@dataclass(frozen=True)
+class Metric:
+    """One labelled reading, for a layout that has rows rather than lines.
+
+    `note` is where the qualifier goes — the window a percentile was ranked
+    against, the annualisation of a volatility figure, the noise band on a
+    single day's count. In the terminal these ride on the same line because
+    there is nowhere else; a page has room to put them under the value, and
+    dropping them there would be a regression dressed up as a cleaner design.
+    """
+
+    label: str
+    value: str
+    note: str | None = None
+    # Presentational hint only: "up", "down", "warn". Never the sole carrier
+    # of meaning — the text must read correctly with all styling removed.
+    tone: str | None = None
+
+
+@dataclass(frozen=True)
+class Panel:
+    """A titled group of metrics — one card in a grid.
+
+    Sources emit their own grouping rather than the page imposing one, so a
+    source that naturally splits (facts, signals, volatility) says so itself.
+    """
+
+    title: str
+    metrics: list[Metric]
+
+
 def fmt(value, spec: str = "", *, prefix: str = "", suffix: str = "",
         missing: str = "n/a") -> str:
     """Format a possibly-missing value without ever raising.

@@ -131,6 +131,24 @@ and dark backgrounds alike. **No colour carries meaning on its own** — a
 codes from coloured output reproduces the plain output exactly (there's a test
 for that).
 
+### HTML
+
+`--html` renders the snapshot as a self-contained page — inline CSS, no
+external assets, scripts or fonts — so it works from `file://`, from a static
+server, or over an SSH tunnel with no internet access. Light and dark follow
+`prefers-color-scheme`.
+
+Each source contributes `html_panels()` beside its terminal and LLM
+presentations, so a source that naturally splits (facts, signals, volatility)
+says so itself rather than the page imposing a layout.
+
+**Qualifiers survive the move.** A row-based layout invites dropping the window
+a percentile was ranked against, or the annualisation behind a volatility
+figure, because the numbers look tidier without them — but those are exactly
+what makes a figure comparable to an external source. Every `Metric` carries a
+`note` and the note is rendered. Free text is HTML-escaped, since an ingested
+snapshot's error strings are controlled by whoever produced it.
+
 ### Adding a source
 
 One new file in `sources/` exposing four names, plus one entry in
@@ -176,6 +194,7 @@ see [Credential boundary](#credential-boundary-the-llm-is-client-side-only).
 | Flag | Effect |
 | --- | --- |
 | `--json` | Emit the snapshot instead of the panel |
+| `--html` | Emit a self-contained HTML page instead of the panel |
 | `--from X` | Ingest a snapshot (http(s) URL, file, or `-`) instead of collecting one |
 | `--only A,B` | Restrict to named sources (`price`, `node`, `warehouse`, `flows`) |
 | `--ask Q` | Run the analyst over the snapshot |
@@ -522,7 +541,7 @@ moves, so no single hashrate metric can confirm a bottom on its own.
 .venv/bin/pytest
 ```
 
-277 tests. The warehouse tests run against a real DuckDB file built per-test
+296 tests. The warehouse tests run against a real DuckDB file built per-test
 rather than a mock — the signal definitions are the part most worth pinning
 down, and a mock would only assert that we called ourselves.
 

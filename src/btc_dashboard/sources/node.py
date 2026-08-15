@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import subprocess
 
-from . import SourceResult, fmt, unavailable
+from . import Metric, Panel, SourceResult, fmt, unavailable
 
 NAME = "node"
 
@@ -181,3 +181,30 @@ def context_lines(d: dict) -> list[str]:
             f"(live, not a daily average)"
         )
     return out
+
+
+def html_panels(d: dict) -> list[Panel]:
+    rt = d.get("retarget") or {}
+    mp = d.get("mempool") or {}
+    f = d.get("fees_sat_vb") or {}
+    hr7 = d.get("hash_rate_7d_pct")
+
+    proj = rt.get("projection_pct")
+    return [Panel("NETWORK (LIVE)", [
+        Metric("Block Height", fmt(d.get("height"), ",")),
+        Metric("Hashrate", f"{fmt(d.get('hash_rate_ehs'), ',.0f')} EH/s",
+               note=f"{fmt(hr7, '+.2f', suffix='%')} over 7d" if hr7 is not None else None,
+               tone="up" if isinstance(hr7, (int, float)) and hr7 >= 0 else "down"),
+        Metric("Difficulty", f"{fmt(d.get('difficulty_t'), ',.2f')} T"),
+        Metric("Next Retarget",
+               fmt(proj, "+.2f", suffix="%") if proj is not None else "n/a",
+               note=(f"{fmt(rt.get('blocks_left'), ',')} blks"
+                     + (f", ~{fmt(rt.get('eta_days'))}d" if rt.get("eta_days") is not None else "")
+                     + ("" if proj is not None else " — too early to project")),
+               tone="up" if isinstance(proj, (int, float)) and proj >= 0 else "down"),
+        Metric("Mempool", f"{fmt(mp.get('vmb'), '.1f')} vMB",
+               note=f"{fmt(mp.get('tx'), ',')} tx"),
+        Metric("Fee Estimates",
+               "/".join(_fee(f.get(k)) for k in ("fast", "hour", "day")) + " sat/vB",
+               note="fast / 1hr / 1day"),
+    ])]

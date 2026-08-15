@@ -30,7 +30,7 @@ import re
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from . import SourceResult, fmt, unavailable
+from . import Metric, Panel, SourceResult, fmt, unavailable
 
 NAME = "flows"
 
@@ -452,3 +452,53 @@ def context_lines(d: dict) -> list[str]:
             f"settled."
         )
     return out
+
+
+def html_panels(d: dict) -> list[Panel]:
+    lead = d.get("lead") or LEAD
+    if not d.get("as_of"):
+        return [Panel("ETF FLOWS (US SPOT)",
+                      [Metric("Status", "no fully-reported day yet")])]
+
+    age = (f" · {fmt(d.get('age_days'))}d ago" if d.get("age_days") is not None else "")
+    rows = [Metric("Latest", _m(d.get("latest_total")),
+                   note=f"{_m(d.get('latest_lead'))} {lead} · {d['as_of']}{age}",
+                   tone=_tone(d.get("latest_total")))]
+
+    for w in d.get("windows") or []:
+        if not isinstance(w, dict):
+            continue
+        days = fmt(w.get("days"))
+        if not w.get("covered"):
+            rows.append(Metric(f"{days}D Net", "n/a",
+                               note=f"only {fmt(w.get('days_available'), missing='?')} "
+                                    f"fully-reported days — not zero"))
+            continue
+        note = f"{_m(w.get('lead'))} {lead}"
+        if w.get("days") == d.get("regime_window_days") and d.get("regime"):
+            share = d.get("lead_share_pct")
+            note += (f" ({fmt(share, '.0f')}% of it) · {d['regime']}"
+                     if share is not None else f" · {d['regime']}")
+        rows.append(Metric(f"{days}D Net", _m(w.get("total")), note=note,
+                           tone=_tone(w.get("total"))))
+
+    rows.append(Metric(
+        "Streak", f"{fmt(d.get('streak_days'))}d {d.get('streak_sign') or 'n/a'}",
+        note="most recent run only — says nothing about size, and can point "
+             "the other way from the window above"))
+
+    p = d.get("partial")
+    if isinstance(p, dict):
+        rows.append(Metric(
+            "In Progress", _m(p.get("reported_total")),
+            note=f"{p.get('date') or 'today'} · "
+                 f"{len(p.get('reported') or [])}/{len(FUNDS)} funds in, pending "
+                 f"{', '.join(p.get('pending') or []) or 'n/a'} — excluded above",
+            tone="warn"))
+    return [Panel("ETF FLOWS (US SPOT)", rows)]
+
+
+def _tone(v) -> str | None:
+    if not isinstance(v, (int, float)):
+        return None
+    return "up" if v > 0 else ("down" if v < 0 else None)

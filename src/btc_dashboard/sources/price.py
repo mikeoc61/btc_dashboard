@@ -13,7 +13,7 @@ import json
 import urllib.request
 from typing import Any
 
-from . import SourceResult, fmt, unavailable
+from . import Metric, Panel, SourceResult, fmt, unavailable
 
 NAME = "price"
 
@@ -187,3 +187,23 @@ def context_lines(d: dict) -> list[str]:
                 f"substitute a shorter average."
             )
     return out
+
+
+def html_panels(d: dict) -> list[Panel]:
+    rows = [Metric("Spot", fmt(d.get("spot"), ",.0f", prefix="$"),
+                   note=d.get("source"))]
+    for s in _sma_entries(d):
+        days = fmt(s.get("days"))
+        if s.get("covered"):
+            pct = s.get("pct")
+            rows.append(Metric(
+                f"{days}D SMA", fmt(s.get("value"), ",.0f", prefix="$"),
+                note=f"spot {fmt(pct, '+.1f', suffix='%')} vs it",
+                tone="up" if isinstance(pct, (int, float)) and pct >= 0 else "down",
+            ))
+        else:
+            rows.append(Metric(
+                f"{days}D SMA", "n/a",
+                note=f"only {fmt(s.get('days_available'), missing='?')} days available",
+            ))
+    return [Panel("PRICE", rows)]

@@ -33,7 +33,7 @@ import math
 import re
 from pathlib import Path
 
-from . import SourceResult, fmt, unavailable
+from . import Metric, Panel, SourceResult, fmt, unavailable
 
 NAME = "warehouse"
 
@@ -720,3 +720,72 @@ def context_lines(d: dict) -> list[str]:
             f"UTC day(s); the on-chain figures are not current."
         )
     return out
+
+
+def html_panels(d: dict) -> list[Panel]:
+    oc = d.get("onchain") or {}
+    sig = d.get("signals") or {}
+    vol = d.get("volatility") or {}
+    years = fmt(vol.get("percentile_window_days", 730) // 365)
+
+    pace, blocks = d.get("day_pace_retarget"), oc.get("blocks_day")
+    facts = [
+        Metric("Date (UTC)", _day_label(d.get("date")).replace("UTC ", "")),
+        Metric("Blocks", fmt(blocks),
+               note=(f"{fmt(pace, '+.1f')}% vs {BLOCKS_PER_DAY} target, "
+                     f"±{PACE_NOISE_PCT:.0f}% day-to-day noise"
+                     if pace is not None else None)),
+        Metric("Block Fullness", f"{fmt(oc.get('block_fullness'), '.0f')}%"),
+        Metric("Median Fee",
+               "<1 sat/vB" if isinstance(oc.get("p50_fee"), (int, float))
+               and oc["p50_fee"] < 1 else f"{fmt(oc.get('p50_fee'), '.1f')} sat/vB",
+               note="integer sat/vB from getblockstats — 0 means under 1"),
+        Metric("Fee / Subsidy", f"{fmt(oc.get('fee_subsidy'), '.2f')}%"),
+        Metric("Miner Revenue", f"{fmt(oc.get('miner_rev'), ',.1f')} BTC"),
+        Metric("Daily Close", fmt(d.get("close"), ",.0f", prefix="$"),
+               note="settled daily bar, not live spot"),
+    ]
+
+    signals = []
+    if sig.get("fee_pctile") is not None:
+        signals.append(Metric(
+            "Fee / Subsidy", f"{_ordinal(sig['fee_pctile'])} pctile",
+            note=f"{years}y · 7d mean, weekend-corrected · low = demand apathy"))
+    if sig.get("apathy_days"):
+        signals.append(Metric(
+            "Apathy Streak", f"{fmt(sig.get('apathy_days'))}d",
+            note=f"consecutive days under {APATHY_MAX}% — duration, not a new low"))
+    dd = sig.get("hashrate_drawdown")
+    if isinstance(dd, (int, float)):
+        signals.append(Metric(
+            "Hashrate Drawdown", f"{fmt(dd, '.1f')}%",
+            note=f"off its {HASHRATE_WINDOW_DAYS}d high · washouts ran -33% to -50%",
+            tone="warn" if dd < -20 else None))
+    v = sig.get("vol_pctile")
+    if isinstance(v, (int, float)) and v >= VOL_PCTILE_MIN:
+        signals.append(Metric(
+            "Exchange Volume", f"{_ordinal(v)} pctile",
+            note=f"{years}y, single venue · marks events, not direction"))
+
+    vols = []
+    for w in vol.get("windows") or []:
+        if not isinstance(w, dict):
+            continue
+        if not w.get("covered"):
+            vols.append(Metric(f"{fmt(w.get('days'))}D", "n/a",
+                               note="not enough history for this window"))
+            continue
+        vols.append(Metric(
+            f"{fmt(w.get('days'))}D", f"{fmt(w.get('value'), '.1f')}%",
+            note=f"{_pctile(w.get('percentile_recent'))} pctile {years}y · "
+                 f"{_pctile(w.get('percentile_all'))} all history"))
+
+    panels = [Panel("ON-CHAIN (DAILY)", facts)]
+    if signals:
+        panels.append(Panel(f"SIGNALS (vs {years}y)", signals))
+    if vols:
+        # The annualisation lives in the title so every row inherits it — the
+        # level is not comparable to anyone else's without it.
+        panels.append(Panel(
+            f"VOLATILITY (REALISED, ann √{fmt(vol.get('annualisation_days'))})", vols))
+    return panels

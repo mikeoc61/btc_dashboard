@@ -43,6 +43,8 @@ def parse_args(argv=None):
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument("--json", action="store_true", help="emit the snapshot as JSON")
+    p.add_argument("--html", action="store_true",
+                   help="emit a self-contained HTML page instead of the panel")
     p.add_argument(
         "--from",
         dest="origin",
@@ -136,6 +138,12 @@ def main(argv=None) -> int:
 
     if args.json:
         print(json.dumps(snap, indent=2, default=str))
+        return 0 if snapshot.available(snap) else 1
+
+    if args.html:
+        from . import html as html_render
+
+        print(html_render.render_html(snap))
         return 0 if snapshot.available(snap) else 1
 
     if args.context:
