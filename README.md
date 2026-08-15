@@ -149,6 +149,36 @@ what makes a figure comparable to an external source. Every `Metric` carries a
 `note` and the note is rendered. Free text is HTML-escaped, since an ingested
 snapshot's error strings are controlled by whoever produced it.
 
+### Local web view
+
+```bash
+pip install -e ".[web]"
+btc-dashboard-web                 # http://127.0.0.1:8000
+ssh -L 8000:localhost:8000 pibot  # reach the Pi's from a laptop
+```
+
+Same page as `--html`, plus an **ask box** wired to the analyst. A question is
+a form POST that redirects back to `/`, so reloading never re-submits and the
+page's auto-refresh keeps working.
+
+**This process holds your provider key**, which is a deliberate departure from
+the boundary that holds everywhere else — see
+[Credential boundary](#credential-boundary-the-llm-is-client-side-only). An ask
+box in a browser cannot work any other way: the server has to make the call.
+That is fine when the server *is* your own machine reached over a tunnel, which
+is why:
+
+- **the default bind is `127.0.0.1`.** On `0.0.0.0` anyone who can reach the
+  port can spend your API budget. A wider bind prints a warning naming the SSH
+  alternative.
+- **`/ask` has a cooldown**, so a double-submit costs one call, not two.
+- **every answer shows its token count**, so the cost is visible.
+
+Collection is decoupled from HTTP: the app holds a snapshot in memory with a
+short TTL, so an auto-refreshing tab doesn't scrape Farside once a minute and
+three questions cost three LLM calls and zero collections. `refresh data` on
+the page forces a re-collect.
+
 ### Adding a source
 
 One new file in `sources/` exposing four names, plus one entry in
@@ -541,7 +571,7 @@ moves, so no single hashrate metric can confirm a bottom on its own.
 .venv/bin/pytest
 ```
 
-291 tests. The warehouse tests run against a real DuckDB file built per-test
+304 tests. The warehouse tests run against a real DuckDB file built per-test
 rather than a mock — the signal definitions are the part most worth pinning
 down, and a mock would only assert that we called ourselves.
 

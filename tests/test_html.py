@@ -119,4 +119,4 @@ class TestAskBox:
     def test_present_when_enabled_with_a_cost_warning(self):
         out = page.render_html(_snap(), ask=True)
         assert "<form" in out and 'action="/ask"' in out
-        assert "Costs money" in out
+        assert "costs money" in out

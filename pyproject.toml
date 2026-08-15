@@ -18,10 +18,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "fastapi>=0.110", "httpx>=0.27", "python-multipart>=0.0.9"]
+# python-multipart is not optional: FastAPI needs it to parse the ask
+# form, and without it the only interactive control on the page 500s.
+web = ["fastapi>=0.110", "uvicorn>=0.29", "python-multipart>=0.0.9"]
 
 [project.scripts]
 btc-dashboard = "btc_dashboard.cli:main"
+btc-dashboard-web = "btc_dashboard.web:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

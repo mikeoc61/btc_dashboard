@@ -71,6 +71,18 @@ h1 { font-size:1rem; margin:0; letter-spacing:.08em; color:var(--accent); }
 .note { color:var(--muted); font-size:.7rem; padding:0 0 .25rem; margin-top:-.15rem;
         max-width:100%; }
 .err { color:var(--warn); font-size:.78rem; }
+.card.wide { grid-column:1/-1; }
+.askform { display:flex; gap:.5rem; }
+.askform input { flex:1; padding:.45rem .6rem; background:var(--bg);
+                 color:var(--text); border:1px solid var(--line);
+                 border-radius:4px; font:inherit; }
+.askform button, .linkish { padding:.45rem .9rem; border:1px solid var(--line);
+                 border-radius:4px; background:var(--accent); color:var(--bg);
+                 font:inherit; font-weight:600; cursor:pointer; }
+.linkish { padding:.1rem .5rem; background:none; color:var(--muted);
+           font-weight:400; font-size:.7rem; }
+.answer { white-space:pre-wrap; margin:.4rem 0; font-family:inherit;
+          line-height:1.5; }
 footer { margin-top:1rem; padding-top:.6rem; border-top:1px solid var(--line);
          color:var(--muted); font-size:.72rem; }
 """
@@ -129,9 +141,32 @@ def _panels_for(name: str, block: dict) -> list[Panel]:
         return [Panel(title, [Metric("render failed", type(e).__name__)])]
 
 
+def _answer_card(answer: dict | None) -> str:
+    """The analyst's reply, or the reason there isn't one."""
+    if not answer:
+        return ""
+    q = _esc(answer.get("question") or "")
+    if answer.get("error"):
+        body = f'<div class="err">{_esc(answer["error"])}</div>'
+        meta = ""
+    else:
+        # pre-wrap, so the model's paragraphs survive without letting its text
+        # introduce markup — it is escaped like every other free string here.
+        body = f'<div class="answer">{_esc(answer.get("text") or "")}</div>'
+        meta = (
+            f'<div class="note">{_esc(answer.get("provider"))}/'
+            f'{_esc(answer.get("model"))} · {_esc(answer.get("input_tokens"))} in / '
+            f'{_esc(answer.get("output_tokens"))} out</div>'
+        )
+    return (
+        '<section class="card wide"><h2>ANALYSIS</h2>'
+        f'<div class="note">{q}</div>{body}{meta}</section>'
+    )
+
+
 def render_html(snapshot: dict, *, title: str = "BTC DASHBOARD",
                 refresh: int | None = REFRESH_SECONDS,
-                ask: bool = False) -> str:
+                ask: bool = False, answer: dict | None = None) -> str:
     """The page. `ask` adds the analyst box, which needs a server behind it."""
     generated = str(snapshot.get("generated_at", ""))[:19].replace("T", " ")
 
@@ -166,16 +201,19 @@ def render_html(snapshot: dict, *, title: str = "BTC DASHBOARD",
     ask_html = ""
     if ask:
         ask_html = (
-            '<section class="card" style="grid-column:1/-1">'
-            '<h2>ASK</h2>'
-            '<form method="post" action="/ask">'
-            '<input name="q" placeholder="ask a question about this snapshot" '
-            'style="width:100%;padding:.5rem;background:var(--bg);color:var(--text);'
-            'border:1px solid var(--line);border-radius:4px;font:inherit">'
-            '</form>'
+            '<section class="card wide"><h2>ASK'
+            '<form method="post" action="/refresh" style="margin:0">'
+            '<button class="linkish" type="submit">refresh data</button>'
+            '</form></h2>'
+            '<form method="post" action="/ask" class="askform">'
+            '<input name="q" autofocus autocomplete="off" '
+            'placeholder="ask a question about this snapshot">'
+            '<button type="submit">Ask</button></form>'
             '<div class="note">Sent to the configured provider using the key on '
-            'this machine. Costs money per question.</div></section>'
-        )
+            'this machine — each question costs money. The analyst sees the '
+            'facts on this page, including which are cached or stale.</div>'
+            '</section>'
+        ) + _answer_card(answer)
 
     meta_refresh = (
         f'<meta http-equiv="refresh" content="{int(refresh)}">' if refresh else ""
