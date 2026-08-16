@@ -53,7 +53,7 @@ TITLES = {
     "price": "PRICE",
     "node": "NETWORK (live)",
     "warehouse": "ON-CHAIN (daily)",
-    "flows": "ETF FLOWS",
+    "flows": "ETF FLOWS (US SPOT)",
 }
 
 

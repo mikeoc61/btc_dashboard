@@ -399,6 +399,12 @@ def context_lines(d: dict) -> list[str]:
         f"{fmt(d.get('age_days'))}d ago, " if d.get("age_days") is not None else ""
     )
     out = [
+        # Scope stated before any figure. These are U.S. spot ETFs only — not
+        # futures products, not non-U.S. listings, and not a measure of global
+        # capital flow. A model given "ETF flows" without that will generalise.
+        f"BTC ETF flows below cover U.S. spot ETFs only ({', '.join(FUNDS)} and "
+        f"the untracked remainder). They are one channel of demand, not total "
+        f"market flow.",
         f"BTC ETF flows as of {d['as_of']} ({age}fully reported): "
         f"{_m(d.get('latest_total'))} total, {_m(d.get('latest_lead'))} {lead}"
     ]

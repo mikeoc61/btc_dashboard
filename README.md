@@ -28,7 +28,7 @@ ON-CHAIN (daily)
   vol (ann √365, pctile 2y/all): 7d 16% (3/3) | 30d 28% (11/7) | 90d 34% (14/5) | 180d 38% (20/5) | 360d 43% (24/5)
   block pace 127/144 (-11.8%, ±8% day-to-day noise)
 
-ETF FLOWS
+ETF FLOWS (US SPOT)
   latest -49.7M total | -54.8M IBIT (28 Jul 2026, 1d ago)
   5d net -457.4M total | -439.5M IBIT (96% IBIT — conviction distribution)
   20d net -49.6M total | -135.3M IBIT

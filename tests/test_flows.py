@@ -241,3 +241,35 @@ class TestAgeUsesTheMarketCalendar:
         self._at(monkeypatch, "2026-07-30T00:04:00")
         rows = [_day("28 Jul 2026", -10.0, 0.0, 0.0, 0.0, -10.0)]
         assert flows.summarize(rows)["age_days"] == flows.age_days("28 Jul 2026") == 1
+
+
+class TestScopeIsStated:
+    """"ETF flows" without a qualifier reads as all Bitcoin fund flows.
+
+    These are U.S. spot ETFs only — not futures products, not non-U.S.
+    listings, and not a measure of global capital flow. The distinction
+    matters because the figure is routinely asked to answer questions it
+    cannot ("what is capital doing?").
+    """
+
+    def _summary(self):
+        return flows.summarize(_complete_days(5))
+
+    def test_the_terminal_title_carries_the_qualifier(self):
+        from btc_dashboard import snapshot
+        assert snapshot.TITLES["flows"] == "ETF FLOWS (US SPOT)"
+
+    def test_the_web_card_agrees_with_the_terminal(self):
+        from btc_dashboard import snapshot
+        panel = flows.html_panels(self._summary())[0]
+        assert panel.title == snapshot.TITLES["flows"]
+
+    def test_the_analyst_is_told_the_scope_before_any_figure(self):
+        lines = flows.context_lines(self._summary())
+        assert "U.S. spot ETFs only" in lines[0], "scope must precede the numbers"
+        assert "not total market flow" in lines[0]
+
+    def test_the_tracked_funds_are_named(self):
+        lines = flows.context_lines(self._summary())
+        for fund in flows.FUNDS:
+            assert fund in lines[0]
