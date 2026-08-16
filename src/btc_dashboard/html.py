@@ -183,13 +183,16 @@ h1 { font-size:1.05rem; margin:0; letter-spacing:.06em; color:var(--accent); }
 .note.warn { color:color-mix(in srgb, var(--warn) 78%, var(--muted)); }
 .err { color:var(--warn); font-size:.88rem; }
 .card.wide { grid-column:1/-1; }
+/* A plain block, not flex: whitespace between flex items is discarded, so the
+   separating spaces have to be real text and the container has to lay out as
+   text for them to survive. */
 .notable { background:var(--card); border:1px solid var(--line);
            border-left:3px solid var(--warn); border-radius:8px;
-           padding:.7rem 1rem; margin-bottom:.85rem; }
-.notable h2 { font-size:.85rem; margin:0 0 .35rem; letter-spacing:.05em;
-              color:var(--warn); font-weight:600; }
-.notable ul { margin:0; padding-left:1.1rem; }
-.notable li { padding:.1rem 0; }
+           padding:.55rem .9rem; margin-bottom:.85rem; font-size:.9rem;
+           line-height:1.6; }
+.notable .lead { color:var(--warn); font-weight:600; font-size:.85rem;
+                 letter-spacing:.05em; margin-right:.3rem; }
+.notable .sep { color:var(--muted); }
 .askform { display:flex; gap:.6rem; }
 .askform input { flex:1; padding:.6rem .7rem; background:var(--bg);
                  color:var(--text); border:1px solid var(--line);
@@ -397,9 +400,24 @@ def render_html(snapshot: dict, *, title: str = "BTC DASHBOARD",
     if notable:
         # Absent entirely when nothing qualifies. A strip that always finds
         # something to say teaches the reader to stop looking at it.
-        items = "".join(f"<li>{_esc(n)}</li>" for n in notable)
+        # Inline rather than a bulleted list: the strip is a header, and a
+        # column of bullets pushes the cards it is meant to introduce below the
+        # fold. The separator is a character in the markup, not a CSS
+        # ::before — it sits inside the preceding item so it can never begin a
+        # wrapped line, and it survives the stylesheet being stripped.
+        # The separator and the spaces around it are markup, not flex `gap`:
+        # spacing supplied by the stylesheet disappears with it, and the strip
+        # then reads "NOTABLE7d volatility 10%|30d volatility 22%". A
+        # non-breaking space before the bar glues it to the item it follows, so
+        # a wrapped line never opens with a stray "|".
+        last = len(notable) - 1
+        items = " ".join(
+            _esc(n) + ('<span class="sep">&nbsp;|</span>' if i < last else "")
+            for i, n in enumerate(notable)
+        )
         notable_html = (
-            f'<section class="notable"><h2>NOTABLE</h2><ul>{items}</ul></section>'
+            f'<section class="notable"><span class="lead">NOTABLE</span> '
+            f'{items}</section>'
         )
 
     meta_refresh = (

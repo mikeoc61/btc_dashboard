@@ -550,3 +550,44 @@ class TestNotableStrip:
         monkeypatch.setattr(warehouse, "notable",
                             lambda d: (_ for _ in ()).throw(RuntimeError("boom")))
         assert "<html" in page.render_html(self._warehouse(0.4))
+
+
+class TestNotableIsInline:
+    """A column of bullets pushes the cards the strip introduces below the
+    fold, so it lays out as one line."""
+
+    def _snap(self):
+        base = {"available": True, "stale": False, "cached": False,
+                "cache_age_seconds": None, "as_of": None, "error": None}
+        return {"schema_version": 1, "generated_at": "2026-08-16T02:00:00+00:00",
+                "asset": "btc", "sources": {"warehouse": {**base, "data": {
+            "date": "2026-08-15", "onchain": {}, "signals": {},
+            "volatility": {"annualisation_days": 365, "percentile_window_days": 730,
+                           "windows": [
+                               {"days": 7, "covered": True, "value": 10.3,
+                                "percentile_recent": 0.4, "percentile_all": 1.0},
+                               {"days": 30, "covered": True, "value": 22.5,
+                                "percentile_recent": 0.4, "percentile_all": 2.0}]}}}}}
+
+    def test_no_list_markup(self):
+        out = page.render_html(self._snap())
+        assert "<li>" not in out and "<ul>" not in out
+
+    def test_items_are_pipe_separated(self):
+        assert '<span class="sep">&nbsp;|</span>' in page.render_html(self._snap())
+
+    def test_a_single_item_has_no_trailing_separator(self):
+        snap = self._snap()
+        snap["sources"]["warehouse"]["data"]["volatility"]["windows"].pop()
+        assert '<span class="sep">' not in page.render_html(snap)
+
+    def test_it_still_reads_with_the_stylesheet_stripped(self):
+        """Spacing from flex `gap` vanishes with the CSS, running the items
+        together as NOTABLE7d volatility 10%|30d volatility 22%."""
+        import re
+        out = page.render_html(self._snap())
+        section = re.search(r'<section class="notable">(.*?)</section>', out, re.S).group(1)
+        plain = re.sub(r"<[^>]+>", "", section).replace("&nbsp;", " ")
+        assert plain.startswith("NOTABLE 7d volatility")
+        assert " | " in plain
+        assert "NOTABLE7d" not in plain

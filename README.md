@@ -150,7 +150,8 @@ the warehouse but belongs beside price, since a distance from a moving average
 only means something in volatility units.
 
 **A `NOTABLE` strip leads the page**, listing readings extreme enough to lead
-with. Two rules keep it honest:
+with, inline and pipe-separated so it stays one line and doesn't push the cards
+it introduces below the fold. Two rules keep it honest:
 
 - **Threshold-selected, not hand-picked.** Each source owns its own bounds via
   `notable()`, because what counts as extreme is a property of the measure. The
