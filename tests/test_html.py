@@ -344,3 +344,45 @@ class TestFavicon:
 
     def test_it_is_small_enough_to_inline(self):
         assert len(page._favicon_data_uri()) < 2000
+
+
+class TestPngFallbackForSafari:
+    """Safari has never read SVG favicons from a data URI — it falls back to
+    its own generated letter tile, so the icon appears not to change at all."""
+
+    def test_both_formats_are_offered(self):
+        out = page.render_html(_snap())
+        assert 'type="image/png"' in out
+        assert 'type="image/svg+xml"' in out
+
+    def test_the_png_is_valid(self):
+        png = page._favicon_png()
+        assert png[:8] == b"\x89PNG\r\n\x1a\n"
+        assert png[12:16] == b"IHDR" and png.endswith(b"IEND\xae\x42\x60\x82")
+
+    def test_the_png_declares_the_right_size(self):
+        import struct
+        png = page._favicon_png()
+        w, h = struct.unpack(">II", png[16:24])
+        assert (w, h) == (page._ICON_PX, page._ICON_PX) == (32, 32)
+
+    def test_it_is_generated_not_pasted(self):
+        """A base64 blob is unreadable in a diff and cannot be checked against
+        the SVG it is meant to match."""
+        assert page._MARK_RECTS, "the mark is described as geometry"
+        assert page._favicon_png() == page._favicon_png(), "and is deterministic"
+
+    def test_both_icons_draw_the_same_mark(self):
+        """The SVG and the raster must not drift apart."""
+        svg_strokes = page._FAVICON_SVG.count("<rect")
+        assert svg_strokes >= 3
+        assert len(page._MARK_RECTS) >= 3
+        assert "f7931a" in page._FAVICON_SVG.lower()
+        assert page._ORANGE == (0xF7, 0x93, 0x1A)
+
+    def test_still_no_external_references(self):
+        out = page.render_html(_snap())
+        assert "http://" not in out and "https://" not in out
+
+    def test_the_png_stays_small_enough_to_inline(self):
+        assert len(page._favicon_png_data_uri()) < 1500

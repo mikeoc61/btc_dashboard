@@ -47,6 +47,65 @@ _FAVICON_SVG = (
 )
 
 
+# The same mark as rectangles on a 32x32 grid, for the raster copy. Safari has
+# never read SVG favicons from a data URI, so it falls back to its own
+# generated letter tile and the icon appears not to change at all.
+#
+# (x0, y0, x1, y1) in pixels, exclusive of the right/bottom edge. The two long
+# strokes run past the letter top and bottom, which is what makes a B a Bitcoin
+# sign; everything else is the letter itself.
+_MARK_RECTS = (
+    (9, 6, 13, 26),     # spine
+    (9, 6, 19, 9),      # top bar
+    (9, 14, 18, 17),    # middle bar
+    (9, 23, 20, 26),    # bottom bar
+    (16, 6, 20, 17),    # upper bowl
+    (17, 14, 21, 26),   # lower bowl
+    (13, 2, 16, 30),    # crossing stroke, left
+    (17, 2, 20, 30),    # crossing stroke, right
+)
+_ORANGE = (0xF7, 0x93, 0x1A)
+_WHITE = (0xFF, 0xFF, 0xFF)
+_ICON_PX = 32
+
+
+def _favicon_png() -> bytes:
+    """Rasterise the mark to a 32x32 PNG, using only the standard library.
+
+    Generated rather than pasted in as a base64 blob so the icon stays
+    reviewable: a blob is unreadable in a diff and cannot be checked against
+    the SVG it is supposed to match.
+    """
+    import struct
+    import zlib
+
+    rows = []
+    for y in range(_ICON_PX):
+        row = bytearray([0])                      # PNG filter byte: none
+        for x in range(_ICON_PX):
+            on = any(x0 <= x < x1 and y0 <= y < y1
+                     for x0, y0, x1, y1 in _MARK_RECTS)
+            row += bytes(_WHITE if on else _ORANGE)
+        rows.append(bytes(row))
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + kind + data
+                + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF))
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", _ICON_PX, _ICON_PX, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(b"".join(rows), 9))
+        + chunk(b"IEND", b"")
+    )
+
+
+def _favicon_png_data_uri() -> str:
+    import base64
+
+    return "data:image/png;base64," + base64.b64encode(_favicon_png()).decode("ascii")
+
+
 def _favicon_data_uri() -> str:
     """The icon as a base64 data URI.
 
@@ -286,7 +345,8 @@ def render_html(snapshot: dict, *, title: str = "BTC DASHBOARD",
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 {meta_refresh}<title>{_esc(title)}</title>
-<link rel="icon" href="{_favicon_data_uri()}">
+<link rel="icon" type="image/png" sizes="32x32" href="{_favicon_png_data_uri()}">
+<link rel="icon" type="image/svg+xml" href="{_favicon_data_uri()}">
 <style>{CSS}</style></head>
 <body>
 <header>
