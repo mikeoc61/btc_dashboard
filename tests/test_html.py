@@ -308,3 +308,39 @@ class TestEveryCardOfASourceIsDated:
         out = page.render_html(self._warehouse_snap(
             stale=True, error="warehouse unreadable"))
         assert out.count("warehouse unreadable") == 1
+
+
+class TestFavicon:
+    """Two dashboards in tabs need telling apart, and the page must stay
+    self-contained while doing it."""
+
+    def test_the_page_declares_an_icon(self):
+        out = page.render_html(_snap())
+        assert '<link rel="icon"' in out
+
+    def test_it_is_inline_not_a_request(self):
+        out = page.render_html(_snap())
+        assert 'href="data:image/svg+xml;base64,' in out
+        assert 'href="/favicon' not in out
+
+    def test_the_data_uri_round_trips(self):
+        import base64
+        uri = page._favicon_data_uri()
+        decoded = base64.b64decode(uri.split(",", 1)[1]).decode()
+        assert decoded == page._FAVICON_SVG
+        assert decoded.startswith("<svg") and decoded.endswith("</svg>")
+
+    def test_base64_keeps_the_svg_namespace_out_of_the_page(self):
+        """The xmlns is an http:// URL. Percent-encoding the SVG would put it
+        in the page as literal text and break the self-contained check."""
+        assert "http://" in page._FAVICON_SVG
+        assert "http://" not in page.render_html(_snap())
+
+    def test_the_mark_is_drawn_not_typed(self):
+        """U+20BF is absent from many fonts; a tab showing a substitution box
+        is worse than no icon at all."""
+        assert "₿" not in page._FAVICON_SVG
+        assert page._FAVICON_SVG.count("<rect") >= 3   # badge plus two strokes
+
+    def test_it_is_small_enough_to_inline(self):
+        assert len(page._favicon_data_uri()) < 2000

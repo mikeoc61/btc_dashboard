@@ -28,6 +28,39 @@ REFRESH_SECONDS = 60
 TICK_OK = "\u2713"   # CHECK MARK
 TICK_NO = "\u2717"   # BALLOT X
 
+# Tab icon. Drawn rather than set as a glyph: a "B" exists in every font, but
+# the Bitcoin sign U+20BF does not, and a tab showing a substitution box is
+# worse than no icon. The two strokes are rectangles, so the mark renders
+# identically everywhere.
+#
+# Solid fill because a tab icon sits on the browser's chrome, not the page —
+# a background of its own is what keeps it legible in light and dark themes
+# alike, without needing to detect either.
+_FAVICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+    '<rect width="64" height="64" rx="13" fill="#f7931a"/>'
+    '<rect x="25" y="8" width="5" height="48" fill="#fff"/>'
+    '<rect x="36" y="8" width="5" height="48" fill="#fff"/>'
+    '<text x="33" y="47" font-size="40" font-weight="700" text-anchor="middle"'
+    ' font-family="Helvetica,Arial,sans-serif" fill="#fff">B</text>'
+    "</svg>"
+)
+
+
+def _favicon_data_uri() -> str:
+    """The icon as a base64 data URI.
+
+    Base64 rather than a percent-encoded SVG for two reasons. It removes every
+    quoting hazard — the markup contains both quote characters and a `#`, each
+    of which has bitten this file before. And it keeps the SVG's xmlns, which
+    is an http:// URL, out of the page as literal text, so "this page
+    references nothing external" stays checkable by searching for a scheme.
+    """
+    import base64
+
+    encoded = base64.b64encode(_FAVICON_SVG.encode("utf-8")).decode("ascii")
+    return f"data:image/svg+xml;base64,{encoded}"
+
 CSS = """
 :root {
   --bg:#0d1117; --card:#161b22; --line:#30363d; --text:#e6edf3;
@@ -252,7 +285,9 @@ def render_html(snapshot: dict, *, title: str = "BTC DASHBOARD",
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-{meta_refresh}<title>{_esc(title)}</title><style>{CSS}</style></head>
+{meta_refresh}<title>{_esc(title)}</title>
+<link rel="icon" href="{_favicon_data_uri()}">
+<style>{CSS}</style></head>
 <body>
 <header>
   <h1>{_esc(title)}</h1>

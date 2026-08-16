@@ -136,7 +136,9 @@ for that).
 `--html` renders the snapshot as a self-contained page — inline CSS, no
 external assets, scripts or fonts — so it works from `file://`, from a static
 server, or over an SSH tunnel with no internet access. Light and dark follow
-`prefers-color-scheme`.
+`prefers-color-scheme`. The tab icon is an inline base64 SVG, so it costs no
+request and keeps the page's "references nothing external" property literally
+checkable.
 
 Each source contributes `html_panels()` beside its terminal and LLM
 presentations, so a source that naturally splits (facts, signals, volatility)
