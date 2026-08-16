@@ -120,3 +120,51 @@ class TestAskBox:
         out = page.render_html(_snap(), ask=True)
         assert "<form" in out and 'action="/ask"' in out
         assert "costs money" in out
+
+
+class TestAvailabilityTicks:
+    """The tick is information, so it lives in the markup, not the stylesheet.
+
+    It was originally a CSS `::before` with a hex escape. Two problems, one
+    cosmetic and one structural: `\\2713` had to survive two layers of Python
+    quoting to reach the browser and a rewrite turned it into an octal escape,
+    shipping a superscript one; and a glyph injected by stylesheet disappears
+    whenever styling does, taking "which sources are available" with it.
+    """
+
+    def _two_sources(self, node_ok: bool):
+        snap = _snap()
+        snap["sources"]["node"] = {
+            "available": node_ok, "stale": False, "cached": False,
+            "cache_age_seconds": None, "as_of": None,
+            "error": None if node_ok else "bitcoin-cli not found",
+            "data": {"height": 1, "hash_rate_ehs": 1.0, "difficulty_t": 1.0,
+                     "retarget": {}, "mempool": {}, "fees_sat_vb": {}} if node_ok else None,
+        }
+        return snap
+
+    def test_glyphs_are_literal_characters_in_the_html(self):
+        out = page.render_html(self._two_sources(node_ok=True))
+        assert page.TICK_OK in out
+        assert "\\2713" not in out and "content:\"\\" not in out
+
+    def test_an_unavailable_source_gets_the_cross(self):
+        out = page.render_html(self._two_sources(node_ok=False))
+        assert page.TICK_NO in out
+
+    def test_the_marker_survives_the_stylesheet_being_stripped(self):
+        """Strip the <style> block; availability must still be readable."""
+        import re
+        out = page.render_html(self._two_sources(node_ok=False))
+        without_css = re.sub(r"<style>.*?</style>", "", out, flags=re.S)
+        assert page.TICK_OK in without_css and page.TICK_NO in without_css
+
+    def test_the_css_carries_no_escapes_or_non_ascii(self):
+        """Both are what broke it: an escape mangled by quoting, and a glyph
+        that only exists in the stylesheet."""
+        assert "\\" not in page.CSS
+        assert all(ord(c) < 128 for c in page.CSS)
+
+    def test_ticks_name_their_source(self):
+        out = page.render_html(self._two_sources(node_ok=True))
+        assert "PRICE" in out and "NETWORK" in out

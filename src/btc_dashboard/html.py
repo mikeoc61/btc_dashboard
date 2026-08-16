@@ -25,6 +25,8 @@ from .render import human_age
 from .sources import Metric, Panel
 
 REFRESH_SECONDS = 60
+TICK_OK = "\u2713"   # CHECK MARK
+TICK_NO = "\u2717"   # BALLOT X
 
 CSS = """
 :root {
@@ -58,8 +60,9 @@ header { display:flex; flex-wrap:wrap; gap:.9rem; align-items:baseline;
 h1 { font-size:1.05rem; margin:0; letter-spacing:.06em; color:var(--accent); }
 .meta { color:var(--muted); font-size:.85rem; font-family:var(--mono); }
 .ticks { display:flex; gap:1rem; font-size:.85rem; }
-.tick.ok::before { content:"\2713 "; color:var(--up); }
-.tick.no::before { content:"\2717 "; color:var(--down); }
+.tick .mark { font-weight:700; }
+.tick.ok .mark { color:var(--up); }
+.tick.no .mark { color:var(--down); }
 .tick.no { color:var(--muted); }
 .grid { display:grid; gap:.85rem;
         grid-template-columns:repeat(auto-fit,minmax(310px,1fr)); }
@@ -182,8 +185,15 @@ def render_html(snapshot: dict, *, title: str = "BTC DASHBOARD",
     """The page. `ask` adds the analyst box, which needs a server behind it."""
     generated = str(snapshot.get("generated_at", ""))[:19].replace("T", " ")
 
+    # The tick glyph is markup, not a CSS ::before. Injected by stylesheet it
+    # disappears whenever styling does, and "which sources are available" is
+    # information, so it must not live in the presentation layer. CSS only
+    # colours it. A literal also avoids CSS hex escapes, which have to survive
+    # two layers of quoting to reach the browser intact — one rewrite turned
+    # \2713 into an octal escape and shipped a superscript one.
     ticks = "".join(
         f'<span class="tick {"ok" if b.get("available") else "no"}">'
+        f'<span class="mark">{TICK_OK if b.get("available") else TICK_NO}</span> '
         f'{_esc(snap.TITLES.get(n, n).split(" (")[0])}</span>'
         for n, b in ((n, snapshot["sources"][n]) for n in snap.ordered_names(snapshot))
     )
