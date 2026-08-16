@@ -146,6 +146,20 @@ Each source contributes `html_panels()` beside its terminal and LLM
 presentations, so a source that naturally splits (facts, signals, volatility)
 says so itself rather than the page imposing a layout.
 
+**Every close names its day.** The price card compares spot against the last
+completed daily close; the on-chain card shows the newest close the *warehouse*
+holds. Whenever the ingester hasn't run yet those are different days, and two
+undated "previous closes" a day apart look like the sources disagreeing about
+the price rather than an ordinary one-day lag. The price card names its
+reference date, and the on-chain day moved into that card's heading — as a row
+it read as one metric among many rather than as the date of everything below it.
+
+The two providers date a daily bar by opposite conventions, which is handled
+explicitly: CoinGecko's points are instants stamped 00:00 UTC, so the one
+labelled 16 Aug is the *close of 15 Aug*; a Binance kline stamped with a day's
+open carries that day's close. Reading either the other way dates every close
+a day out.
+
 **Spot is coloured against the previous completed daily close**, with a dead
 band: a move under 0.1% is left uncoloured, because one standard deviation of
 a current day is near 1% and painting a tenth of that green asserts a

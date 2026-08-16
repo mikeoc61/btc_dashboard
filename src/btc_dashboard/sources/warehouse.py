@@ -730,7 +730,6 @@ def html_panels(d: dict) -> list[Panel]:
 
     pace, blocks = d.get("day_pace_retarget"), oc.get("blocks_day")
     facts = [
-        Metric("Date (UTC)", _day_label(d.get("date")).replace("UTC ", "")),
         Metric("Blocks", fmt(blocks),
                note=(f"{fmt(pace, '+.1f')}% vs {BLOCKS_PER_DAY} target, "
                      f"±{PACE_NOISE_PCT:.0f}% day-to-day noise"
@@ -743,7 +742,8 @@ def html_panels(d: dict) -> list[Panel]:
         Metric("Fee / Subsidy", f"{fmt(oc.get('fee_subsidy'), '.2f')}%"),
         Metric("Miner Revenue", f"{fmt(oc.get('miner_rev'), ',.1f')} BTC"),
         Metric("Daily Close", fmt(d.get("close"), ",.0f", prefix="$"),
-               note="settled daily bar, not live spot"),
+               note=f"settled bar for {_day_label(d.get('date')).replace('UTC ', '')}"
+                    f", not live spot"),
     ]
 
     signals = []
@@ -780,7 +780,18 @@ def html_panels(d: dict) -> list[Panel]:
             note=f"{_pctile(w.get('percentile_recent'))} pctile {years}y · "
                  f"{_pctile(w.get('percentile_all'))} all history"))
 
-    panels = [Panel("ON-CHAIN (DAILY)", facts)]
+    # The day goes in the heading, not in a row. As a row it reads as one
+    # metric among many, and every other figure on the card is *for* that day —
+    # so a reader comparing it against a live price has no cue that they are
+    # looking at different days. The weekday stays: fee/subsidy runs materially
+    # lower at weekends, so an unlabelled Saturday reads as deterioration.
+    try:
+        day = datetime.date.fromisoformat(d["date"])
+        heading = f"ON-CHAIN \u00b7 {day:%-d %b %a} UTC".upper()
+    except (KeyError, TypeError, ValueError):
+        heading = "ON-CHAIN (DAILY)"
+
+    panels = [Panel(heading, facts)]
     if signals:
         panels.append(Panel(f"SIGNALS (vs {years}y)", signals))
     if vols:

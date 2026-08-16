@@ -187,3 +187,60 @@ class TestPortSelection:
             taken = s.getsockname()[1]
             assert web._port_free("127.0.0.1", taken) is False
         assert web._port_free("127.0.0.1", taken) is True
+
+
+class TestCloseDateAttribution:
+    """The two providers date a daily bar by opposite conventions."""
+
+    def test_coingecko_points_belong_to_the_day_that_ended(self, monkeypatch):
+        """A point stamped 16 Aug 00:00 is the close of 15 Aug. Reading it as
+        the 16th dates every close a day late."""
+        import datetime
+        from btc_dashboard.sources import price
+
+        def fake(url, timeout):
+            base = datetime.datetime(2026, 8, 16, tzinfo=datetime.timezone.utc)
+            return {"prices": [
+                [int((base - datetime.timedelta(days=1)).timestamp() * 1000), 62996.4],
+                [int(base.timestamp() * 1000), 63031.05],
+                [int((base + datetime.timedelta(hours=1, minutes=47)).timestamp() * 1000),
+                 63011.9],
+            ]}
+
+        monkeypatch.setattr(price, "_get", fake)
+        series = price._coingecko(10)
+        assert series[0][0] == datetime.date(2026, 8, 14)
+        assert series[1][0] == datetime.date(2026, 8, 15)
+        assert series[2][0] == datetime.date(2026, 8, 16)   # today, in progress
+
+    def test_binance_klines_are_dated_by_their_open(self, monkeypatch):
+        """The opposite: a kline opening on 15 Aug carries 15 Aug's close."""
+        import datetime
+        from btc_dashboard.sources import price
+
+        day = datetime.datetime(2026, 8, 15, tzinfo=datetime.timezone.utc)
+        monkeypatch.setattr(price, "_get", lambda u, t: [
+            [int(day.timestamp() * 1000), "1", "2", "3", "62955.3", "0"],
+        ])
+        assert price._binance(10)[0] == (datetime.date(2026, 8, 15), 62955.3)
+
+    def test_collect_reports_the_reference_date(self, monkeypatch):
+        import datetime
+        from btc_dashboard.sources import price
+        from btc_dashboard.config import Config
+
+        base = datetime.datetime(2026, 8, 16, tzinfo=datetime.timezone.utc)
+        points = [
+            [int((base - datetime.timedelta(days=i)).timestamp() * 1000), 63000.0 + i]
+            for i in range(3, -1, -1)
+        ]
+        # The live quote lands mid-day, not on the midnight boundary. Putting a
+        # fake one at 00:00 makes the last completed close look like the live
+        # one and shifts the whole attribution by a day.
+        points.append([int((base + datetime.timedelta(hours=1, minutes=47))
+                           .timestamp() * 1000), 63011.9])
+        monkeypatch.setattr(price, "_get", lambda u, t: {"prices": points})
+
+        data = price.collect(Config.from_env()).data
+        assert data["prev_close_date"] == "2026-08-15"
+        assert data["spot"] == 63011.9

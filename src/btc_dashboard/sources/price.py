@@ -9,6 +9,7 @@ directly comparable and a provider switch can't silently change the definition.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import urllib.request
 from typing import Any
@@ -47,13 +48,37 @@ def _get(url: str, timeout: int) -> Any:
         return json.load(r)
 
 
-def _coingecko(timeout: int) -> list[float]:
+def _coingecko(timeout: int) -> list[tuple[datetime.date, float]]:
+    """`(closing day, price)` pairs, oldest first.
+
+    CoinGecko's daily points are instants stamped at 00:00 UTC, so the point
+    labelled 16 Aug is the price at that boundary — which is the *close of
+    15 Aug*. Attributing it to the 16th would date every close a day late.
+    Taking the day that just ended handles the final point too, which is a live
+    quote at an arbitrary time and belongs to today.
+    """
     data = _get(COINGECKO, timeout)
-    return [p[1] for p in data.get("prices", []) if isinstance(p[1], (int, float))]
+    out = []
+    for ts, px in data.get("prices", []):
+        if not isinstance(px, (int, float)):
+            continue
+        moment = datetime.datetime.fromtimestamp(ts / 1000, datetime.timezone.utc)
+        out.append(((moment - datetime.timedelta(seconds=1)).date(), float(px)))
+    return out
 
 
-def _binance(timeout: int) -> list[float]:
-    return [float(k[4]) for k in _get(BINANCE, timeout)]
+def _binance(timeout: int) -> list[tuple[datetime.date, float]]:
+    """`(closing day, price)` pairs, oldest first.
+
+    The opposite convention to CoinGecko: a kline stamped with the *open* time
+    of a day carries that day's close in field 4, so the date is used as-is.
+    """
+    out = []
+    for k in _get(BINANCE, timeout):
+        day = datetime.datetime.fromtimestamp(
+            int(k[0]) / 1000, datetime.timezone.utc).date()
+        out.append((day, float(k[4])))
+    return out
 
 
 def classify(pct: float) -> str:
@@ -66,17 +91,18 @@ def classify(pct: float) -> str:
 
 def collect(cfg) -> SourceResult:
     errors = []
-    closes = source = None
+    series = source = None
     for label, fn in (("coingecko", _coingecko), ("binance", _binance)):
         try:
-            closes = fn(cfg.timeout)
+            series = fn(cfg.timeout)
             source = label
             break
         except Exception as e:
             errors.append(f"{label}: {e}")
-    if not closes:
+    if not series:
         return unavailable(NAME, "; ".join(errors) or "no price source returned data")
 
+    closes = [px for _, px in series]
     spot = closes[-1]
     # The last entry is today's in-progress candle on both providers, so every
     # SMA window excludes it. Averaging a partial day into a mean would let an
@@ -91,6 +117,10 @@ def collect(cfg) -> SourceResult:
     # comparing a CoinGecko spot against a Kraken close would put a venue
     # spread into a figure meant to show the day's move.
     prev_close = completed[-1] if completed else None
+    # Dated, because the warehouse's "daily close" is a different day whenever
+    # the ingester has not yet run — an undated reference makes that ordinary
+    # one-day lag look like the two sources disagreeing about the price.
+    prev_close_date = series[-2][0] if len(series) > 1 else None
     change_pct = (
         round((spot - prev_close) / prev_close * 100, 2)
         if prev_close else None
@@ -106,6 +136,7 @@ def collect(cfg) -> SourceResult:
             # the last completed daily close, which may be one hour ago or
             # twenty-three depending on when the tool runs.
             "prev_close": round(prev_close, 2) if prev_close else None,
+            "prev_close_date": prev_close_date.isoformat() if prev_close_date else None,
             "change_pct": change_pct,
             "smas": smas,
             # Flat aliases for the primary window, kept so an existing consumer
@@ -165,6 +196,15 @@ def _sma_entries(d: dict) -> list[dict]:
     }]
 
 
+def _close_label(d: dict) -> str:
+    """`14 Aug close` where the date is known, else a bare `prev close`."""
+    raw = d.get("prev_close_date")
+    try:
+        return f"{datetime.date.fromisoformat(raw):%-d %b} close"
+    except (TypeError, ValueError):
+        return "prev close"
+
+
 def change_tone(pct) -> str | None:
     """up / down / None, with a dead band around zero."""
     if not isinstance(pct, (int, float)) or abs(pct) < NEUTRAL_BAND_PCT:
@@ -173,8 +213,8 @@ def change_tone(pct) -> str | None:
 
 
 def render_lines(d: dict) -> list[str]:
-    chg = (f" {fmt(d.get('change_pct'), '+.2f', suffix='%')} vs prev close"
-           if d.get("change_pct") is not None else "")
+    chg = (f" {fmt(d.get('change_pct'), '+.2f', suffix='%')} vs "
+           f"{_close_label(d)}" if d.get("change_pct") is not None else "")
     out = [f"spot {fmt(d.get('spot'), ',.0f', prefix='$')}{chg} "
            f"({d.get('source') or 'unknown'})"]
 
@@ -205,10 +245,13 @@ def context_lines(d: dict) -> list[str]:
         if d.get("change_pct") is not None:
             line += (
                 f", {fmt(d.get('change_pct'), '+.2f', suffix='%')} against the "
-                f"previous completed daily close of "
+                f"{_close_label(d)} of "
                 f"{fmt(d.get('prev_close'), ',.0f', prefix='$')}. That is not a "
                 f"24-hour change — the reference is the last finished day, which "
-                f"may be an hour or a day old depending on when this ran."
+                f"may be an hour or a day old depending on when this ran. It is "
+                f"also a different day from the warehouse's daily close whenever "
+                f"the ingester has not yet run, so do not read a gap between the "
+                f"two as the sources disagreeing."
             )
         out.append(line)
     for s in _sma_entries(d):
@@ -233,7 +276,7 @@ def html_panels(d: dict) -> list[Panel]:
     chg, prev = d.get("change_pct"), d.get("prev_close")
     note = d.get("source") or "unknown"
     if chg is not None:
-        note = (f"{fmt(chg, '+.2f', suffix='%')} vs prev close "
+        note = (f"{fmt(chg, '+.2f', suffix='%')} vs {_close_label(d)} "
                 f"{fmt(prev, ',.0f', prefix='$')} · {note}")
     rows = [Metric("Spot", fmt(d.get("spot"), ",.0f", prefix="$"),
                    note=note, tone=change_tone(chg))]

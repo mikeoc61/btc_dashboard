@@ -386,3 +386,68 @@ class TestPngFallbackForSafari:
 
     def test_the_png_stays_small_enough_to_inline(self):
         assert len(page._favicon_png_data_uri()) < 1500
+
+
+class TestTheReferenceCloseIsDated:
+    """Two cards showed two different "previous closes" and neither named its
+    day, so an ordinary one-day warehouse lag looked like the sources
+    disagreeing about the price."""
+
+    def test_the_price_card_names_the_day(self):
+        snap = _snap()
+        snap["sources"]["price"]["data"] = {
+            "spot": 63011.0, "prev_close": 63031.0,
+            "prev_close_date": "2026-08-15", "change_pct": -0.03,
+            "source": "coingecko", "smas": [],
+        }
+        assert "15 Aug close $63,031" in page.render_html(snap)
+
+    def test_the_warehouse_card_names_its_day(self):
+        from btc_dashboard.sources import warehouse
+        rows = warehouse.html_panels({
+            "date": "2026-08-14", "onchain": {}, "signals": {},
+            "close": 62979.0,
+        })[0].metrics
+        close = next(m for m in rows if m.label == "Daily Close")
+        assert "2026-08-14" in close.note
+
+    def test_an_undated_close_still_renders(self):
+        snap = _snap()
+        snap["sources"]["price"]["data"] = {
+            "spot": 63011.0, "prev_close": 63031.0, "prev_close_date": None,
+            "change_pct": -0.03, "source": "coingecko", "smas": [],
+        }
+        assert "prev close $63,031" in page.render_html(snap)
+
+
+class TestTheOnChainDayIsInTheHeading:
+    """As a row the date read as one metric among many, so a reader comparing
+    the daily close against a live price had no cue they were different days."""
+
+    def _panels(self, date="2026-08-14"):
+        from btc_dashboard.sources import warehouse
+        return warehouse.html_panels({
+            "date": date, "onchain": {"blocks_day": 149}, "signals": {},
+            "close": 62979.0,
+        })
+
+    def test_the_heading_carries_the_day(self):
+        assert "14 AUG" in self._panels()[0].title
+
+    def test_the_weekday_survives(self):
+        """fee/subsidy runs materially lower at weekends, so an unlabelled
+        Saturday reads as deterioration rather than as a Saturday."""
+        assert "FRI" in self._panels()[0].title
+
+    def test_the_date_is_no_longer_a_row(self):
+        labels = [m.label for m in self._panels()[0].metrics]
+        assert "Date (UTC)" not in labels
+        assert "Blocks" in labels
+
+    def test_a_missing_date_falls_back(self):
+        assert self._panels(date=None)[0].title == "ON-CHAIN (DAILY)"
+
+    def test_the_sibling_cards_are_not_dated(self):
+        """Signals and volatility span history, not that one day."""
+        titles = [p.title for p in self._panels()]
+        assert not any("14 AUG" in t for t in titles[1:])
