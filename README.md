@@ -8,32 +8,32 @@ credentials on your own machine.
 
 ```
 $ btc-dashboard
-BTC DASHBOARD — 2026-07-29 23:22:31 UTC
+BTC DASHBOARD — 2026-08-16 20:52:08 UTC
 ────────────────────────────────────────────────────────────
 PRICE
-  spot $63,666 (coingecko)
-  SMA 20d $64,444 -1.2% | 50d $63,336 +0.5% | 200d $71,707 -11.2% (below 200d)
+  spot $62,995 -0.06% vs 15 Aug close (coingecko)
+  SMA 20d $63,842 -1.3% | 50d $63,516 -0.8% | 200d $69,353 -9.2% (below 200d)
 
 NETWORK (live)
-  height 903,142 | hashrate 812.44 EH/s (+1.20% 7d) | difficulty 110.57T
-  retarget 1,204 blks (~8.4d) | proj -1.83%
-  mempool 14,203 tx / 8.1 vMB
-  fees 4.0/2.3/0.7 sat/vB (fast/1hr/1d)
+  height 962,780 | hashrate 911.41 EH/s (+1.37% 7d) | difficulty 127.48T
+  retarget 868 blks, ~6.1d | proj -0.91%
+  mempool 13,447 tx / 2.3 vMB
+  fees 1.2/1.0/0.6 sat/vB (fast/1hr/1d)
 
-ON-CHAIN (daily)
-  day (UTC 2026-08-13 Thu): 127 blks | 97% full | p50 1.0 sat/vB | fee/subsidy 0.75% | miner rev 399.8 BTC
-  signal: fee/subsidy 26th pctile 2y (7d) | apathy 22d | hashrate -16.0% off 90d high
-  daily close $63,860 (warehouse)
-  SMA 20d $64,420 -0.6% | 50d $65,020 -1.5% | 200d $71,862 -11.1%
-  vol (ann √365, pctile 2y/all): 7d 16% (3/3) | 30d 28% (11/7) | 90d 34% (14/5) | 180d 38% (20/5) | 360d 43% (24/5)
-  block pace 127/144 (-11.8%, ±8% day-to-day noise)
+ON-CHAIN (daily) [cached 37m]
+  day (UTC 2026-08-15 Sat): 145 blks | 98% full | p50 1.0 sat/vB | fee/subsidy 0.51% | miner rev 455.5 BTC
+  signal: fee/subsidy 33rd pctile 2y (7d) | apathy 3d | hashrate -12.6% off 90d high
+  daily close $63,024 (warehouse)
+  SMA 20d $63,829 -1.3% | 50d $63,509 -0.8% | 200d $69,373 -9.2%
+  vol (ann √365, pctile 2y/all): 7d 10% (<1/1) | 30d 22% (<1/1) | 90d 34% (13/5) | 180d 38% (20/5) | 360d 43% (21/4)
+  block pace 145/144 (+0.7%, ±8% day-to-day noise)
 
-ETF FLOWS (US SPOT)
-  latest -49.7M total | -54.8M IBIT (28 Jul 2026, 1d ago)
-  5d net -457.4M total | -439.5M IBIT (96% IBIT — conviction distribution)
-  20d net -49.6M total | -135.3M IBIT
-  60d net -6.74B total | -4.89B IBIT
-  streak 4d outflow
+ETF FLOWS (US SPOT) [cached 37m]
+  latest -56.2M total | -55.5M IBIT (14 Aug 2026, 2d ago)
+  5d net -385.2M total | -78.9M IBIT (20% IBIT — broad distribution)
+  20d net +452.5M total | +606.0M IBIT
+  60d net -5.55B total | -3.91B IBIT
+  streak 3d outflow
 ```
 
 ```bash
@@ -65,9 +65,9 @@ An unreachable node, a missing warehouse, or a Farside layout change costs one
 block of the panel and leaves the rest intact — and the *analyst is told what is
 missing*, so it reasons about a gap rather than assuming a healthy network.
 
-**Standalone.** No imports from any sibling project, and no shelling out to
-their scripts. The only shared thing is *data*: the DuckDB file, opened
-read-only. Third-party libraries plus upstream `bitcoin-cli`, nothing else.
+**Standalone.** No imports from any sibling project and no shelling out to
+their scripts — third-party libraries plus upstream `bitcoin-cli`, nothing else.
+See [Related repositories](#related-repositories) for what it does share.
 
 Sources are collected concurrently, so a run costs the slowest source rather
 than the sum.
@@ -208,8 +208,8 @@ once, since repeating one error three times reads as three problems.
 it inherits the browser's own default and a reader who has already turned that
 up gets it. Labels and prose use a UI face; only the figures use monospace,
 where the fixed advance width earns its place aligning columns. Monospace
-everywhere — particularly bold monospace at small sizes on a dark background —
-is what made the first version look fuzzy.
+everywhere reads poorly at small sizes, and bold monospace on a dark background
+worst of all.
 
 **Qualifiers survive the move.** A row-based layout invites dropping the window
 a percentile was ranked against, or the annualisation behind a volatility
@@ -225,8 +225,9 @@ pip install -e ".[web]"
 btc-dashboard-web                 # http://127.0.0.1:8001
 ```
 
-Port **8001**, not 8000 — `bitcoin_peer_monitor` conventionally takes 8000, and
-two local dashboards on one host shouldn't fight over a port by default. To
+Port **8001**, not 8000 — [bitcoin_peer_monitor](https://github.com/mikeoc61/bitcoin_peer_monitor)
+conventionally takes 8000, and two local dashboards on one host shouldn't fight
+over a port by default. To
 tunnel both from a laptop:
 
 ```bash
@@ -271,18 +272,39 @@ One new file in `sources/` exposing four names, plus one entry in
 
 ```python
 NAME = "mysource"
-CACHE_TTL = 3600                        # optional; omit for live data
+CACHE_TTL = 3600                        # optional; omit for live tip state
+
 def collect(cfg) -> SourceResult: ...   # never raises
 def render_lines(data) -> list[str]:    # terminal text
 def context_lines(data) -> list[str]:   # facts phrased for the LLM
-def refresh_derived(data) -> dict:      # optional; only if fields age
+
+def html_panels(data) -> list[Panel]:   # optional; cards for --html and the web view
+def notable(data) -> list[str]:         # optional; entries for the NOTABLE strip
+def refresh_derived(data) -> dict:      # optional; only if fields age with the clock
 ```
 
-Keeping the presentations next to the collector is deliberate: the caveats a
-number needs ("this window is n/a, not zero") belong with the code that knows
-why.
+Keeping all three presentations next to the collector is deliberate: the caveats
+a number needs ("this window is n/a, not zero") belong with the code that knows
+why, and a page or a prompt assembled elsewhere is where they get dropped.
 
 ---
+
+## Related repositories
+
+Two sibling projects sit behind this one. **Neither is a dependency** — nothing
+here imports them and nothing shells out to them.
+
+| Repo | Relationship |
+| --- | --- |
+| [data_stores](https://github.com/mikeoc61/data_stores) | Shares *data*. Its `market_warehouse` ingester is the sole writer of `~/data/market.duckdb`; this reads the same file `read_only=True`. Every on-chain figure, moving average and volatility window here comes from that file. |
+| [farside](https://github.com/mikeoc61/farside) | Shares *design*. The standalone ETF-flow scraper this project's `sources/flows.py` was reimplemented from — same site, same hard-won semantics (a reported zero is not a missing cell; a day counts only once every tracked fund reports; an unfillable window is `n/a`, never a shorter sum), independent code and its own cache. |
+| [bitcoin_peer_monitor](https://github.com/mikeoc61/bitcoin_peer_monitor) | Unrelated to the data, but shares a host and a pattern — a FastAPI page on loopback reached over an SSH tunnel. It conventionally holds port 8000, which is why this defaults to 8001. |
+
+The split matters for the warehouse in particular: sharing the *file* rather
+than the *package* means a schema change is the only thing that can break this
+project, and the coupling is confined to one module (`sources/warehouse.py`), so
+the store is swappable without touching anything else. It never writes, so a
+running ingester is unaffected.
 
 ## Install
 
@@ -320,6 +342,7 @@ see [Credential boundary](#credential-boundary-the-llm-is-client-side-only).
 | `--effort L` | `low`/`medium`/`high`/`xhigh`/`max` (default `high`) |
 | `--refresh` | Bypass the cache and re-collect |
 | `--cache-ttl N` | Cache lifetime in seconds (default 3600; `0` disables) |
+| `--timeout N` | Per-source network timeout in seconds (default 20) |
 | `--color C` | `auto` (default, terminal only) / `always` / `never` |
 | `--quiet` | Hide unavailable-source detail |
 
@@ -601,12 +624,13 @@ prompt, and it's handled as such:
 
 ### Still required before exposing it
 
-Authentication, TLS, and rate limiting. **The cache/TTL layer is now built**
-(see [Caching](#caching)) — N clients hitting the service share one hourly
+Authentication, TLS, and rate limiting — none of which exist. Don't expose it
+publicly until they do; being read-only and secret-free limits the blast radius
+but substitutes for none of them.
+
+Load shedding is handled: the [cache](#caching) means N clients share one hourly
 Farside scrape and one hourly warehouse read rather than each triggering their
-own. The rest is not built: don't expose it publicly until it is. The service
-being read-only and secret-free limits the blast radius but does not
-substitute for any of them.
+own.
 
 ## Studies
 
@@ -625,7 +649,7 @@ hardcoding dates chosen with hindsight), scores the hash ribbon against the
 *unconditional base rate*, and conditions forward returns on hashrate drawdown
 across every day rather than on a handful of troughs.
 
-Three reporting choices are deliberate, because each guards a way this kind of
+Four reporting choices are deliberate, because each guards a way this kind of
 study normally misleads:
 
 - **A base-rate column.** BTC's unconditional forward return over the sample is
@@ -636,14 +660,14 @@ study normally misleads:
   forward windows overlap, so a decile of ~380 days holds barely one
   independent 365-day observation. Printing `n=386` alone would imply a
   precision the data cannot support.
-- **Durations measured from the peak, not the trigger.** `start` is the day
-  price crossed the threshold, typically days or weeks after the top;
-  measuring from it understates every decline. The table reports peak → trough
-  and trough → recovery separately, since the two halves are not symmetric,
-  and shows elapsed-so-far for an episode still running.
+- **Durations measured from the peak.** Timing an episode from the day price
+  crossed the threshold, rather than from the high it fell from, understates
+  every decline by days or weeks. Peak → trough and trough → recovery are
+  reported separately since the halves are not symmetric, and an unresolved
+  episode shows elapsed-so-far rather than a blank.
 - **A bounded signal-to-trough association.** An unbounded "nearest signal"
-  always finds one; it matched the 2017 corrections to signals 200–390 days
-  away. Beyond 90 days the tool reports none rather than inventing a link.
+  always finds one, however far away — beyond 90 days the tool reports none
+  rather than inventing a link.
 
 The headline finding is negative and worth keeping: hashrate stress was extreme
 at two of four macro troughs (2018, 2021) and entirely ordinary at the other two
@@ -656,9 +680,11 @@ moves, so no single hashrate metric can confirm a bottom on its own.
 .venv/bin/pytest
 ```
 
-304 tests. The warehouse tests run against a real DuckDB file built per-test
-rather than a mock — the signal definitions are the part most worth pinning
-down, and a mock would only assert that we called ourselves.
+The warehouse tests run against a real DuckDB file built per-test rather than a
+mock — the signal definitions are the part most worth pinning down, and a mock
+would only assert that we called ourselves. `tests/conftest.py` isolates the
+cache directory, the environment and colour, so a run cannot depend on the
+developer's machine or leak into it.
 
 ## License
 
@@ -666,7 +692,8 @@ down, and a mock would only assert that we called ourselves.
 
 ## Disclaimer
 
-Flow data is scraped from Farside Investors and provided as is, with no
+Flow data is scraped from [Farside Investors](https://farside.co.uk/) and
+provided as is, with no
 guarantee of accuracy, completeness, or timeliness. Price data comes from public
 APIs on the same terms. This is informational tooling and **not investment
 advice**.
