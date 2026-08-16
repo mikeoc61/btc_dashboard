@@ -168,3 +168,56 @@ class TestAvailabilityTicks:
     def test_ticks_name_their_source(self):
         out = page.render_html(self._two_sources(node_ok=True))
         assert "PRICE" in out and "NETWORK" in out
+
+
+class TestSpotChange:
+    """Spot is coloured against the previous completed daily close.
+
+    The reference comes from the price source's own series, not the
+    warehouse's: those are different venues, and mixing them would put a venue
+    spread into a figure meant to show the day's move.
+    """
+
+    def _with(self, spot, prev):
+        snap = _snap()
+        snap["sources"]["price"]["data"] = {
+            "spot": spot, "prev_close": prev, "source": "coingecko",
+            "change_pct": round((spot - prev) / prev * 100, 2) if prev else None,
+            "smas": [],
+        }
+        return snap
+
+    def test_a_rise_is_green(self):
+        from btc_dashboard.sources import price
+        assert price.change_tone(1.5) == "up"
+        assert 'class="value up"' in page.render_html(self._with(64000, 63000))
+
+    def test_a_fall_is_red(self):
+        from btc_dashboard.sources import price
+        assert price.change_tone(-1.5) == "down"
+        assert 'class="value down"' in page.render_html(self._with(62000, 63000))
+
+    def test_a_negligible_move_stays_neutral(self):
+        """Green for +0.03% asserts a direction the number does not carry."""
+        from btc_dashboard.sources import price
+        assert price.change_tone(0.03) is None
+        assert price.change_tone(-0.03) is None
+        out = page.render_html(self._with(63019, 63000))
+        assert 'class="value up"' not in out and 'class="value down"' not in out
+
+    def test_the_reference_close_is_shown(self):
+        out = page.render_html(self._with(64000, 63000))
+        assert "+1.59% vs prev close $63,000" in out
+
+    def test_no_previous_close_means_no_colour(self):
+        from btc_dashboard.sources import price
+        assert price.change_tone(None) is None
+        out = page.render_html(self._with(63000, None))
+        assert "$63,000" in out
+
+    def test_the_analyst_is_told_it_is_not_a_24h_change(self):
+        from btc_dashboard.sources import price
+        ctx = " ".join(price.context_lines(self._with(64000, 63000)
+                                           ["sources"]["price"]["data"]))
+        assert "not a 24-hour change" in ctx
+        assert "$63,000" in ctx

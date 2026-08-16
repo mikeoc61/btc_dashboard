@@ -34,6 +34,12 @@ BINANCE = "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&limi
 # label rather than being forced into one side.
 NEAR_BAND_PCT = 2.0
 
+# Moves smaller than this against the previous close are left uncoloured.
+# Current daily volatility puts one standard deviation near 1%, so a tenth of
+# that is indistinguishable from intraday noise, and painting it green or red
+# asserts a direction the number does not carry.
+NEUTRAL_BAND_PCT = 0.1
+
 
 def _get(url: str, timeout: int) -> Any:
     req = urllib.request.Request(url, headers={"User-Agent": UA})
@@ -80,12 +86,27 @@ def collect(cfg) -> SourceResult:
     smas = [_sma(completed, spot, days) for days in SMA_WINDOWS]
     primary = next(s for s in smas if s["days"] == PRIMARY_SMA)
 
+    # The previous completed daily close, from the same provider as spot.
+    # Deliberately not the warehouse's close: that is a different venue, and
+    # comparing a CoinGecko spot against a Kraken close would put a venue
+    # spread into a figure meant to show the day's move.
+    prev_close = completed[-1] if completed else None
+    change_pct = (
+        round((spot - prev_close) / prev_close * 100, 2)
+        if prev_close else None
+    )
+
     return SourceResult(
         name=NAME,
         available=True,
         data={
             "spot": round(spot, 2),
             "source": source,
+            # Named for what it is. NOT a 24-hour change: it is measured from
+            # the last completed daily close, which may be one hour ago or
+            # twenty-three depending on when the tool runs.
+            "prev_close": round(prev_close, 2) if prev_close else None,
+            "change_pct": change_pct,
             "smas": smas,
             # Flat aliases for the primary window, kept so an existing consumer
             # of the schema keeps working while `smas` becomes the general form.
@@ -144,8 +165,18 @@ def _sma_entries(d: dict) -> list[dict]:
     }]
 
 
+def change_tone(pct) -> str | None:
+    """up / down / None, with a dead band around zero."""
+    if not isinstance(pct, (int, float)) or abs(pct) < NEUTRAL_BAND_PCT:
+        return None
+    return "up" if pct > 0 else "down"
+
+
 def render_lines(d: dict) -> list[str]:
-    out = [f"spot {fmt(d.get('spot'), ',.0f', prefix='$')} ({d.get('source') or 'unknown'})"]
+    chg = (f" {fmt(d.get('change_pct'), '+.2f', suffix='%')} vs prev close"
+           if d.get("change_pct") is not None else "")
+    out = [f"spot {fmt(d.get('spot'), ',.0f', prefix='$')}{chg} "
+           f"({d.get('source') or 'unknown'})"]
 
     parts = []
     for s in _sma_entries(d):
@@ -170,7 +201,16 @@ def render_lines(d: dict) -> list[str]:
 def context_lines(d: dict) -> list[str]:
     out = []
     if d.get("spot") is not None:
-        out.append(f"BTC spot: {fmt(d.get('spot'), ',.0f', prefix='$')}")
+        line = f"BTC spot: {fmt(d.get('spot'), ',.0f', prefix='$')}"
+        if d.get("change_pct") is not None:
+            line += (
+                f", {fmt(d.get('change_pct'), '+.2f', suffix='%')} against the "
+                f"previous completed daily close of "
+                f"{fmt(d.get('prev_close'), ',.0f', prefix='$')}. That is not a "
+                f"24-hour change — the reference is the last finished day, which "
+                f"may be an hour or a day old depending on when this ran."
+            )
+        out.append(line)
     for s in _sma_entries(d):
         days = fmt(s.get("days"))
         if s.get("covered"):
@@ -190,8 +230,13 @@ def context_lines(d: dict) -> list[str]:
 
 
 def html_panels(d: dict) -> list[Panel]:
+    chg, prev = d.get("change_pct"), d.get("prev_close")
+    note = d.get("source") or "unknown"
+    if chg is not None:
+        note = (f"{fmt(chg, '+.2f', suffix='%')} vs prev close "
+                f"{fmt(prev, ',.0f', prefix='$')} · {note}")
     rows = [Metric("Spot", fmt(d.get("spot"), ",.0f", prefix="$"),
-                   note=d.get("source"))]
+                   note=note, tone=change_tone(chg))]
     for s in _sma_entries(d):
         days = fmt(s.get("days"))
         if s.get("covered"):

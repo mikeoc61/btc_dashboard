@@ -142,6 +142,15 @@ Each source contributes `html_panels()` beside its terminal and LLM
 presentations, so a source that naturally splits (facts, signals, volatility)
 says so itself rather than the page imposing a layout.
 
+**Spot is coloured against the previous completed daily close**, with a dead
+band: a move under 0.1% is left uncoloured, because one standard deviation of
+a current day is near 1% and painting a tenth of that green asserts a
+direction the number doesn't carry. The reference close comes from the price
+source's *own* series, never the warehouse's — those are different venues, and
+mixing them would fold a venue spread into a figure meant to show the day's
+move. It is labelled "vs prev close" rather than "24h", because the reference
+is the last finished day, which may be an hour or a day old.
+
 **Type is sized for reading, not for density.** The page sets no pixel base, so
 it inherits the browser's own default and a reader who has already turned that
 up gets it. Labels and prose use a UI face; only the figures use monospace,
