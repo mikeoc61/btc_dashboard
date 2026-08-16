@@ -221,3 +221,90 @@ class TestSpotChange:
                                            ["sources"]["price"]["data"]))
         assert "not a 24-hour change" in ctx
         assert "$63,000" in ctx
+
+
+class TestToneLandsOnTheSignedThing:
+    """A red $63,955 reads as "the average fell". What is negative is spot's
+    distance from it, and that lives in the note."""
+
+    def test_sma_level_is_not_coloured(self):
+        from btc_dashboard.sources import price
+        rows = price.html_panels({
+            "spot": 63014.0, "source": "cg",
+            "smas": [{"days": 20, "covered": True, "value": 63955.0,
+                      "pct": -1.5, "position": "near"}],
+        })[0].metrics
+        sma = next(m for m in rows if m.label == "20D SMA")
+        assert sma.tone is None, "the level itself is not signed"
+        assert sma.note_tone == "down", "the distance is"
+
+    def test_hashrate_level_is_not_coloured(self):
+        from btc_dashboard.sources import node
+        rows = node.html_panels({
+            "height": 1, "hash_rate_ehs": 900.0, "hash_rate_7d_pct": -0.62,
+            "difficulty_t": 1.0, "retarget": {}, "mempool": {}, "fees_sat_vb": {},
+        })[0].metrics
+        hr = next(m for m in rows if m.label == "Hashrate")
+        assert hr.tone is None and hr.note_tone == "down"
+
+    def test_a_signed_value_still_colours_the_value(self):
+        """Where the value *is* the signed quantity, it keeps the colour."""
+        from btc_dashboard.sources import node
+        rows = node.html_panels({
+            "height": 1, "hash_rate_ehs": 1.0, "difficulty_t": 1.0,
+            "retarget": {"projection_pct": -2.09, "blocks_left": 100},
+            "mempool": {}, "fees_sat_vb": {},
+        })[0].metrics
+        rt = next(m for m in rows if m.label == "Next Retarget")
+        assert rt.tone == "down"
+
+    def test_note_tone_reaches_the_markup(self):
+        snap = _snap()
+        snap["sources"]["price"]["data"] = {
+            "spot": 63014.0, "source": "cg",
+            "smas": [{"days": 20, "covered": True, "value": 63955.0,
+                      "pct": -1.5, "position": "near"}],
+        }
+        out = page.render_html(snap)
+        assert 'class="note down"' in out
+        assert 'class="value down"' not in out
+
+
+class TestEveryCardOfASourceIsDated:
+    """One source can produce several cards and the grid wraps them onto
+    different rows, so a badge on the first alone leaves the rest undated."""
+
+    def _warehouse_snap(self, **over):
+        block = {
+            "available": True, "stale": False, "cached": True,
+            "cache_age_seconds": 900, "as_of": "2026-08-14", "error": None,
+            "data": {
+                "date": "2026-08-14", "onchain": {"blocks_day": 149},
+                "signals": {"fee_pctile": 34.0, "apathy_days": 2},
+                "volatility": {"annualisation_days": 365,
+                               "percentile_window_days": 730,
+                               "windows": [{"days": 30, "covered": True,
+                                            "value": 22.5,
+                                            "percentile_recent": 0.4,
+                                            "percentile_all": 2.0}]},
+            },
+        }
+        block.update(over)
+        return {"schema_version": 1, "generated_at": "2026-08-16T00:07:20+00:00",
+                "asset": "btc", "sources": {"warehouse": block}}
+
+    def test_all_three_warehouse_cards_carry_the_badge(self):
+        out = page.render_html(self._warehouse_snap())
+        assert out.count("ON-CHAIN") >= 1 and "SIGNALS" in out and "VOLATILITY" in out
+        assert out.count("cached 15m") == 3, "each card must state its vintage"
+
+    def test_stale_is_announced_on_every_card(self):
+        out = page.render_html(self._warehouse_snap(
+            stale=True, error="warehouse unreadable"))
+        assert out.count("STALE 15m") == 3
+
+    def test_the_failure_reason_appears_once(self):
+        """Repeating one error three times reads as three problems."""
+        out = page.render_html(self._warehouse_snap(
+            stale=True, error="warehouse unreadable"))
+        assert out.count("warehouse unreadable") == 1

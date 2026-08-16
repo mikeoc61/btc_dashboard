@@ -151,6 +151,20 @@ mixing them would fold a venue spread into a figure meant to show the day's
 move. It is labelled "vs prev close" rather than "24h", because the reference
 is the last finished day, which may be an hour or a day old.
 
+**Colour lands on whatever is actually signed.** A 20-day SMA of $63,955
+painted red because spot sits below it reads as "the average fell" — what is
+negative is the *relationship*, which lives in the note. `Metric` therefore
+carries `tone` and `note_tone`, and a row uses whichever one describes a signed
+quantity. Same for hashrate: the level is not negative, its 7-day change is.
+Where the value *is* the signed thing (a retarget projection, a flow total) the
+value keeps the colour.
+
+**Every card of a source carries its freshness badge**, not just the first. One
+source can produce several cards — the warehouse yields on-chain, signals and
+volatility — and the grid wraps them onto different rows, so a badge on the
+first alone leaves the rest looking undated. The failure *reason* still appears
+once, since repeating one error three times reads as three problems.
+
 **Type is sized for reading, not for density.** The page sets no pixel base, so
 it inherits the browser's own default and a reader who has already turned that
 up gets it. Labels and prose use a UI face; only the figures use monospace,

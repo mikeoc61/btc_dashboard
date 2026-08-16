@@ -85,6 +85,10 @@ h1 { font-size:1.05rem; margin:0; letter-spacing:.06em; color:var(--accent); }
 .value.warn { color:var(--warn); }
 .note { color:var(--muted); font-size:.8rem; line-height:1.45;
         padding:0 0 .3rem; margin-top:-.1rem; }
+/* Muted so a coloured note stays secondary to the value it sits under. */
+.note.up { color:color-mix(in srgb, var(--up) 78%, var(--muted)); }
+.note.down { color:color-mix(in srgb, var(--down) 78%, var(--muted)); }
+.note.warn { color:color-mix(in srgb, var(--warn) 78%, var(--muted)); }
 .err { color:var(--warn); font-size:.88rem; }
 .card.wide { grid-column:1/-1; }
 .askform { display:flex; gap:.6rem; }
@@ -132,7 +136,8 @@ def _rows(metrics: list[Metric]) -> str:
             f'<span class="value{tone}">{_esc(m.value)}</span></div>'
         )
         if m.note:
-            out.append(f'<div class="note">{_esc(m.note)}</div>')
+            ntone = f" {m.note_tone}" if m.note_tone in ("up", "down", "warn") else ""
+            out.append(f'<div class="note{ntone}">{_esc(m.note)}</div>')
     return "".join(out)
 
 
@@ -210,9 +215,13 @@ def render_html(snapshot: dict, *, title: str = "BTC DASHBOARD",
             continue
         label, cls = _badge(block)
         for i, panel in enumerate(_panels_for(name, block)):
-            # The freshness badge rides the first card of a source only; the
-            # rest inherit it visually by sitting next to it.
-            badge = (f'<span class="badge {cls}">{_esc(label)}</span>' if i == 0 else "")
+            # Every card of a source carries the badge. One source can produce
+            # several cards, the grid wraps them onto different rows, and a
+            # badge on the first alone leaves the others looking undated — so a
+            # stale warehouse would be announced on one of its three cards.
+            badge = f'<span class="badge {cls}">{_esc(label)}</span>'
+            # The failure reason stays on the first, though: repeating one
+            # error three times reads as three problems.
             err = (f'<div class="err">refresh failed: {_esc(block["error"])}</div>'
                    if i == 0 and block.get("stale") and block.get("error") else "")
             cards.append(

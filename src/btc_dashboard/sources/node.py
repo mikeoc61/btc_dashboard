@@ -192,9 +192,11 @@ def html_panels(d: dict) -> list[Panel]:
     proj = rt.get("projection_pct")
     return [Panel("NETWORK (LIVE)", [
         Metric("Block Height", fmt(d.get("height"), ",")),
+        # Tone on the note: the 7-day change is signed, the hashrate is not.
         Metric("Hashrate", f"{fmt(d.get('hash_rate_ehs'), ',.0f')} EH/s",
                note=f"{fmt(hr7, '+.2f', suffix='%')} over 7d" if hr7 is not None else None,
-               tone="up" if isinstance(hr7, (int, float)) and hr7 >= 0 else "down"),
+               note_tone=("up" if isinstance(hr7, (int, float)) and hr7 >= 0
+                          else "down") if hr7 is not None else None),
         Metric("Difficulty", f"{fmt(d.get('difficulty_t'), ',.2f')} T"),
         Metric("Next Retarget",
                fmt(proj, "+.2f", suffix="%") if proj is not None else "n/a",

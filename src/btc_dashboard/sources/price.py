@@ -241,10 +241,13 @@ def html_panels(d: dict) -> list[Panel]:
         days = fmt(s.get("days"))
         if s.get("covered"):
             pct = s.get("pct")
+            # The tone rides the note: what is signed is spot's distance from
+            # the average, not the average itself.
             rows.append(Metric(
                 f"{days}D SMA", fmt(s.get("value"), ",.0f", prefix="$"),
                 note=f"spot {fmt(pct, '+.1f', suffix='%')} vs it",
-                tone="up" if isinstance(pct, (int, float)) and pct >= 0 else "down",
+                note_tone=change_tone(pct) or (
+                    "up" if isinstance(pct, (int, float)) and pct >= 0 else "down"),
             ))
         else:
             rows.append(Metric(

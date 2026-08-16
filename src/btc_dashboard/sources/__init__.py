@@ -103,9 +103,16 @@ class Metric:
     label: str
     value: str
     note: str | None = None
-    # Presentational hint only: "up", "down", "warn". Never the sole carrier
+    # Presentational hints only: "up", "down", "warn". Never the sole carrier
     # of meaning — the text must read correctly with all styling removed.
+    #
+    # Two of them, because the colour has to land on the thing it describes.
+    # A 20-day SMA of $63,955 painted red because spot sits below it reads as
+    # "the average fell"; what is negative is the *relationship*, and the
+    # relationship lives in the note. `tone` colours the value, `note_tone`
+    # colours the note, and a row uses whichever one is actually signed.
     tone: str | None = None
+    note_tone: str | None = None
 
 
 @dataclass(frozen=True)
