@@ -190,7 +190,7 @@ def html_panels(d: dict) -> list[Panel]:
     hr7 = d.get("hash_rate_7d_pct")
 
     proj = rt.get("projection_pct")
-    return [Panel("NETWORK (LIVE)", [
+    return [Panel("NETWORK (LIVE)", priority=30, metrics=[
         Metric("Block Height", fmt(d.get("height"), ",")),
         # Tone on the note: the 7-day change is signed, the hashrate is not.
         Metric("Hashrate", f"{fmt(d.get('hash_rate_ehs'), ',.0f')} EH/s",
@@ -210,3 +210,15 @@ def html_panels(d: dict) -> list[Panel]:
                "/".join(_fee(f.get(k)) for k in ("fast", "hour", "day")) + " sat/vB",
                note="fast / 1hr / 1day"),
     ])]
+
+
+# A difficulty adjustment this large means hashrate has moved materially since
+# the period began; smaller ones are the routine drift of every period.
+NOTABLE_RETARGET_PCT = 5.0
+
+
+def notable(d: dict) -> list[str]:
+    proj = (d.get("retarget") or {}).get("projection_pct")
+    if isinstance(proj, (int, float)) and abs(proj) >= NOTABLE_RETARGET_PCT:
+        return [f"difficulty retarget projected {fmt(proj, '+.1f', suffix='%')}"]
+    return []

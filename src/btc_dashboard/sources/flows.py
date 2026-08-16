@@ -463,8 +463,8 @@ def context_lines(d: dict) -> list[str]:
 def html_panels(d: dict) -> list[Panel]:
     lead = d.get("lead") or LEAD
     if not d.get("as_of"):
-        return [Panel("ETF FLOWS (US SPOT)",
-                      [Metric("Status", "no fully-reported day yet")])]
+        return [Panel("ETF FLOWS (US SPOT)", priority=60,
+                      metrics=[Metric("Status", "no fully-reported day yet")])]
 
     age = (f" · {fmt(d.get('age_days'))}d ago" if d.get("age_days") is not None else "")
     rows = [Metric("Latest", _m(d.get("latest_total")),
@@ -501,10 +501,23 @@ def html_panels(d: dict) -> list[Panel]:
                  f"{len(p.get('reported') or [])}/{len(FUNDS)} funds in, pending "
                  f"{', '.join(p.get('pending') or []) or 'n/a'} — excluded above",
             tone="warn"))
-    return [Panel("ETF FLOWS (US SPOT)", rows)]
+    return [Panel("ETF FLOWS (US SPOT)", rows, priority=60)]
 
 
 def _tone(v) -> str | None:
     if not isinstance(v, (int, float)):
         return None
     return "up" if v > 0 else ("down" if v < 0 else None)
+
+
+# A run this long is uncommon enough to mention. Deliberately not a size
+# threshold: the streak counts days, and mixing a duration test with a
+# magnitude one would report two different things under one heading.
+NOTABLE_STREAK_DAYS = 5
+
+
+def notable(d: dict) -> list[str]:
+    days, sign = d.get("streak_days"), d.get("streak_sign")
+    if isinstance(days, int) and days >= NOTABLE_STREAK_DAYS and sign in ("inflow", "outflow"):
+        return [f"ETF flows: {days} consecutive {sign} days"]
+    return []

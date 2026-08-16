@@ -451,3 +451,102 @@ class TestTheOnChainDayIsInTheHeading:
         """Signals and volatility span history, not that one day."""
         titles = [p.title for p in self._panels()]
         assert not any("14 AUG" in t for t in titles[1:])
+
+
+class TestCardOrder:
+    """Volatility belongs beside price: a distance from a moving average only
+    means something in volatility units, and the two come from different
+    sources, so source order cannot express it."""
+
+    def _snap(self):
+        base = {"available": True, "stale": False, "cached": False,
+                "cache_age_seconds": None, "as_of": None, "error": None}
+        return {"schema_version": 1, "generated_at": "2026-08-16T02:00:00+00:00",
+                "asset": "btc", "sources": {
+            "price": {**base, "data": {"spot": 63000.0, "source": "cg", "smas": []}},
+            "node": {**base, "data": {"height": 1, "hash_rate_ehs": 900.0,
+                                      "difficulty_t": 1.0, "retarget": {},
+                                      "mempool": {}, "fees_sat_vb": {}}},
+            "warehouse": {**base, "data": {
+                "date": "2026-08-15", "onchain": {}, "signals": {},
+                "volatility": {"annualisation_days": 365,
+                               "percentile_window_days": 730,
+                               "windows": [{"days": 30, "covered": True,
+                                            "value": 22.5, "percentile_recent": 40.0,
+                                            "percentile_all": 20.0}]}}},
+        }}
+
+    def _titles(self, snap):
+        import re
+        return re.findall(r'<h2>([A-Z][^<]{0,40}?)(?:<span|</h2>)',
+                          page.render_html(snap))
+
+    def test_volatility_comes_second(self):
+        titles = self._titles(self._snap())
+        assert titles[0] == "PRICE"
+        assert titles[1].startswith("VOLATILITY")
+
+    def test_its_sibling_cards_stay_later(self):
+        titles = self._titles(self._snap())
+        assert titles.index("NETWORK (LIVE)") < next(
+            i for i, t in enumerate(titles) if t.startswith("ON-CHAIN"))
+
+    def test_priority_beats_source_order(self):
+        from btc_dashboard.sources import price, warehouse
+        assert price.html_panels({"spot": 1.0, "smas": []})[0].priority == 10
+        vol = [p for p in warehouse.html_panels(self._snap()["sources"]["warehouse"]["data"])
+               if p.title.startswith("VOLATILITY")][0]
+        assert vol.priority == 20
+
+
+class TestNotableStrip:
+    """Threshold-selected facts, never interpretation."""
+
+    def _warehouse(self, pct):
+        base = {"available": True, "stale": False, "cached": False,
+                "cache_age_seconds": None, "as_of": None, "error": None}
+        return {"schema_version": 1, "generated_at": "2026-08-16T02:00:00+00:00",
+                "asset": "btc", "sources": {"warehouse": {**base, "data": {
+            "date": "2026-08-15", "onchain": {}, "signals": {},
+            "volatility": {"annualisation_days": 365, "percentile_window_days": 730,
+                           "windows": [{"days": 30, "covered": True, "value": 22.5,
+                                        "percentile_recent": pct,
+                                        "percentile_all": 2.0}]}}}}}
+
+    def test_an_extreme_low_is_surfaced(self):
+        out = page.render_html(self._warehouse(0.4))
+        assert "NOTABLE" in out and "30d volatility" in out and "pctile of 2y" in out
+
+    def test_an_extreme_high_is_surfaced_too(self):
+        """Both tails preceded larger moves; only reporting lows tells half
+        the story."""
+        assert "NOTABLE" in page.render_html(self._warehouse(98.0))
+
+    def test_an_ordinary_reading_produces_no_strip(self):
+        """A strip that always finds something teaches you to ignore it."""
+        assert "NOTABLE" not in page.render_html(self._warehouse(45.0))
+
+    def test_it_states_the_window_not_a_conclusion(self):
+        out = page.render_html(self._warehouse(0.4))
+        assert "pctile of 2y" in out
+        for forecast in ("compression", "expect", "breakout", "bullish", "bearish"):
+            assert forecast not in out.lower()
+
+    def test_unavailability_leads(self):
+        snap = self._warehouse(45.0)
+        snap["sources"]["node"] = {"available": False, "stale": False,
+                                   "cached": False, "cache_age_seconds": None,
+                                   "as_of": None, "error": "no node", "data": None}
+        assert "network unavailable" in page.render_html(snap)
+
+    def test_staleness_leads(self):
+        snap = self._warehouse(45.0)
+        snap["sources"]["warehouse"].update(
+            stale=True, cached=True, cache_age_seconds=7200, error="down")
+        assert "on-chain is stale (2h old)" in page.render_html(snap)
+
+    def test_a_raising_threshold_check_does_not_cost_the_page(self, monkeypatch):
+        from btc_dashboard.sources import warehouse
+        monkeypatch.setattr(warehouse, "notable",
+                            lambda d: (_ for _ in ()).throw(RuntimeError("boom")))
+        assert "<html" in page.render_html(self._warehouse(0.4))

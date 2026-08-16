@@ -791,12 +791,70 @@ def html_panels(d: dict) -> list[Panel]:
     except (KeyError, TypeError, ValueError):
         heading = "ON-CHAIN (DAILY)"
 
-    panels = [Panel(heading, facts)]
+    panels = [Panel(heading, facts, priority=40)]
     if signals:
-        panels.append(Panel(f"SIGNALS (vs {years}y)", signals))
+        panels.append(Panel(f"SIGNALS (vs {years}y)", signals, priority=50))
     if vols:
         # The annualisation lives in the title so every row inherits it — the
         # level is not comparable to anyone else's without it.
+        # Second on the page, beside price: a distance from a moving average
+        # only means something in volatility units, so the two are read together.
         panels.append(Panel(
-            f"VOLATILITY (REALISED, ann √{fmt(vol.get('annualisation_days'))})", vols))
+            f"VOLATILITY (REALISED, ann √{fmt(vol.get('annualisation_days'))})",
+            vols, priority=20))
     return panels
+
+
+# Percentile bounds for the notable strip. A reading fires at either extreme:
+# both very low and very high volatility historically preceded larger moves
+# than mid-range readings, so only surfacing lows would report half the story.
+NOTABLE_PCTILE_LOW = 5.0
+NOTABLE_PCTILE_HIGH = 95.0
+# Historic miner washouts ran -33% to -50%, so this is the level at which a
+# drawdown stops being ordinary variation.
+NOTABLE_HASHRATE_DD = -20.0
+# Roughly a month in the basement. Shorter runs are common and largely track
+# the weekend cycle.
+NOTABLE_APATHY_DAYS = 30
+
+
+def notable(d: dict) -> list[str]:
+    """Readings extreme enough to lead with, each carrying its own window.
+
+    Threshold-selected rather than hand-picked, so the strip is empty on an
+    ordinary day. A panel that always finds three things to say trains the
+    reader to stop looking at it.
+    """
+    out: list[str] = []
+    vol = d.get("volatility") or {}
+    years = fmt(vol.get("percentile_window_days", 730) // 365)
+    for w in vol.get("windows") or []:
+        if not isinstance(w, dict) or not w.get("covered"):
+            continue
+        pct = w.get("percentile_recent")
+        if not isinstance(pct, (int, float)):
+            continue
+        if pct <= NOTABLE_PCTILE_LOW or pct >= NOTABLE_PCTILE_HIGH:
+            out.append(
+                f"{fmt(w.get('days'))}d volatility {fmt(w.get('value'), '.0f')}% "
+                f"— {_pctile(pct)} pctile of {years}y"
+            )
+
+    sig = d.get("signals") or {}
+    fee = sig.get("fee_pctile")
+    if isinstance(fee, (int, float)) and (
+            fee <= NOTABLE_PCTILE_LOW or fee >= NOTABLE_PCTILE_HIGH):
+        out.append(f"fee/subsidy {_pctile(fee)} pctile of {years}y")
+
+    dd = sig.get("hashrate_drawdown")
+    if isinstance(dd, (int, float)) and dd <= NOTABLE_HASHRATE_DD:
+        out.append(f"hashrate {fmt(dd, '.0f')}% off its {HASHRATE_WINDOW_DAYS}d high")
+
+    apathy = sig.get("apathy_days")
+    if isinstance(apathy, int) and apathy >= NOTABLE_APATHY_DAYS:
+        out.append(f"{apathy}d under {APATHY_MAX}% fee/subsidy")
+
+    v = sig.get("vol_pctile")
+    if isinstance(v, (int, float)) and v >= NOTABLE_PCTILE_HIGH:
+        out.append(f"exchange volume {_pctile(v)} pctile of {years}y")
+    return out

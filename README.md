@@ -144,7 +144,27 @@ silently falls back to its own generated letter tile.
 
 Each source contributes `html_panels()` beside its terminal and LLM
 presentations, so a source that naturally splits (facts, signals, volatility)
-says so itself rather than the page imposing a layout.
+says so itself rather than the page imposing a layout. Each panel declares a
+`priority`, because the useful order isn't source order — volatility comes from
+the warehouse but belongs beside price, since a distance from a moving average
+only means something in volatility units.
+
+**A `NOTABLE` strip leads the page**, listing readings extreme enough to lead
+with. Two rules keep it honest:
+
+- **Threshold-selected, not hand-picked.** Each source owns its own bounds via
+  `notable()`, because what counts as extreme is a property of the measure. The
+  strip is *absent* on an ordinary day — one that always finds three things to
+  say teaches you to stop reading it.
+- **Facts, never forecasts.** "30d volatility 22% — <1 pctile of 2y" is a
+  reading with its window attached. "Compression, expect a large move" is a
+  prediction, and volatility carries no direction. The reader draws the
+  conclusion; there's a test asserting the words don't appear.
+
+Volatility bounds fire at *both* tails, since historically the lowest and
+highest quintiles each preceded larger moves than mid-range ones. Unavailable
+and stale sources lead the strip, being facts about the snapshot rather than
+about any one source.
 
 **Every close names its day.** The price card compares spot against the last
 completed daily close; the on-chain card shows the newest close the *warehouse*

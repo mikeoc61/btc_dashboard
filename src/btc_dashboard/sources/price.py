@@ -297,4 +297,17 @@ def html_panels(d: dict) -> list[Panel]:
                 f"{days}D SMA", "n/a",
                 note=f"only {fmt(s.get('days_available'), missing='?')} days available",
             ))
-    return [Panel("PRICE", rows)]
+    return [Panel("PRICE", rows, priority=10)]
+
+
+# A day's move worth calling out. Roughly three standard deviations at the
+# volatility of a quiet market and about one at a turbulent one, so it fires
+# rarely now and rarely then — which is what a "notable" list needs.
+NOTABLE_MOVE_PCT = 3.0
+
+
+def notable(d: dict) -> list[str]:
+    chg = d.get("change_pct")
+    if isinstance(chg, (int, float)) and abs(chg) >= NOTABLE_MOVE_PCT:
+        return [f"spot {fmt(chg, '+.1f', suffix='%')} vs the {_close_label(d)}"]
+    return []

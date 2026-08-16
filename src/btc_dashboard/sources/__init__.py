@@ -125,6 +125,12 @@ class Panel:
 
     title: str
     metrics: list[Metric]
+    # Where this card sits on the page, lowest first. A source declares its
+    # own placement because the useful order is not source order: volatility
+    # belongs beside price, since a distance from a moving average only means
+    # something in volatility units, while both come from different sources.
+    # Ties keep source order, so the layout stays stable.
+    priority: int = 50
 
 
 def fmt(value, spec: str = "", *, prefix: str = "", suffix: str = "",

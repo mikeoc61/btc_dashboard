@@ -183,6 +183,13 @@ h1 { font-size:1.05rem; margin:0; letter-spacing:.06em; color:var(--accent); }
 .note.warn { color:color-mix(in srgb, var(--warn) 78%, var(--muted)); }
 .err { color:var(--warn); font-size:.88rem; }
 .card.wide { grid-column:1/-1; }
+.notable { background:var(--card); border:1px solid var(--line);
+           border-left:3px solid var(--warn); border-radius:8px;
+           padding:.7rem 1rem; margin-bottom:.85rem; }
+.notable h2 { font-size:.85rem; margin:0 0 .35rem; letter-spacing:.05em;
+              color:var(--warn); font-weight:600; }
+.notable ul { margin:0; padding-left:1.1rem; }
+.notable li { padding:.1rem 0; }
 .askform { display:flex; gap:.6rem; }
 .askform input { flex:1; padding:.6rem .7rem; background:var(--bg);
                  color:var(--text); border:1px solid var(--line);
@@ -276,6 +283,43 @@ def _answer_card(answer: dict | None) -> str:
     )
 
 
+def _notable(snapshot: dict) -> list[str]:
+    """Readings worth leading with, gathered from the sources themselves.
+
+    Each source owns its own thresholds, because what counts as extreme is a
+    property of the measure, not of the page. Availability and staleness are
+    added here since they are facts about the snapshot rather than about any
+    one source.
+
+    Every entry is a stated reading with its window attached — never an
+    interpretation. "30d volatility at the 1st percentile of 2y" is a fact;
+    "compression, expect a large move" is a forecast, and volatility carries no
+    direction. The reader draws the conclusion.
+    """
+    out: list[str] = []
+    for name in snap.ordered_names(snapshot):
+        block = snapshot["sources"][name]
+        label = snap.TITLES.get(name, name).split(" (")[0]
+        if not block.get("available"):
+            out.append(f"{label.lower()} unavailable")
+            continue
+        if block.get("stale"):
+            age = block.get("cache_age_seconds")
+            out.append(
+                f"{label.lower()} is stale"
+                + (f" ({human_age(age)} old)" if age is not None else "")
+            )
+        mod = snap.module_for(name)
+        if mod is None or not hasattr(mod, "notable"):
+            continue
+        try:
+            out.extend(mod.notable(block["data"]) or [])
+        except Exception:
+            # A threshold check must never cost the page.
+            continue
+    return out
+
+
 def render_html(snapshot: dict, *, title: str = "BTC DASHBOARD",
                 refresh: int | None = REFRESH_SECONDS,
                 ask: bool = False, answer: dict | None = None) -> str:
@@ -295,31 +339,41 @@ def render_html(snapshot: dict, *, title: str = "BTC DASHBOARD",
         for n, b in ((n, snapshot["sources"][n]) for n in snap.ordered_names(snapshot))
     )
 
-    cards = []
-    for name in snap.ordered_names(snapshot):
+    # Cards are ordered by the priority each source declares, not by source
+    # order — volatility comes from the warehouse but belongs beside price.
+    # `seq` keeps ties in source order so the layout does not shuffle.
+    ordered = []
+    for seq, name in enumerate(snap.ordered_names(snapshot)):
         block = snapshot["sources"][name]
         if not block.get("available"):
+            ordered.append((99, seq, 0, name, block, None))
+            continue
+        for i, panel in enumerate(_panels_for(name, block)):
+            ordered.append((panel.priority, seq, i, name, block, panel))
+    ordered.sort(key=lambda r: (r[0], r[1], r[2]))
+
+    cards = []
+    for _, _, i, name, block, panel in ordered:
+        if panel is None:
             cards.append(
                 f'<section class="card"><h2>{_esc(snap.TITLES.get(name, name.upper()))}'
                 f'<span class="badge warn">unavailable</span></h2>'
                 f'<div class="err">{_esc(block.get("error") or "no data")}</div></section>'
             )
             continue
+        # Every card of a source carries the badge. One source can produce
+        # several cards, the grid wraps them onto different rows, and a badge on
+        # the first alone leaves the others looking undated.
         label, cls = _badge(block)
-        for i, panel in enumerate(_panels_for(name, block)):
-            # Every card of a source carries the badge. One source can produce
-            # several cards, the grid wraps them onto different rows, and a
-            # badge on the first alone leaves the others looking undated — so a
-            # stale warehouse would be announced on one of its three cards.
-            badge = f'<span class="badge {cls}">{_esc(label)}</span>'
-            # The failure reason stays on the first, though: repeating one
-            # error three times reads as three problems.
-            err = (f'<div class="err">refresh failed: {_esc(block["error"])}</div>'
-                   if i == 0 and block.get("stale") and block.get("error") else "")
-            cards.append(
-                f'<section class="card"><h2>{_esc(panel.title)}{badge}</h2>'
-                f'{_rows(panel.metrics)}{err}</section>'
-            )
+        badge = f'<span class="badge {cls}">{_esc(label)}</span>'
+        # The failure reason stays on the source's first card: repeating one
+        # error three times reads as three problems.
+        err = (f'<div class="err">refresh failed: {_esc(block["error"])}</div>'
+               if i == 0 and block.get("stale") and block.get("error") else "")
+        cards.append(
+            f'<section class="card"><h2>{_esc(panel.title)}{badge}</h2>'
+            f'{_rows(panel.metrics)}{err}</section>'
+        )
 
     ask_html = ""
     if ask:
@@ -338,6 +392,16 @@ def render_html(snapshot: dict, *, title: str = "BTC DASHBOARD",
             '</section>'
         ) + _answer_card(answer)
 
+    notable = _notable(snapshot)
+    notable_html = ""
+    if notable:
+        # Absent entirely when nothing qualifies. A strip that always finds
+        # something to say teaches the reader to stop looking at it.
+        items = "".join(f"<li>{_esc(n)}</li>" for n in notable)
+        notable_html = (
+            f'<section class="notable"><h2>NOTABLE</h2><ul>{items}</ul></section>'
+        )
+
     meta_refresh = (
         f'<meta http-equiv="refresh" content="{int(refresh)}">' if refresh else ""
     )
@@ -354,7 +418,7 @@ def render_html(snapshot: dict, *, title: str = "BTC DASHBOARD",
   <div class="ticks">{ticks}</div>
   <div class="meta">{_esc(generated)} UTC</div>
 </header>
-<main class="grid">{"".join(cards)}{ask_html}</main>
+{notable_html}\n<main class="grid">{"".join(cards)}{ask_html}</main>
 <footer>Data: local node + DuckDB · price: CoinGecko · ETF: Farside.
 Percentile windows and volatility annualisation are stated on each figure —
 compare those, not bare levels, against any external source.</footer>
