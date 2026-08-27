@@ -283,3 +283,47 @@ class TestCloseDateAttribution:
         data = price.collect(Config.from_env()).data
         assert data["prev_close_date"] == "2026-08-15"
         assert data["spot"] == 63011.9
+
+
+class TestTheQueriesTheAnalystRanAreVisible:
+    def test_they_reach_the_page(self, client, monkeypatch):
+        from btc_dashboard import providers
+        call = providers.ToolCall(
+            "query_warehouse", {"sql": "SELECT max(close) FROM btc"}, "max | 73000")
+        monkeypatch.setattr(
+            web.analyst, "ask",
+            lambda *a, **k: analyst.AnalystResult(
+                text="the peak was 73000", provider="p", model="m",
+                input_tokens=1, output_tokens=2, tool_calls=(call,)))
+        client.post("/ask", data={"q": "what was the peak?"})
+        body = client.get("/").text
+        assert "SELECT max(close) FROM btc" in body
+        assert "max | 73000" in body
+        assert "1 query run" in body
+
+    def test_an_answer_without_queries_shows_no_disclosure(self, client, monkeypatch):
+        monkeypatch.setattr(
+            web.analyst, "ask",
+            lambda *a, **k: analyst.AnalystResult(
+                text="from the snapshot alone", provider="p", model="m"))
+        client.post("/ask", data={"q": "x"})
+        assert "query run" not in client.get("/").text
+
+
+class TestThePageSaysWhenTheAnalystCouldNotQuery:
+    def test_the_reason_reaches_the_page(self, client, monkeypatch):
+        monkeypatch.setattr(
+            web.analyst, "ask",
+            lambda *a, **k: analyst.AnalystResult(
+                text="from the snapshot", provider="p", model="m",
+                no_tools_reason=analyst.NO_TOOLS_UNAVAILABLE))
+        client.post("/ask", data={"q": "how does this compare to 2022?"})
+        assert "answered from the snapshot alone" in client.get("/").text
+
+    def test_no_note_when_the_tool_was_there(self, client, monkeypatch):
+        monkeypatch.setattr(
+            web.analyst, "ask",
+            lambda *a, **k: analyst.AnalystResult(
+                text="checked", provider="p", model="m"))
+        client.post("/ask", data={"q": "x"})
+        assert "snapshot alone" not in client.get("/").text

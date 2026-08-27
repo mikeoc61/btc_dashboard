@@ -68,6 +68,10 @@ def parse_args(argv=None):
     )
     p.add_argument("--model", help="model id for --ask, optionally 'provider/model'")
     p.add_argument(
+        "--no-tools", action="store_true",
+        help="answer from the snapshot alone; do not let --ask query the warehouse",
+    )
+    p.add_argument(
         "--effort",
         choices=("low", "medium", "high", "xhigh", "max"),
         help="reasoning effort for --ask (default: high)",
@@ -158,7 +162,7 @@ def main(argv=None) -> int:
         return 1
 
     if args.ask:
-        result = analyst.ask(snap, args.ask, cfg)
+        result = analyst.ask(snap, args.ask, cfg, use_tools=not args.no_tools)
         if not result.ok:
             print(f"\nanalyst unavailable: {result.error}", file=sys.stderr)
             return 2
@@ -167,13 +171,55 @@ def main(argv=None) -> int:
             f"\n{paint('ANALYSIS', render.BOLD, render.CYAN)}\n"
             f"{paint('─' * 60, render.DIM)}\n{result.text}"
         )
+        # The queries are shown, not just counted. A figure the answer leans on
+        # that came from a query nobody saw cannot be checked, and checking the
+        # numbers is the whole reason this reads a local warehouse rather than
+        # asking the model what it remembers.
+        for call in result.tool_calls:
+            print(
+                f"\n{paint('QUERIED', render.DIM)} {paint(call.name, render.DIM)}\n"
+                + "\n".join(
+                    f"  {line}" for line in _tool_call_lines(call)
+                ),
+                file=sys.stderr,
+            )
+        # Said to the reader, not only to the model. Without it a snapshot-only
+        # answer is indistinguishable from one that checked the history — and
+        # over `--from`, snapshot-only is the normal case.
+        if result.no_tools_reason:
+            print(f"\n{paint(result.no_tools_reason, render.DIM)}", file=sys.stderr)
         print(
             f"\n[{result.provider}/{result.model} · {result.input_tokens} in / "
-            f"{result.output_tokens} out]",
+            f"{result.output_tokens} out"
+            + (f" · {len(result.tool_calls)} quer"
+               f"{'y' if len(result.tool_calls) == 1 else 'ies'}"
+               if result.tool_calls else "")
+            + "]",
             file=sys.stderr,
         )
 
     return 0
+
+
+def _tool_call_lines(call, max_result_lines: int = 6) -> list[str]:
+    """A tool call rendered for the terminal: what was asked, and a peek back.
+
+    The arguments in full — they are the thing being audited — and only the
+    head of the result, which can run to hundreds of rows the model needed and
+    the reader does not.
+    """
+    out: list[str] = []
+    for key, value in (call.arguments or {}).items():
+        # SQL arrives multi-line and stays multi-line; the continuation is
+        # indented under its key so a long query still reads as one argument.
+        lines = str(value).strip().splitlines() or [""]
+        out.append(f"{key}: {lines[0]}")
+        out.extend(f"{' ' * (len(key) + 2)}{line}" for line in lines[1:])
+    body = (call.result or "").splitlines()
+    out.extend(f"→ {line}" for line in body[:max_result_lines])
+    if len(body) > max_result_lines:
+        out.append(f"→ … {len(body) - max_result_lines} more lines")
+    return out
 
 
 if __name__ == "__main__":

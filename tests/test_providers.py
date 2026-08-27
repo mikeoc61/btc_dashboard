@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import io
 import json
+import sys
+import types
 import urllib.error
 
 import pytest
@@ -325,3 +327,271 @@ class TestEnvFileSetsAnyVariable:
         monkeypatch.setenv("BTC_DASHBOARD_ENV", str(tmp_path / "absent"))
         from btc_dashboard import config
         assert config.load_env_file() == {}
+
+
+# --- tool use -------------------------------------------------------------
+
+def _block(**kw):
+    return types.SimpleNamespace(**kw)
+
+
+def _resp(*, content, stop_reason="end_turn", model="claude-x", tin=10, tout=20):
+    return types.SimpleNamespace(
+        content=list(content), stop_reason=stop_reason, stop_details=None,
+        model=model, usage=types.SimpleNamespace(input_tokens=tin, output_tokens=tout),
+    )
+
+
+def _fake_anthropic(monkeypatch, responses, capture=None):
+    """Install a fake `anthropic` module that replays `responses` in order."""
+    sent = []
+
+    class Messages:
+        def create(self, **kwargs):
+            sent.append(kwargs)
+            if capture is not None:
+                capture["sent"] = sent
+            return responses[len(sent) - 1]
+
+    class Anthropic:
+        def __init__(self, **kw):
+            self.messages = Messages()
+
+    mod = types.ModuleType("anthropic")
+    mod.Anthropic = Anthropic
+    for name in ("AuthenticationError", "NotFoundError", "RateLimitError",
+                 "APIStatusError", "APIConnectionError"):
+        setattr(mod, name, type(name, (Exception,), {}))
+    monkeypatch.setitem(sys.modules, "anthropic", mod)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    return sent
+
+
+def _tool(name="query_warehouse", run=None):
+    from btc_dashboard.sources import Tool
+    return Tool(name, "run sql", {"type": "object",
+                                  "properties": {"sql": {"type": "string"}}},
+                run or (lambda sql="": f"rows for {sql}"))
+
+
+class TestAnthropicToolLoop:
+    def test_a_tool_call_is_run_and_the_answer_returned(self, monkeypatch):
+        sent = _fake_anthropic(monkeypatch, [
+            _resp(stop_reason="tool_use", content=[
+                _block(type="tool_use", id="t1", name="query_warehouse",
+                       input={"sql": "SELECT 1"})]),
+            _resp(content=[_block(type="text", text="the answer")]),
+        ])
+        ran = []
+        done = providers.complete(
+            providers.PROVIDERS["anthropic"], "claude-x", "SYS", "PROMPT",
+            tools=(_tool(),),
+            run_tool=lambda n, a: ran.append((n, a)) or "42 rows",
+        )
+        assert done.text == "the answer"
+        assert ran == [("query_warehouse", {"sql": "SELECT 1"})]
+        assert done.tool_calls[0].arguments == {"sql": "SELECT 1"}
+        assert done.tool_calls[0].result == "42 rows"
+        assert len(sent) == 2, "the loop should continue after a tool call"
+
+    def test_the_result_is_sent_back_with_its_call_id(self, monkeypatch):
+        sent = _fake_anthropic(monkeypatch, [
+            _resp(stop_reason="tool_use", content=[
+                _block(type="tool_use", id="abc", name="query_warehouse", input={})]),
+            _resp(content=[_block(type="text", text="ok")]),
+        ])
+        providers.complete(providers.PROVIDERS["anthropic"], "claude-x", "s", "p",
+                           tools=(_tool(),), run_tool=lambda n, a: "ROWS")
+        results = sent[1]["messages"][-1]["content"]
+        assert results[0]["tool_use_id"] == "abc" and results[0]["content"] == "ROWS"
+
+    def test_the_whole_assistant_turn_is_echoed_back(self, monkeypatch):
+        """With thinking on, the API requires the thinking blocks that preceded
+        a tool call to come back with it. Sending only the tool_use block 400s."""
+        thinking = _block(type="thinking", thinking="hmm")
+        use = _block(type="tool_use", id="t", name="query_warehouse", input={})
+        sent = _fake_anthropic(monkeypatch, [
+            _resp(stop_reason="tool_use", content=[thinking, use]),
+            _resp(content=[_block(type="text", text="ok")]),
+        ])
+        providers.complete(providers.PROVIDERS["anthropic"], "claude-x", "s", "p",
+                           tools=(_tool(),), run_tool=lambda n, a: "r")
+        echoed = sent[1]["messages"][1]["content"]
+        assert thinking in echoed and use in echoed
+
+    def test_tokens_accumulate_over_every_round(self, monkeypatch):
+        """The operator paid for all of them. Reporting only the last round
+        understates the cost of exactly the questions that cost most."""
+        _fake_anthropic(monkeypatch, [
+            _resp(stop_reason="tool_use", tin=100, tout=5, content=[
+                _block(type="tool_use", id="t", name="query_warehouse", input={})]),
+            _resp(tin=300, tout=50, content=[_block(type="text", text="ok")]),
+        ])
+        done = providers.complete(providers.PROVIDERS["anthropic"], "claude-x",
+                                  "s", "p", tools=(_tool(),),
+                                  run_tool=lambda n, a: "r")
+        assert (done.input_tokens, done.output_tokens) == (400, 55)
+
+    def test_the_last_round_withholds_the_tools(self, monkeypatch):
+        """Otherwise a model that keeps querying ends the loop on a turn that
+        carries no text at all, and there is nothing to show."""
+        rounds = providers.MAX_TOOL_ROUNDS
+        sent = _fake_anthropic(monkeypatch, [
+            _resp(stop_reason="tool_use", content=[
+                _block(type="tool_use", id=f"t{i}", name="query_warehouse", input={})])
+            for i in range(rounds)
+        ] + [_resp(content=[_block(type="text", text="forced answer")])])
+        done = providers.complete(providers.PROVIDERS["anthropic"], "claude-x",
+                                  "s", "p", tools=(_tool(),),
+                                  run_tool=lambda n, a: "r")
+        assert done.text == "forced answer"
+        assert "tools" in sent[0] and "tools" not in sent[-1]
+        assert len(done.tool_calls) == rounds
+
+    def test_no_tools_sends_no_tools_field(self, monkeypatch):
+        sent = _fake_anthropic(monkeypatch, [
+            _resp(content=[_block(type="text", text="plain")])])
+        done = providers.complete(providers.PROVIDERS["anthropic"], "claude-x",
+                                  "s", "p")
+        assert done.text == "plain" and "tools" not in sent[0]
+        assert done.tool_calls == ()
+
+    def test_a_refusal_is_still_reported(self, monkeypatch):
+        _fake_anthropic(monkeypatch, [
+            types.SimpleNamespace(
+                content=[], stop_reason="refusal",
+                stop_details=types.SimpleNamespace(category="x"),
+                model="m", usage=types.SimpleNamespace(input_tokens=1, output_tokens=1))])
+        with pytest.raises(providers.ProviderError, match="declined"):
+            providers.complete(providers.PROVIDERS["anthropic"], "claude-x", "s", "p")
+
+
+class TestOpenAIToolLoop:
+    def _call(self, cid="c1", name="query_warehouse", arguments='{"sql": "SELECT 1"}'):
+        return {"id": cid, "type": "function",
+                "function": {"name": name, "arguments": arguments}}
+
+    def _payload(self, message, finish="stop"):
+        return {"model": "deepseek-chat",
+                "choices": [{"message": message, "finish_reason": finish}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 20}}
+
+    def _http(self, monkeypatch, payloads, capture):
+        bodies = []
+
+        def urlopen(req, timeout=None):
+            bodies.append(json.loads(req.data.decode()))
+            capture["bodies"] = bodies
+            payload = payloads[len(bodies) - 1]
+
+            class R:
+                def read(self): return json.dumps(payload).encode()
+                def __enter__(self): return self
+                def __exit__(self, *a): return False
+            return R()
+        monkeypatch.setattr(providers.urllib.request, "urlopen", urlopen)
+        return bodies
+
+    def test_a_tool_call_is_run_and_the_answer_returned(self, monkeypatch):
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+        cap = {}
+        self._http(monkeypatch, [
+            self._payload({"role": "assistant", "content": None,
+                           "tool_calls": [self._call()]}, finish="tool_calls"),
+            self._payload({"role": "assistant", "content": "the answer"}),
+        ], cap)
+        ran = []
+        done = providers.complete(
+            providers.PROVIDERS["deepseek"], "deepseek-chat", "s", "p",
+            tools=(_tool(),), run_tool=lambda n, a: ran.append((n, a)) or "42 rows")
+        assert done.text == "the answer"
+        assert ran == [("query_warehouse", {"sql": "SELECT 1"})]
+        assert done.tool_calls[0].result == "42 rows"
+
+    def test_the_result_goes_back_as_a_tool_message(self, monkeypatch):
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+        cap = {}
+        self._http(monkeypatch, [
+            self._payload({"role": "assistant", "content": None,
+                           "tool_calls": [self._call(cid="xyz")]}, finish="tool_calls"),
+            self._payload({"role": "assistant", "content": "done"}),
+        ], cap)
+        providers.complete(providers.PROVIDERS["deepseek"], "deepseek-chat", "s", "p",
+                           tools=(_tool(),), run_tool=lambda n, a: "ROWS")
+        last = cap["bodies"][1]["messages"][-1]
+        assert last["role"] == "tool" and last["tool_call_id"] == "xyz"
+        assert last["content"] == "ROWS"
+
+    def test_the_tool_is_declared_in_the_openai_shape(self, monkeypatch):
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+        cap = {}
+        self._http(monkeypatch, [self._payload({"content": "hi"})], cap)
+        providers.complete(providers.PROVIDERS["deepseek"], "deepseek-chat", "s", "p",
+                           tools=(_tool(),), run_tool=lambda n, a: "")
+        spec = cap["bodies"][0]["tools"][0]
+        assert spec["type"] == "function"
+        assert spec["function"]["name"] == "query_warehouse"
+        assert spec["function"]["parameters"]["properties"]["sql"]["type"] == "string"
+
+    def test_malformed_arguments_come_back_as_a_tool_failure(self, monkeypatch):
+        """A model can emit invalid JSON. That is its mistake to see and fix,
+        not a reason to throw away the rounds already paid for."""
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+        cap = {}
+        self._http(monkeypatch, [
+            self._payload({"role": "assistant", "content": None,
+                           "tool_calls": [self._call(arguments="{not json")]},
+                          finish="tool_calls"),
+            self._payload({"role": "assistant", "content": "recovered"}),
+        ], cap)
+        done = providers.complete(
+            providers.PROVIDERS["deepseek"], "deepseek-chat", "s", "p",
+            tools=(_tool(),), run_tool=lambda n, a: "never reached")
+        assert done.text == "recovered"
+        assert "not valid JSON" in done.tool_calls[0].result
+
+    def test_tokens_accumulate_over_every_round(self, monkeypatch):
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+        cap = {}
+        self._http(monkeypatch, [
+            self._payload({"role": "assistant", "content": None,
+                           "tool_calls": [self._call()]}, finish="tool_calls"),
+            self._payload({"role": "assistant", "content": "ok"}),
+        ], cap)
+        done = providers.complete(
+            providers.PROVIDERS["deepseek"], "deepseek-chat", "s", "p",
+            tools=(_tool(),), run_tool=lambda n, a: "r")
+        assert (done.input_tokens, done.output_tokens) == (20, 40)
+
+    def test_the_last_round_withholds_the_tools(self, monkeypatch):
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+        cap = {}
+        rounds = providers.MAX_TOOL_ROUNDS
+        self._http(monkeypatch, [
+            self._payload({"role": "assistant", "content": None,
+                           "tool_calls": [self._call(cid=f"c{i}")]}, finish="tool_calls")
+            for i in range(rounds)
+        ] + [self._payload({"role": "assistant", "content": "forced answer"})], cap)
+        done = providers.complete(
+            providers.PROVIDERS["deepseek"], "deepseek-chat", "s", "p",
+            tools=(_tool(),), run_tool=lambda n, a: "r")
+        assert done.text == "forced answer"
+        assert "tools" in cap["bodies"][0] and "tools" not in cap["bodies"][-1]
+
+    def test_an_endpoint_that_rejects_tools_says_what_to_do(self, monkeypatch):
+        """Small local models behind ollama often have no tool support, and a
+        bare 'API error 400' sends the operator to their prompt instead."""
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+        _fake_http(monkeypatch, error=urllib.error.HTTPError(
+            "u", 400, "Bad Request", {}, io.BytesIO(b'{"error":{"message":"no tools"}}')))
+        with pytest.raises(providers.ProviderError, match="--no-tools"):
+            providers.complete(providers.PROVIDERS["deepseek"], "deepseek-chat",
+                               "s", "p", tools=(_tool(),), run_tool=lambda n, a: "")
+
+    def test_a_400_without_tools_does_not_blame_tools(self, monkeypatch):
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+        _fake_http(monkeypatch, error=urllib.error.HTTPError(
+            "u", 400, "Bad Request", {}, io.BytesIO(b'{"error":{"message":"nope"}}')))
+        with pytest.raises(providers.ProviderError) as e:
+            providers.complete(providers.PROVIDERS["deepseek"], "deepseek-chat", "s", "p")
+        assert "--no-tools" not in str(e.value)

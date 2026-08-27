@@ -7,6 +7,9 @@ Every source is a module exposing the same four names:
     render_lines(d) -> list[str], CLI text for that block
     context_lines(d)-> list[str], facts phrased for the LLM
 
+and optionally `analyst_tools(cfg) -> list[Tool]`, for a source that can answer
+questions the snapshot does not contain. See `Tool`.
+
 Colocating the two presentations with the collector means adding a source is a
 single new file plus one entry in `snapshot.SOURCES` — nothing else changes.
 
@@ -19,7 +22,7 @@ analyst) gets to see rather than a silent gap.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, Callable
 
 
 @dataclass(frozen=True)
@@ -131,6 +134,34 @@ class Panel:
     # something in volatility units, while both come from different sources.
     # Ties keep source order, so the layout stays stable.
     priority: int = 50
+
+
+@dataclass(frozen=True)
+class Tool:
+    """A live capability a source lends the analyst, used only while answering.
+
+    The snapshot is a fixed set of derived figures chosen in advance. Some
+    questions are not in it and never could be — "how did this drawdown compare
+    to the last three", "what did volatility do around the 2024 halving" — and
+    a source that can still answer at ask time says so with one of these.
+
+    This is the single documented exception to *nothing downstream re-fetches*,
+    and it is deliberately narrow. A tool answers the model's question and
+    nothing else: it does not collect, its result never enters the snapshot,
+    and no other consumer can reach it. The snapshot a page renders is still
+    the snapshot the analyst was handed.
+
+    `run` receives the model's arguments as keywords and returns text for it to
+    read. It must never raise: a bad argument is something the model can see
+    and correct on the next turn, so the failure is phrased for the model and
+    returned like any other result. Anything it cannot phrase, it says.
+    """
+
+    name: str
+    description: str
+    # JSON Schema for the arguments, as both wire protocols expect.
+    parameters: dict[str, Any]
+    run: Callable[..., str]
 
 
 def fmt(value, spec: str = "", *, prefix: str = "", suffix: str = "",

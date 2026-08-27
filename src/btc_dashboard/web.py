@@ -136,6 +136,11 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 "model": result.model,
                 "input_tokens": result.input_tokens,
                 "output_tokens": result.output_tokens,
+                # Carried through so the page can show what was run. An answer
+                # whose figures came from queries the reader cannot see is not
+                # checkable, and checkable is the point.
+                "tool_calls": result.tool_calls,
+                "no_tools_reason": result.no_tools_reason,
             }
 
         # Redirect rather than render: a rendered POST response would re-submit

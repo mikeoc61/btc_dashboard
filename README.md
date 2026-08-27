@@ -293,6 +293,7 @@ def context_lines(data) -> list[str]:   # facts phrased for the LLM
 def html_panels(data) -> list[Panel]:   # optional; cards for --html and the web view
 def notable(data) -> list[str]:         # optional; entries for the NOTABLE strip
 def refresh_derived(data) -> dict:      # optional; only if fields age with the clock
+def analyst_tools(cfg) -> list[Tool]:   # optional; live queries offered to --ask
 ```
 
 Keeping all three presentations next to the collector is deliberate: the caveats
@@ -359,6 +360,7 @@ see [Credential boundary](#credential-boundary-the-llm-is-client-side-only).
 | `--provider P` | LLM provider for `--ask` (`anthropic`, `openai`, `deepseek`, `openrouter`, `ollama`) |
 | `--model ID` | Model for `--ask`, optionally `provider/model` |
 | `--effort L` | `low`/`medium`/`high`/`xhigh`/`max` (default `high`) |
+| `--no-tools` | Answer from the snapshot alone — don't let `--ask` query the warehouse |
 | `--refresh` | Bypass the cache and re-collect |
 | `--cache-ttl N` | Cache lifetime in seconds (default 3600; `0` disables) |
 | `--timeout N` | Per-source network timeout in seconds (default 20) |
@@ -561,6 +563,78 @@ A separate ingester owns writes to `market.duckdb`. DuckDB permits one writer
 per file, and this tool opens it `read_only=True` everywhere — that is what
 keeps it from ever contending with the writer. Nothing here writes, and nothing
 here should.
+
+### The analyst can query it
+
+The snapshot is a fixed set of derived figures chosen in advance, so questions
+needing history it does not carry — a particular past date, a comparison with
+an earlier regime, how often something has happened — used to be answered "the
+data does not cover that": correct, and useless. `--ask` can now run read-only
+SQL against the warehouse while it answers.
+
+```bash
+btc-dashboard --ask "how does this drawdown compare to the last three?"
+btc-dashboard --ask "..." --no-tools     # snapshot only, as before
+```
+
+A source offers this by exposing `analyst_tools(cfg)` (see
+[Adding a source](#adding-a-source)); the warehouse is the only one that does.
+The tool carries the schema, read live from the database rather than hardcoded
+— the ingester adds columns without asking, and a stale hand-written list would
+have the model writing SQL against columns that no longer exist. It also
+carries the measurement caveats that a source would normally attach for the
+analyst: annualise on 365, `fee_subsidy` has a weekly cycle, rows are complete
+UTC days. A figure the model computes itself needs its qualifier as much as one
+this code computes.
+
+**Every query the analyst ran is shown** — under `QUERIED` in the terminal, in
+a collapsed disclosure on the page. A number resting on a query nobody can see
+is not checkable, and being checkable is the reason this reads a local
+warehouse instead of asking a model what it remembers.
+
+**Whether the tool exists is stated in the prompt.** With no warehouse (a Mac,
+or a Pi whose database has moved) the model is told it has the snapshot and
+nothing else. A model that believes it can check history and silently cannot
+answers from the snapshot while sounding like it checked.
+
+**And it is stated to you.** Telling only the model is not enough: it answers
+from the snapshot without complaint, and you cannot tell that answer apart from
+one that checked. So an answer with no tool behind it carries a line saying so,
+in the terminal and on the page, distinguishing a missing warehouse from a
+`--no-tools` you asked for. This matters most over `--from`: the snapshot has a
+remote path and queries do not, so on any machine that isn't the one holding
+the warehouse, snapshot-only is the normal case rather than the exception.
+
+#### What the model cannot do with it
+
+A model composes the SQL, so the connection is built assuming it eventually
+composes the worst statement it could.
+
+- **Only one read runs.** The statement is wrapped in
+  `SELECT * FROM ( ... ) LIMIT n` rather than pattern-matched, which makes
+  DuckDB's own parser the authority on what counts as a single read. An
+  `INSERT`, `UPDATE`, `DROP`, `PRAGMA`, `SET`, or a second statement after a
+  semicolon is a syntax error in that position. No blocklist has to anticipate
+  the next statement type.
+- **No filesystem, no network.** `read_only=True` stops writes to the database;
+  it does not stop DuckDB reading the rest of the disk with `read_csv`, writing
+  one with `COPY ... TO`, `ATTACH`ing another database, or `INSTALL`ing
+  `httpfs` and reaching the internet. `enable_external_access=false` plus
+  `lock_configuration=true` close all of that, and cannot be undone once set.
+- **Bounded.** 200 rows, and a 20-second cap enforced by interrupting the
+  query — DuckDB has no statement timeout of its own. The connection survives
+  the interrupt.
+- **Bounded rounds.** At most `MAX_TOOL_ROUNDS` tool calls per question; the
+  final round withholds the tools so the model has to answer with what it has.
+
+A failed query comes back to the model as text, not as an exception, so it can
+read the error and fix its SQL. Token counts accumulate across every round, so
+the reported cost is the cost of the whole exchange.
+
+Note that the DuckDB lockdown applies to the database *instance*, so once an
+ask has run, every later connection to that file in the same process is locked
+too. That is intended — nothing here reads anything but the warehouse — but it
+does mean a future `SET` in this codebase would fail after an ask.
 
 ### Choosing a provider
 

@@ -38,6 +38,13 @@ from . import config
 # share the collection timeout.
 TIMEOUT = 120
 MAX_TOKENS = 16000
+# How many times the model may call a tool before it must answer with what it
+# has. A bound rather than a budget: each round is a paid request, and a model
+# stuck rewriting a failing query would otherwise loop until the timeout. The
+# last round drops the tools rather than erroring, so the caller always gets a
+# real answer — one that had fewer facts than the model wanted, which it is
+# told to say.
+MAX_TOOL_ROUNDS = 8
 
 
 @dataclass(frozen=True)
@@ -143,22 +150,55 @@ def api_key(provider: Provider, env_file: Path | None = None) -> str | None:
 
 
 @dataclass(frozen=True)
+class ToolCall:
+    """One tool invocation and what came back.
+
+    Kept and returned rather than discarded once the model has read it: the
+    operator paid for it, and a conclusion drawn from a query nobody can see is
+    not checkable. The caller shows these.
+    """
+
+    name: str
+    arguments: dict
+    result: str
+
+
+@dataclass(frozen=True)
 class Completion:
     text: str
     model: str
     input_tokens: int | None = None
     output_tokens: int | None = None
+    # Every round, in order. Empty when no tools were offered or none were used.
+    tool_calls: tuple[ToolCall, ...] = ()
 
 
 def complete(provider: Provider, model: str, system: str, prompt: str,
-             effort: str = "high", timeout: int = TIMEOUT) -> Completion:
-    """Send one prompt. Raises ProviderError with an operator-facing message."""
+             effort: str = "high", timeout: int = TIMEOUT,
+             tools: "tuple" = (), run_tool=None) -> Completion:
+    """Send a prompt, running any tools the model asks for, and return the answer.
+
+    With no `tools` this is one request, as it always was. With tools it is a
+    loop: the model may ask for a tool, `run_tool(name, arguments) -> str`
+    supplies the result, and the conversation continues until the model answers
+    or `MAX_TOOL_ROUNDS` is reached. Token counts accumulate across every round,
+    so the reported cost is the cost of the whole exchange rather than of the
+    last leg of it.
+
+    `run_tool` must not raise. A tool failure is something the model can see and
+    correct on its next turn, so it belongs in the tool's result text; an
+    exception here would throw away the rounds already paid for.
+
+    Raises ProviderError with an operator-facing message.
+    """
     if provider.kind == "anthropic":
-        return _anthropic(provider, model, system, prompt, effort, timeout)
-    return _openai(provider, model, system, prompt, timeout)
+        return _anthropic(provider, model, system, prompt, effort, timeout,
+                          tools, run_tool)
+    return _openai(provider, model, system, prompt, timeout, tools, run_tool)
 
 
-def _anthropic(provider, model, system, prompt, effort, timeout) -> Completion:
+def _anthropic(provider, model, system, prompt, effort, timeout,
+               tools=(), run_tool=None) -> Completion:
     try:
         import anthropic
     except ImportError:
@@ -167,101 +207,192 @@ def _anthropic(provider, model, system, prompt, effort, timeout) -> Completion:
     if not api_key(provider):
         raise ProviderError(_missing_key(provider))
 
-    kwargs = {
-        "model": model,
-        # Thinking is on by default on current models and max_tokens caps
-        # thinking plus response together, so this sits well above the answer
-        # length to keep a long deliberation from truncating the text.
-        "max_tokens": MAX_TOKENS,
-        "system": system,
-        "messages": [{"role": "user", "content": prompt}],
-    }
-    if provider.supports_effort:
-        kwargs["output_config"] = {"effort": effort}
-
+    spec = [
+        {"name": t.name, "description": t.description, "input_schema": t.parameters}
+        for t in tools
+    ]
+    messages = [{"role": "user", "content": prompt}]
+    calls: list[ToolCall] = []
     client = anthropic.Anthropic(timeout=timeout)
-    try:
-        resp = client.messages.create(**kwargs)
-    except anthropic.AuthenticationError:
-        raise ProviderError(f"{provider.env_key} was rejected")
-    except anthropic.NotFoundError:
-        raise ProviderError(f"unknown model: {model}")
-    except anthropic.RateLimitError as e:
-        retry = e.response.headers.get("retry-after", "?") if e.response else "?"
-        raise ProviderError(f"rate limited — retry after {retry}s")
-    except anthropic.APIStatusError as e:
-        raise ProviderError(f"API error {e.status_code}: {e.message}")
-    except anthropic.APIConnectionError:
-        raise ProviderError("could not reach the Anthropic API")
+    in_tokens = out_tokens = 0
 
-    # Checked before reading content: a refusal returns HTTP 200 with content
-    # empty or partial, so indexing into it would break here.
-    if resp.stop_reason == "refusal":
-        cat = getattr(resp.stop_details, "category", None) if resp.stop_details else None
-        raise ProviderError(f"request declined by safety classifiers ({cat})")
+    for round_number in range(MAX_TOOL_ROUNDS + 1):
+        kwargs = {
+            "model": model,
+            # Thinking is on by default on current models and max_tokens caps
+            # thinking plus response together, so this sits well above the answer
+            # length to keep a long deliberation from truncating the text.
+            "max_tokens": MAX_TOKENS,
+            "system": system,
+            "messages": messages,
+        }
+        if provider.supports_effort:
+            kwargs["output_config"] = {"effort": effort}
+        # The final round offers no tools, which is what forces an answer out of
+        # a model that would otherwise keep querying. Without this the loop ends
+        # on a tool_use turn that carries no text at all.
+        if spec and round_number < MAX_TOOL_ROUNDS:
+            kwargs["tools"] = spec
 
-    text = "\n".join(b.text for b in resp.content if b.type == "text").strip()
-    if not text:
-        raise ProviderError(f"empty response (stop_reason={resp.stop_reason})")
-    return Completion(text, resp.model, resp.usage.input_tokens, resp.usage.output_tokens)
+        try:
+            resp = client.messages.create(**kwargs)
+        except anthropic.AuthenticationError:
+            raise ProviderError(f"{provider.env_key} was rejected")
+        except anthropic.NotFoundError:
+            raise ProviderError(f"unknown model: {model}")
+        except anthropic.RateLimitError as e:
+            retry = e.response.headers.get("retry-after", "?") if e.response else "?"
+            raise ProviderError(f"rate limited — retry after {retry}s")
+        except anthropic.APIStatusError as e:
+            raise ProviderError(f"API error {e.status_code}: {e.message}")
+        except anthropic.APIConnectionError:
+            raise ProviderError("could not reach the Anthropic API")
+
+        in_tokens += resp.usage.input_tokens or 0
+        out_tokens += resp.usage.output_tokens or 0
+
+        # Checked before reading content: a refusal returns HTTP 200 with content
+        # empty or partial, so indexing into it would break here.
+        if resp.stop_reason == "refusal":
+            cat = getattr(resp.stop_details, "category", None) if resp.stop_details else None
+            raise ProviderError(f"request declined by safety classifiers ({cat})")
+
+        if resp.stop_reason == "tool_use" and run_tool is not None:
+            # The whole content list goes back, not just the tool_use blocks:
+            # with thinking enabled the API requires the thinking blocks that
+            # preceded the call to come with it.
+            messages.append({"role": "assistant", "content": resp.content})
+            results = []
+            for block in resp.content:
+                if block.type != "tool_use":
+                    continue
+                arguments = dict(block.input or {})
+                text = run_tool(block.name, arguments)
+                calls.append(ToolCall(block.name, arguments, text))
+                results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": text,
+                })
+            messages.append({"role": "user", "content": results})
+            continue
+
+        text = "\n".join(b.text for b in resp.content if b.type == "text").strip()
+        if not text:
+            raise ProviderError(f"empty response (stop_reason={resp.stop_reason})")
+        return Completion(text, resp.model, in_tokens, out_tokens, tuple(calls))
+
+    # Unreachable: the final round sends no tools, so it cannot stop on one.
+    raise ProviderError("the model kept calling tools without answering")
 
 
-def _openai(provider, model, system, prompt, timeout) -> Completion:
+def _openai(provider, model, system, prompt, timeout,
+            tools=(), run_tool=None) -> Completion:
     key = api_key(provider)
     if key is None and provider.env_key is not None:
         raise ProviderError(_missing_key(provider))
 
-    body = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ],
-    }
-    if provider.supports_max_tokens:
-        body["max_tokens"] = MAX_TOKENS
-
+    spec = [
+        {"type": "function", "function": {
+            "name": t.name, "description": t.description, "parameters": t.parameters,
+        }}
+        for t in tools
+    ]
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": prompt},
+    ]
+    calls: list[ToolCall] = []
     headers = {"content-type": "application/json"}
     if key:
         headers["Authorization"] = f"Bearer {key}"
 
-    req = urllib.request.Request(
-        f"{provider.base_url}/chat/completions",
-        data=json.dumps(body).encode(), headers=headers,
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            payload = json.load(r)
-    except urllib.error.HTTPError as e:
-        raise ProviderError(_http_error(provider, e))
-    except urllib.error.URLError as e:
-        raise ProviderError(f"could not reach {provider.name} at {provider.base_url}: {e.reason}")
-    except (TimeoutError, OSError) as e:
-        raise ProviderError(f"{provider.name} request failed: {e}")
+    in_tokens = out_tokens = 0
+    seen_usage = False
+    last_model = model
 
-    try:
-        choice = payload["choices"][0]
-        text = (choice["message"].get("content") or "").strip()
-    except (KeyError, IndexError, TypeError):
-        raise ProviderError(f"{provider.name} returned an unexpected response shape")
+    for round_number in range(MAX_TOOL_ROUNDS + 1):
+        body = {"model": model, "messages": messages}
+        if provider.supports_max_tokens:
+            body["max_tokens"] = MAX_TOKENS
+        # As with the Anthropic loop: the last round withholds the tools so the
+        # model has to answer rather than ask again.
+        if spec and round_number < MAX_TOOL_ROUNDS:
+            body["tools"] = spec
 
-    if not text:
-        # Reasoning models can spend the whole budget thinking and return an
-        # empty message; some expose the reasoning separately.
-        text = (choice["message"].get("reasoning_content") or "").strip()
-    if not text:
-        raise ProviderError(
-            f"empty response from {provider.name} "
-            f"(finish_reason={choice.get('finish_reason')})"
+        req = urllib.request.Request(
+            f"{provider.base_url}/chat/completions",
+            data=json.dumps(body).encode(), headers=headers,
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                payload = json.load(r)
+        except urllib.error.HTTPError as e:
+            raise ProviderError(_http_error(provider, e, tools=bool(spec)))
+        except urllib.error.URLError as e:
+            raise ProviderError(
+                f"could not reach {provider.name} at {provider.base_url}: {e.reason}")
+        except (TimeoutError, OSError) as e:
+            raise ProviderError(f"{provider.name} request failed: {e}")
+
+        try:
+            choice = payload["choices"][0]
+            message = choice["message"]
+        except (KeyError, IndexError, TypeError):
+            raise ProviderError(f"{provider.name} returned an unexpected response shape")
+
+        usage = payload.get("usage") or {}
+        if usage:
+            seen_usage = True
+            in_tokens += usage.get("prompt_tokens") or 0
+            out_tokens += usage.get("completion_tokens") or 0
+        last_model = payload.get("model") or last_model
+
+        requested = message.get("tool_calls") or []
+        if requested and run_tool is not None:
+            # Echoed back verbatim: the API matches each result to the call by
+            # id, and a reconstructed message loses fields some providers need.
+            messages.append(message)
+            for call in requested:
+                fn = call.get("function") or {}
+                name = fn.get("name") or ""
+                # Arguments arrive as a JSON *string*, and a model can emit a
+                # malformed one. That is the model's mistake to see and fix, so
+                # it comes back as a tool result rather than an exception.
+                try:
+                    arguments = json.loads(fn.get("arguments") or "{}")
+                except ValueError as e:
+                    arguments, text = {}, f"TOOL FAILED: arguments were not valid JSON: {e}"
+                else:
+                    text = run_tool(name, arguments)
+                calls.append(ToolCall(name, arguments, text))
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": call.get("id"),
+                    "content": text,
+                })
+            continue
+
+        text = (message.get("content") or "").strip()
+        if not text:
+            # Reasoning models can spend the whole budget thinking and return an
+            # empty message; some expose the reasoning separately.
+            text = (message.get("reasoning_content") or "").strip()
+        if not text:
+            raise ProviderError(
+                f"empty response from {provider.name} "
+                f"(finish_reason={choice.get('finish_reason')})"
+            )
+
+        return Completion(
+            text=text,
+            model=last_model,
+            input_tokens=in_tokens if seen_usage else None,
+            output_tokens=out_tokens if seen_usage else None,
+            tool_calls=tuple(calls),
         )
 
-    usage = payload.get("usage") or {}
-    return Completion(
-        text=text,
-        model=payload.get("model") or model,
-        input_tokens=usage.get("prompt_tokens"),
-        output_tokens=usage.get("completion_tokens"),
-    )
+    raise ProviderError("the model kept calling tools without answering")
 
 
 def _missing_key(provider: Provider) -> str:
@@ -271,7 +402,8 @@ def _missing_key(provider: Provider) -> str:
     )
 
 
-def _http_error(provider: Provider, e: urllib.error.HTTPError) -> str:
+def _http_error(provider: Provider, e: urllib.error.HTTPError,
+                tools: bool = False) -> str:
     detail = ""
     try:
         body = json.loads(e.read().decode())
@@ -284,4 +416,13 @@ def _http_error(provider: Provider, e: urllib.error.HTTPError) -> str:
         return f"{provider.name} does not know that model{': ' + detail if detail else ''}"
     if e.code == 429:
         return f"{provider.name} rate limited{': ' + detail if detail else ''}"
+    if e.code == 400 and tools:
+        # Not every OpenAI-shaped endpoint takes tools — a small local model
+        # behind ollama often does not — and a bare "API error 400" sends the
+        # operator looking at their prompt instead of their model choice.
+        return (
+            f"{provider.name} rejected the request{': ' + detail if detail else ''}. "
+            f"Tools were offered; if this model does not support them, run with "
+            f"--no-tools."
+        )
     return f"{provider.name} API error {e.code}{': ' + detail if detail else ''}"

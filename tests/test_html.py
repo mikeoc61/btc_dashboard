@@ -703,3 +703,95 @@ class TestRefreshMechanism:
         out = page.render_html(_snap(), live_endpoint="/live</script><b>")
         assert "</script><b>" not in out.split("<script>")[1]
         assert "\\u003c" in out
+
+
+class TestQueriesAreShown:
+    """A figure that came from a query nobody can see is not checkable, and
+    checkability is the reason the analyst reads a local warehouse at all."""
+
+    def _answer(self, calls):
+        return {"question": "how does this drawdown compare?", "text": "an answer",
+                "provider": "p", "model": "m", "input_tokens": 1, "output_tokens": 2,
+                "tool_calls": calls}
+
+    def _call(self, sql="SELECT date, close FROM btc", result="date | close\n2026-08-25 | 63000"):
+        from btc_dashboard.providers import ToolCall
+        return ToolCall("query_warehouse", {"sql": sql}, result)
+
+    def test_the_sql_appears_on_the_page(self):
+        out = page.render_html(_snap(), ask=True, answer=self._answer([self._call()]))
+        assert "SELECT date, close FROM btc" in out
+
+    def test_the_rows_appear_too(self):
+        out = page.render_html(_snap(), ask=True, answer=self._answer([self._call()]))
+        assert "2026-08-25 | 63000" in out
+
+    def test_the_count_is_stated(self):
+        out = page.render_html(_snap(), ask=True,
+                               answer=self._answer([self._call(), self._call()]))
+        assert "2 queries run" in out
+        one = page.render_html(_snap(), ask=True, answer=self._answer([self._call()]))
+        assert "1 query run" in one
+
+    def test_an_answer_with_no_queries_shows_no_disclosure(self):
+        out = page.render_html(_snap(), ask=True, answer=self._answer([]))
+        assert "queries run" not in out and "query run" not in out
+
+    def test_the_sql_is_escaped(self):
+        """Written by the model, so it is not trusted markup."""
+        out = page.render_html(_snap(), ask=True, answer=self._answer(
+            [self._call(sql="SELECT '<script>alert(1)</script>'")]))
+        assert "<script>alert(1)" not in out and "&lt;script&gt;" in out
+
+    def test_the_rows_are_escaped(self):
+        """Rows come out of a database filled from remote APIs."""
+        out = page.render_html(_snap(), ask=True, answer=self._answer(
+            [self._call(result="<img src=x onerror=alert(1)>")]))
+        assert "<img src=x" not in out and "&lt;img" in out
+
+    def test_a_long_result_is_trimmed_and_says_so(self):
+        rows = "\n".join(f"2026-01-{i:02d} | {i}" for i in range(1, 40))
+        out = page.render_html(_snap(), ask=True,
+                               answer=self._answer([self._call(result=rows)]))
+        assert "more lines" in out
+        assert "2026-01-39" not in out
+
+    def test_it_survives_the_stylesheet_being_stripped(self):
+        """`details` is markup the browser understands, not styling. Strip the
+        CSS and the query is still in the document."""
+        import re
+        out = page.render_html(_snap(), ask=True, answer=self._answer([self._call()]))
+        stripped = re.sub(r"<style>.*?</style>", "", out, flags=re.S)
+        assert "SELECT date, close FROM btc" in stripped
+
+
+class TestTheAnswerSaysWhenItCouldNotCheck:
+    def _answer(self, **over):
+        base = {"question": "how does this compare to 2022?", "text": "an answer",
+                "provider": "p", "model": "m", "input_tokens": 1, "output_tokens": 2,
+                "tool_calls": ()}
+        base.update(over)
+        return base
+
+    def test_the_reason_appears_on_the_card(self):
+        out = page.render_html(_snap(), ask=True, answer=self._answer(
+            no_tools_reason="No warehouse query tool was available, so this was "
+                            "answered from the snapshot alone."))
+        assert "answered from the snapshot alone" in out
+
+    def test_nothing_is_added_when_a_tool_was_available(self):
+        out = page.render_html(_snap(), ask=True, answer=self._answer())
+        assert "snapshot alone" not in out
+
+    def test_it_is_escaped(self):
+        out = page.render_html(_snap(), ask=True, answer=self._answer(
+            no_tools_reason="<img src=x onerror=alert(1)>"))
+        assert "<img src=x" not in out and "&lt;img" in out
+
+    def test_it_survives_the_stylesheet_being_stripped(self):
+        """`warn` is a colour. The sentence has to carry the meaning itself."""
+        import re
+        out = page.render_html(_snap(), ask=True,
+                               answer=self._answer(no_tools_reason="no tool was available"))
+        stripped = re.sub(r"<style>.*?</style>", "", out, flags=re.S)
+        assert "no tool was available" in stripped

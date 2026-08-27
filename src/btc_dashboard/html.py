@@ -248,6 +248,13 @@ h1 { font-size:1.05rem; margin:0; letter-spacing:.06em; color:var(--accent); }
            font-weight:400; font-size:.8rem; }
 .answer { white-space:pre-wrap; margin:.5rem 0; line-height:1.6;
           font-size:.98rem; }
+.queries { margin:.5rem 0 0; font-size:.85rem; }
+.queries summary { color:var(--muted); cursor:pointer; }
+.queries pre { white-space:pre-wrap; word-break:break-word; margin:.4rem 0 .8rem;
+               padding:.5rem .6rem; background:var(--bg); border:1px solid var(--line);
+               border-radius:6px; font-family:var(--mono); font-size:.82rem;
+               line-height:1.5; overflow-x:auto; }
+.queries pre.out { color:var(--muted); }
 footer { margin-top:1.2rem; padding-top:.7rem; border-top:1px solid var(--line);
          color:var(--muted); font-size:.8rem; line-height:1.5; }
 """
@@ -307,6 +314,37 @@ def _panels_for(name: str, block: dict) -> list[Panel]:
         return [Panel(title, [Metric("render failed", type(e).__name__)])]
 
 
+ANSWER_RESULT_LINES = 12
+
+
+def _queries(calls) -> str:
+    """What the analyst ran to answer, and what came back.
+
+    Shown rather than summarised away. The answer's numbers are checkable only
+    if the query behind them is visible, and that checkability is the whole
+    reason the analyst reads a local warehouse instead of being asked what it
+    remembers. Collapsed by default because it is evidence, not the answer.
+
+    Everything here is escaped: the SQL was written by the model and the rows
+    came out of a database filled from remote APIs. Neither is trusted markup.
+    """
+    calls = list(calls or [])
+    if not calls:
+        return ""
+    blocks = []
+    for call in calls:
+        for value in (call.arguments or {}).values():
+            blocks.append(f'<pre>{_esc(str(value).strip())}</pre>')
+        lines = (call.result or "").splitlines()
+        shown = "\n".join(lines[:ANSWER_RESULT_LINES])
+        if len(lines) > ANSWER_RESULT_LINES:
+            shown += f"\n… {len(lines) - ANSWER_RESULT_LINES} more lines"
+        blocks.append(f'<pre class="out">{_esc(shown)}</pre>')
+    label = f"{len(calls)} quer{'y' if len(calls) == 1 else 'ies'} run"
+    return (f'<details class="queries"><summary>{_esc(label)}</summary>'
+            f'{"".join(blocks)}</details>')
+
+
 def _answer_card(answer: dict | None) -> str:
     """The analyst's reply, or the reason there isn't one."""
     if not answer:
@@ -324,9 +362,16 @@ def _answer_card(answer: dict | None) -> str:
             f'{_esc(answer.get("model"))} · {_esc(answer.get("input_tokens"))} in / '
             f'{_esc(answer.get("output_tokens"))} out</div>'
         )
+    # Beside the queries, and in the same register: both answer "what did this
+    # answer actually have to work with". A page that shows queries when there
+    # were some and says nothing when there were none reads as though the
+    # thinner answer simply needed less.
+    reason = answer.get("no_tools_reason")
+    caveat = f'<div class="note warn">{_esc(reason)}</div>' if reason else ""
     return (
         '<section class="card wide"><h2>ANALYSIS</h2>'
-        f'<div class="note">{q}</div>{body}{meta}</section>'
+        f'<div class="note">{q}</div>{body}'
+        f'{_queries(answer.get("tool_calls"))}{caveat}{meta}</section>'
     )
 
 

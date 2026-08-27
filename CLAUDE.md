@@ -16,7 +16,9 @@ displayed.
 - **Cache**: 60-minute TTL for `warehouse` and `flows` only. `price` and `node`
   are live tip state and are never cached.
 - **Analyst**: `--ask`, opt-in, client-side. Providers in `providers.py` —
-  anthropic (default), openai, deepseek, openrouter, ollama.
+  anthropic (default), openai, deepseek, openrouter, ollama. Tool use is
+  supported on both wire protocols; the warehouse lends a read-only SQL tool,
+  and `--no-tools` forces the old single-shot behaviour.
 - **Web**: `btc-dashboard-web` — FastAPI on `127.0.0.1:8001`, ask box,
   `NOTABLE` strip, systemd unit in `deploy/`. Live on the Pi. The page patches
   its data regions from `/live` on a timer; it does not reload.
@@ -28,12 +30,25 @@ Breaking one of these is a regression even when the number is right.
 
 - **The snapshot is the contract.** Nothing downstream collects or re-fetches.
   A new consumer reads the dict; it does not call a source.
+  - The one exception, deliberate and narrow: a source may expose
+    `analyst_tools(cfg)` returning `sources.Tool`s, which **only** `--ask` may
+    call, and only while answering. A tool's result never enters the snapshot
+    and no other consumer can reach it. Rendering is still a pure function of
+    the dict.
 - **`collect()` never raises.** A source that cannot produce data returns
   `available: false` with the reason. One dead source costs one block, never
   the run — and the analyst is *told* what is missing, so it reasons about the
   gap instead of assuming health.
 - **The warehouse is opened `read_only=True`, always.** A separate ingester
   (see `data_stores`) is its sole writer. Nothing here writes to it, ever.
+- **The analyst's SQL connection assumes the worst statement.** `read_only`
+  alone is not enough: it stops writes to the *database*, not `read_csv` over
+  the filesystem, `COPY ... TO`, `ATTACH`, or `INSTALL httpfs` reaching the
+  network. `_connect_sandboxed` adds `enable_external_access=false` and
+  `lock_configuration=true`. Statements are not pattern-matched — wrapping in
+  `SELECT * FROM (...) LIMIT n` makes DuckDB's parser the authority on what is
+  one read, so no blocklist has to anticipate the next statement type. Weaken
+  any of that and a model's typo becomes a filesystem read.
 - **`--ask` is client-side.** `analyst.py` must never be imported by a data
   plane that serves other people; a snapshot service holds no credential. The
   web view is the one documented exception — it holds the key, which is why it
@@ -79,6 +94,7 @@ def context_lines(data) -> list[str]:   # facts phrased for the LLM
 def html_panels(data) -> list[Panel]:   # optional; cards, each with a priority
 def notable(data) -> list[str]:         # optional; NOTABLE strip, threshold-selected
 def refresh_derived(data) -> dict:      # optional; only if fields age with the clock
+def analyst_tools(cfg) -> list[Tool]:   # optional; live queries lent to --ask
 ```
 
 All presentations live beside the collector on purpose: the caveat a number
@@ -101,7 +117,14 @@ needs belongs with the code that knows why.
 - **Volatility annualises on √365, not √252.** The difference is ~17% — enough
   to move a reading across a published threshold.
 - **On the Mac, `node` and `warehouse` report unavailable.** That is correct,
-  not a bug: no `bitcoin-cli`, no DuckDB file.
+  not a bug: no `bitcoin-cli`, no DuckDB file. It also means `--ask` offers no
+  query tool there, and is *told* so — a model that thinks it can check history
+  and cannot will answer from the snapshot while sounding like it checked.
+- **The DuckDB lockdown is instance-wide, not per-connection.** After one ask,
+  every later connection to that file in the process is locked too, and
+  `lock_configuration` cannot be undone. Harmless today because nothing here
+  uses external access — but a `SET` added anywhere in `warehouse.py` would
+  start failing only after an ask had run, which is a horrible bug to chase.
 
 ## Data and hosts
 
@@ -142,8 +165,9 @@ needs belongs with the code that knows why.
 ## Next
 
 - The JSON service still needs **authentication, TLS and rate limiting** before
-  anything is exposed beyond loopback. Load shedding is already handled by the
-  cache.
+  anything is exposed beyond loopback. The web `/ask` now runs SQL as well as
+  spending money, which raises the cost of getting that wrong. Load shedding is
+  already handled by the cache.
 - `README.md` is long; if it grows further, split *Measurement notes* and
   *Studies* into `DECISIONS.md`, as `data_stores` does.
 - No long-history directional flow series exists. Adding one (exchange

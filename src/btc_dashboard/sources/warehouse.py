@@ -31,9 +31,10 @@ from __future__ import annotations
 import datetime
 import math
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
-from . import Metric, Panel, SourceResult, fmt, unavailable
+from . import Metric, Panel, SourceResult, Tool, fmt, unavailable
 
 NAME = "warehouse"
 
@@ -95,6 +96,18 @@ PACE_NOISE_PCT = 100 / math.sqrt(BLOCKS_PER_DAY)
 # Note this caches the *derived* view, not the database: `--refresh` re-reads,
 # and the file is still opened read-only, so a running ingester is unaffected.
 CACHE_TTL = 3600
+
+# Bounds on an analyst query. A model writing SQL will occasionally write a
+# cross join, and the caps are what keep that a wasted turn rather than a hung
+# process. The row cap is well above any sensible aggregate and below what
+# would swamp a context window; the timeout is generous for a table of a few
+# thousand daily rows and short enough that a runaway is obvious.
+QUERY_ROW_LIMIT = 200
+QUERY_TIMEOUT = 20
+# Rows shown in full before the rest are summarised away. A model asking for a
+# series needs to see the series; a model that asked for 200 rows by accident
+# does not need all of them to notice.
+QUERY_PREVIEW_ROWS = 60
 
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -362,6 +375,231 @@ def _try(fn, *a, **kw):
         return fn(*a, **kw)
     except Exception:
         return None
+
+
+# --- live queries, for the analyst ---------------------------------------
+#
+# Everything above derives a fixed set of figures chosen in advance. This is
+# the other half: a question the snapshot does not answer, asked of the
+# warehouse while the analyst is answering it. Nothing here feeds the
+# snapshot, and no other consumer reaches it — see `sources.Tool`.
+
+
+class QueryError(RuntimeError):
+    """A query that could not run, phrased so the model can correct it."""
+
+
+@dataclass(frozen=True)
+class QueryResult:
+    columns: list[str]
+    rows: list[tuple]
+    truncated: bool
+    sql: str
+
+
+def _connect_sandboxed(db_path: Path):
+    """Read-only, and additionally unable to reach anything but this file.
+
+    `read_only=True` already stops writes to the database. It does not stop
+    DuckDB from reading the rest of the filesystem: `read_csv('/etc/passwd')`,
+    `COPY ... TO`, `ATTACH`, and an `INSTALL httpfs` away, the network. A model
+    writing arbitrary SQL is exactly the caller those need closing against, so
+    external access is disabled and the configuration locked, which makes the
+    change one-way for the life of the process.
+
+    Both settings are properties of the database *instance*, not of this
+    connection, so they apply to every later connection to the same file in
+    this process too. That is intended: nothing in this tool reads anything but
+    the warehouse. It does mean a future `SET` anywhere in this module would
+    fail after an ask has run — which is why the settings that matter are
+    chosen here rather than at query time.
+    """
+    con = _connect(db_path)
+    con.execute("SET enable_external_access=false")
+    con.execute("SET lock_configuration=true")
+    return con
+
+
+def schema_text(con) -> str:
+    """The warehouse's shape, for a model that has to write SQL against it.
+
+    Read from the database rather than hardcoded: the ingester owns this schema
+    and adds columns without asking, and a stale hand-written list would have
+    the model writing SQL against columns that no longer exist. The date span
+    is included because "is this question answerable at all" is usually a
+    coverage question.
+    """
+    out: list[str] = []
+    tables = [
+        r[0] for r in con.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'main' ORDER BY table_name"
+        ).fetchall()
+    ]
+    for table in tables:
+        cols = con.execute(
+            "SELECT column_name, data_type FROM information_schema.columns "
+            "WHERE table_name = ? ORDER BY ordinal_position", [table]
+        ).fetchall()
+        names = ", ".join(f"{c} {t.lower()}" for c, t in cols)
+        span = ""
+        if any(c == "date" for c, _ in cols):
+            try:
+                lo, hi, n = con.execute(
+                    f"SELECT min(date), max(date), count(*) FROM {_ident(table)}"
+                ).fetchone()
+                span = f"  -- {n} rows, {lo} to {hi}"
+            except Exception:
+                # Shape is still useful without coverage; never lose the table
+                # because one count failed.
+                pass
+        out.append(f"{table}({names}){span}")
+    return "\n".join(out)
+
+
+def run_query(db_path: Path, sql: str, *, limit: int = QUERY_ROW_LIMIT,
+              timeout: int = QUERY_TIMEOUT) -> QueryResult:
+    """Run one read-only SELECT against the warehouse.
+
+    The statement is wrapped in `SELECT * FROM ( ... ) LIMIT n` rather than
+    pattern-matched. DuckDB's own parser is then the thing deciding what is a
+    single read: an INSERT, an UPDATE, a PRAGMA, a `SET`, or a second statement
+    after a semicolon are all syntax errors in that position, and no regex has
+    to try to anticipate them. The limit is applied by the engine, so a query
+    returning a million rows never materialises them here.
+
+    A statement that runs too long is interrupted from a timer rather than left
+    to finish; DuckDB has no statement timeout of its own, and the connection
+    stays usable afterwards.
+    """
+    import threading
+
+    statement = (sql or "").strip().rstrip(";").strip()
+    if not statement:
+        raise QueryError("empty query")
+
+    try:
+        con = _connect_sandboxed(db_path)
+    except Exception as e:
+        raise QueryError(f"cannot open the warehouse read-only: {e}")
+
+    # One over the cap, so a result sitting exactly at the limit can be
+    # distinguished from one that was cut short.
+    wrapped = f"SELECT * FROM (\n{statement}\n) AS analyst_query LIMIT {int(limit) + 1}"
+    timer = threading.Timer(timeout, con.interrupt)
+    timer.start()
+    try:
+        rel = con.execute(wrapped)
+        columns = [d[0] for d in rel.description]
+        rows = rel.fetchall()
+    except Exception as e:
+        # Phrased for the model, which can rewrite the query and try again.
+        # DuckDB's parser errors already name the position, so they are passed
+        # through rather than replaced with something vaguer.
+        raise QueryError(f"{type(e).__name__}: {e}")
+    finally:
+        timer.cancel()
+        con.close()
+
+    truncated = len(rows) > limit
+    return QueryResult(columns, rows[:limit], truncated, statement)
+
+
+def format_rows(result: QueryResult, preview: int = QUERY_PREVIEW_ROWS) -> str:
+    """A query result as text the model reads.
+
+    Pipe-separated rather than aligned: alignment spends tokens on whitespace,
+    and nothing here is read by a human directly. Truncation is *stated* — a
+    model shown 60 of 200 rows and not told so will describe the 60 as the
+    whole series.
+    """
+    if not result.rows:
+        return "0 rows."
+    head = result.rows[:preview]
+    body = "\n".join(
+        " | ".join("NULL" if v is None else str(v) for v in row) for row in head
+    )
+    note = f"{len(result.rows)} row{'s' if len(result.rows) != 1 else ''}"
+    if result.truncated:
+        note += (
+            f" (cut off at the {QUERY_ROW_LIMIT}-row cap — there were more; "
+            f"aggregate in SQL rather than asking for the whole series)"
+        )
+    if len(result.rows) > preview:
+        note += f", first {preview} shown"
+    return f"{' | '.join(result.columns)}\n{body}\n({note})"
+
+
+TOOL_NAME = "query_warehouse"
+
+
+def analyst_tools(cfg) -> list[Tool]:
+    """The warehouse's live query tool, when there is a warehouse to query.
+
+    An empty list when the file is absent is not a silent failure: the analyst
+    tells the model the warehouse cannot be queried, for the same reason a
+    source that cannot collect reports why. A model that thinks it has history
+    available and gets nothing reasons very differently from one that knows it
+    is working from the snapshot alone.
+    """
+    db = Path(cfg.db_path)
+    if not db.exists():
+        return []
+    try:
+        con = _connect_sandboxed(db)
+        try:
+            schema = schema_text(con)
+        finally:
+            con.close()
+    except Exception:
+        # Unreadable is the same as absent from the model's point of view, and
+        # `collect()` will already have reported the reason on the panel.
+        return []
+
+    def run(sql: str = "") -> str:
+        try:
+            return format_rows(run_query(db, sql))
+        except QueryError as e:
+            return f"QUERY FAILED: {e}"
+
+    return [Tool(
+        name=TOOL_NAME,
+        description=(
+            "Run one read-only SQL SELECT against the local DuckDB warehouse of "
+            "daily Bitcoin history, and get the rows back. Use it whenever the "
+            "question needs history the supplied figures do not cover — a "
+            "specific date or range, a comparison with an earlier period, a "
+            "distribution, a count of past occurrences.\n\n"
+            "Schema (DuckDB SQL):\n"
+            f"{schema}\n\n"
+            "Notes that change the answer:\n"
+            "- Rows are complete UTC days. The most recent day in the table is "
+            "the last COMPLETE day, so it is normally one day behind today, and "
+            "today's live figures are in the supplied data rather than here.\n"
+            "- Only a single SELECT (a leading WITH is fine) will run. No "
+            "INSERT/UPDATE/PRAGMA/SET, and no second statement.\n"
+            f"- At most {QUERY_ROW_LIMIT} rows come back. Aggregate in SQL "
+            "rather than asking for a long series and doing arithmetic yourself.\n"
+            "- fee_subsidy has a strong weekly cycle: weekends run materially "
+            "lower. Ranking raw daily values largely ranks the day of the week. "
+            "Use a 7-day mean, or compare against the same weekday.\n"
+            "- Annualise volatility on a 365-day year, not 252. Bitcoin trades "
+            "every day, and 252 understates it by about 17%.\n"
+            "- State the window any figure you compute was measured over, in the "
+            "answer."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "sql": {
+                    "type": "string",
+                    "description": "A single DuckDB SELECT statement.",
+                },
+            },
+            "required": ["sql"],
+        },
+        run=run,
+    )]
 
 
 def collect(cfg) -> SourceResult:
