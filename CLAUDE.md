@@ -52,6 +52,12 @@ Breaking one of these is a regression even when the number is right.
   `-`; only an explicit `0` is `0.0`.
 - **No imports from sibling projects, no shelling out to their scripts.** The
   only shared thing is the DuckDB *file*.
+  - The cost of that rule: the Farside scrape lives in **two** places, here and
+    in `farside/farside_flows.py`. A layout change on their site breaks both
+    separately — each has its own `parse_table`, column map and date regex — and
+    the host running both scrapes the site twice. Deliberate: farside covers
+    BTC/ETH/SOL and feeds the morning brief, this is BTC-only. If you fix a
+    parsing bug here, check whether the other needs it too.
 
 ## Source contract
 

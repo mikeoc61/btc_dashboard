@@ -297,7 +297,7 @@ here imports them and nothing shells out to them.
 | Repo | Relationship |
 | --- | --- |
 | [data_stores](https://github.com/mikeoc61/data_stores) | Shares *data*. Its `market_warehouse` ingester is the sole writer of `~/data/market.duckdb`; this reads the same file `read_only=True`. Every on-chain figure, moving average and volatility window here comes from that file. |
-| [farside](https://github.com/mikeoc61/farside) | Shares *design*. The standalone ETF-flow scraper this project's `sources/flows.py` was reimplemented from — same site, same hard-won semantics (a reported zero is not a missing cell; a day counts only once every tracked fund reports; an unfillable window is `n/a`, never a shorter sum), independent code and its own cache. |
+| [farside](https://github.com/mikeoc61/farside) | Shares *design*. The standalone ETF-flow scraper `sources/flows.py` was reimplemented from — same site, same hard-won semantics (a reported zero is not a missing cell; a day counts only once every tracked fund reports; an unfillable window is `n/a`, never a shorter sum), independent code and its own cache. Kept separate deliberately: farside covers BTC, ETH and SOL and feeds the morning brief, while this is BTC-only. |
 | [bitcoin_peer_monitor](https://github.com/mikeoc61/bitcoin_peer_monitor) | Unrelated to the data, but shares a host and a pattern — a FastAPI page on loopback reached over an SSH tunnel. It conventionally holds port 8000, which is why this defaults to 8001. |
 
 The split matters for the warehouse in particular: sharing the *file* rather
@@ -305,6 +305,13 @@ than the *package* means a schema change is the only thing that can break this
 project, and the coupling is confined to one module (`sources/warehouse.py`), so
 the store is swappable without touching anything else. It never writes, so a
 running ingester is unaffected.
+
+⚠️ **The Farside scrape exists in two places.** A change to Farside's table
+layout breaks `farside_flows.py` and `sources/flows.py` *separately* — each has
+its own `parse_table`, column mapping and date regex, and fixing one will not
+fix the other. Both also scrape the same site on their own schedule, so the host
+running both makes two requests where one would do. That is the accepted price
+of keeping this project standalone; it is not an oversight.
 
 ## Install
 
