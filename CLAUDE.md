@@ -18,7 +18,8 @@ displayed.
 - **Analyst**: `--ask`, opt-in, client-side. Providers in `providers.py` —
   anthropic (default), openai, deepseek, openrouter, ollama.
 - **Web**: `btc-dashboard-web` — FastAPI on `127.0.0.1:8001`, ask box,
-  `NOTABLE` strip, systemd unit in `deploy/`. Live on the Pi.
+  `NOTABLE` strip, systemd unit in `deploy/`. Live on the Pi. The page patches
+  its data regions from `/live` on a timer; it does not reload.
 - **Studies**: `tools/hashrate_study.py`, read-only over the warehouse.
 
 ## Hard constraints
@@ -42,6 +43,12 @@ Breaking one of these is a regression even when the number is right.
   noise band on a one-day count. These are what make a number comparable to
   someone else's; dropping one to tidy a layout is the most common way to
   regress this project.
+- **The ask box is never inside a region the page updates.** `html.LIVE_IDS`
+  names what a tick overwrites; the box and the answer sit outside all of it.
+  Reloading the document to refresh the data throws away a half-typed
+  question, which is the one thing on the page the reader owns rather than the
+  snapshot. `render_live()` therefore serves no form controls at all, and a
+  test walks the page to prove the box has no live region as an ancestor.
 - **Meaning never lives in the presentation layer.** Strip the ANSI codes or
   the `<style>` block and the output must still say the same thing. Tests
   enforce this. It has been broken three separate ways — colour, a CSS-injected

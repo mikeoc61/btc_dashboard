@@ -20,6 +20,11 @@ Collection is decoupled from HTTP entirely. The page holds a snapshot in
 memory with a short TTL, so an auto-refreshing tab does not scrape Farside or
 poll CoinGecko once a minute, and asking three questions costs three LLM calls
 and zero collections.
+
+The page updates its data regions in place from `/live` rather than reloading
+itself. A reload would discard a half-typed question, and a tick that lands
+mid-sentence is exactly when that hurts most. The ask box therefore changes
+only when an answer comes back from a POST.
 """
 from __future__ import annotations
 
@@ -40,6 +45,10 @@ SNAPSHOT_TTL = 120
 # not a determined human — this is a single-user local page, not a public API.
 ASK_COOLDOWN = 5.0
 PAGE_REFRESH = 60
+# Where the page re-reads its data regions from. The page updates those in
+# place rather than reloading, so the ask box keeps whatever is typed in it
+# while the numbers move underneath.
+LIVE_PATH = "/live"
 # Not 8000: bitcoin_peer_monitor conventionally takes that, and two local
 # dashboards on one host should not fight over a port by default.
 DEFAULT_PORT = 8001
@@ -79,12 +88,24 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     def render(refresh: int | None = PAGE_REFRESH) -> str:
         return page.render_html(
-            cache.get(), ask=True, answer=state["answer"], refresh=refresh
+            cache.get(), ask=True, answer=state["answer"], refresh=refresh,
+            live_endpoint=LIVE_PATH,
         )
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
         return render()
+
+    @app.get(LIVE_PATH, response_class=HTMLResponse)
+    def live() -> str:
+        """The data regions alone, for the page's in-place update.
+
+        Deliberately without the ask box: this response is what a tick writes
+        into an open page, and it must not be able to replace a field someone
+        is typing into. It also serves the shared in-memory snapshot, so a tab
+        polling every minute collects nothing.
+        """
+        return page.render_live(cache.get())
 
     @app.post("/refresh")
     def force_refresh() -> RedirectResponse:

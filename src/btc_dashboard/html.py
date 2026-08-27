@@ -19,12 +19,52 @@ rendered.
 from __future__ import annotations
 
 import html as _html
+import json
 
 from . import snapshot as snap
 from .render import human_age
 from .sources import Metric, Panel
 
 REFRESH_SECONDS = 60
+
+# The regions that carry the data, named once because three things have to
+# agree on them: the page that lays them out, the fragment that re-renders
+# them, and the script that patches one into the other. Three literals would
+# drift the first time a region moved.
+LIVE_IDS = ("ticks", "stamp", "notable", "cards")
+
+# Patch those regions on a timer instead of reloading the document.
+#
+# A meta refresh replaces the page, and with it whatever is half-typed in the
+# ask box — the one thing on the page the reader owns rather than the snapshot.
+# So the data updates in place and the ask box is never touched; it changes
+# only when an answer comes back from a POST.
+#
+# Contents are swapped, not the elements: the wrappers hold the layout — the
+# header's flex row, and the slot the notable strip occupies on the ticks
+# where nothing qualifies — so they stay put and only what they say changes.
+#
+# A failed fetch is swallowed and the last good render stays on screen. The
+# stamp then visibly stops advancing, which is the honest signal that updates
+# have stopped; a spinner or a retry storm would be worse than the silence.
+_UPDATER_JS = """<script>
+(function () {
+  var url = URL_JSON, ids = IDS_JSON;
+  function tick() {
+    fetch(url, {cache: "no-store"})
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.text(); })
+      .then(function (text) {
+        var doc = new DOMParser().parseFromString(text, "text/html");
+        ids.forEach(function (id) {
+          var from = doc.getElementById(id), to = document.getElementById(id);
+          if (from && to) to.innerHTML = from.innerHTML;
+        });
+      })
+      .catch(function () {});
+  }
+  setInterval(tick, EVERY_MS);
+})();
+</script>"""
 TICK_OK = "\u2713"   # CHECK MARK
 TICK_NO = "\u2717"   # BALLOT X
 
@@ -183,6 +223,10 @@ h1 { font-size:1.05rem; margin:0; letter-spacing:.06em; color:var(--accent); }
 .note.warn { color:color-mix(in srgb, var(--warn) 78%, var(--muted)); }
 .err { color:var(--warn); font-size:.88rem; }
 .card.wide { grid-column:1/-1; }
+/* The ask box is a second grid, below the data one rather than inside it,
+   so an in-place update can replace every data card without touching it.
+   The margin restores the gap the shared grid used to supply. */
+.askgrid { margin-top:.85rem; }
 /* A plain block, not flex: whitespace between flex items is discarded, so the
    separating spaces have to be real text and the container has to lay out as
    text for them to survive. */
@@ -323,10 +367,14 @@ def _notable(snapshot: dict) -> list[str]:
     return out
 
 
-def render_html(snapshot: dict, *, title: str = "BTC DASHBOARD",
-                refresh: int | None = REFRESH_SECONDS,
-                ask: bool = False, answer: dict | None = None) -> str:
-    """The page. `ask` adds the analyst box, which needs a server behind it."""
+def _live_parts(snapshot: dict) -> dict[str, str]:
+    """The regions that change with the data, wrapped and keyed by element id.
+
+    Split out so the initial page and the fragment that updates an already-open
+    tab come from one code path. An updater that rebuilt the markup its own way
+    would drift from the page it is patching the first time either changed, and
+    the drift would show as a region that silently stopped updating.
+    """
     generated = str(snapshot.get("generated_at", ""))[:19].replace("T", " ")
 
     # The tick glyph is markup, not a CSS ::before. Injected by stylesheet it
@@ -378,23 +426,6 @@ def render_html(snapshot: dict, *, title: str = "BTC DASHBOARD",
             f'{_rows(panel.metrics)}{err}</section>'
         )
 
-    ask_html = ""
-    if ask:
-        ask_html = (
-            '<section class="card wide"><h2>ASK'
-            '<form method="post" action="/refresh" style="margin:0">'
-            '<button class="linkish" type="submit">refresh data</button>'
-            '</form></h2>'
-            '<form method="post" action="/ask" class="askform">'
-            '<input name="q" autofocus autocomplete="off" '
-            'placeholder="ask a question about this snapshot">'
-            '<button type="submit">Ask</button></form>'
-            '<div class="note">Sent to the configured provider using the key on '
-            'this machine — each question costs money. The analyst sees the '
-            'facts on this page, including which are cached or stale.</div>'
-            '</section>'
-        ) + _answer_card(answer)
-
     notable = _notable(snapshot)
     notable_html = ""
     if notable:
@@ -420,9 +451,93 @@ def render_html(snapshot: dict, *, title: str = "BTC DASHBOARD",
             f'{items}</section>'
         )
 
+    # Each part is wrapped in the element the updater patches. The wrapper is
+    # always present even when its contents are empty — the notable strip comes
+    # and goes — so a region can vanish and return without the ones around it
+    # moving.
+    return {
+        "ticks": f'<div class="ticks" id="ticks">{ticks}</div>',
+        "stamp": f'<div class="meta" id="stamp">{_esc(generated)} UTC</div>',
+        "notable": f'<div id="notable">{notable_html}</div>',
+        "cards": f'<div class="grid" id="cards">{"".join(cards)}</div>',
+    }
+
+
+def render_live(snapshot: dict) -> str:
+    """Just those regions, as a fragment, for a page updating itself in place.
+
+    Not a document: the updater reads the parts it knows by id and ignores the
+    rest, so a new region can be added here and picked up by adding its id to
+    `LIVE_IDS` — the script itself never changes.
+
+    Note what is *not* here: the ask box. That is the point. A snapshot tick
+    must not be able to replace the field someone is typing into.
+    """
+    return "".join(_live_parts(snapshot).values())
+
+
+def _updater_script(url: str, seconds: int) -> str:
+    """The in-place updater, pointed at `url` and ticking every `seconds`."""
+    return (
+        _UPDATER_JS
+        # Both values are this program's own constants rather than anything
+        # from a snapshot, but they are escaped like every other string that
+        # reaches the page: `<` cannot be allowed to start a tag from inside a
+        # script, and json.dumps does not escape it.
+        .replace("URL_JSON", json.dumps(url).replace("<", "\\u003c"))
+        .replace("IDS_JSON", json.dumps(list(LIVE_IDS)))
+        .replace("EVERY_MS", str(int(seconds) * 1000))
+    )
+
+
+def render_html(snapshot: dict, *, title: str = "BTC DASHBOARD",
+                refresh: int | None = REFRESH_SECONDS,
+                ask: bool = False, answer: dict | None = None,
+                live_endpoint: str | None = None) -> str:
+    """The page. `ask` adds the analyst box, which needs a server behind it.
+
+    `live_endpoint` is the URL of something serving `render_live()`. Given one,
+    the page updates its data regions from it in place rather than reloading
+    the document — which is what lets someone type a question while the numbers
+    keep moving. Without one (a file, a static server) the whole document
+    reloads on a meta refresh, as before.
+    """
+    parts = _live_parts(snapshot)
+
+    ask_html = ""
+    if ask:
+        # Its own grid, deliberately outside the live region: an update
+        # replaces the data cards wholesale, and this must survive it. It
+        # changes when an answer arrives, never on a tick.
+        ask_html = (
+            '<section class="grid askgrid">'
+            '<section class="card wide"><h2>ASK'
+            '<form method="post" action="/refresh" style="margin:0">'
+            '<button class="linkish" type="submit">refresh data</button>'
+            '</form></h2>'
+            '<form method="post" action="/ask" class="askform">'
+            '<input name="q" autofocus autocomplete="off" '
+            'placeholder="ask a question about this snapshot">'
+            '<button type="submit">Ask</button></form>'
+            '<div class="note">Sent to the configured provider using the key on '
+            'this machine — each question costs money. The analyst sees the '
+            'facts on this page, including which are cached or stale.</div>'
+            '</section>'
+            + _answer_card(answer)
+            + '</section>'
+        )
+
     meta_refresh = (
         f'<meta http-equiv="refresh" content="{int(refresh)}">' if refresh else ""
     )
+    updater = ""
+    if refresh and live_endpoint:
+        # The meta refresh survives as the no-script fallback. It still clears
+        # the ask box, which is the whole problem — but a page that stops
+        # updating entirely, with no sign that it has, is worse.
+        meta_refresh = f"<noscript>{meta_refresh}</noscript>"
+        updater = _updater_script(live_endpoint, refresh)
+
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -433,12 +548,16 @@ def render_html(snapshot: dict, *, title: str = "BTC DASHBOARD",
 <body>
 <header>
   <h1>{_esc(title)}</h1>
-  <div class="ticks">{ticks}</div>
-  <div class="meta">{_esc(generated)} UTC</div>
+  {parts['ticks']}
+  {parts['stamp']}
 </header>
-{notable_html}\n<main class="grid">{"".join(cards)}{ask_html}</main>
+<main>
+{parts['notable']}
+{parts['cards']}{ask_html}
+</main>
 <footer>Data: local node + DuckDB · price: CoinGecko · ETF: Farside.
 Percentile windows and volatility annualisation are stated on each figure —
 compare those, not bare levels, against any external source.</footer>
+{updater}
 </body></html>
 """

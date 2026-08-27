@@ -591,3 +591,115 @@ class TestNotableIsInline:
         assert plain.startswith("NOTABLE 7d volatility")
         assert " | " in plain
         assert "NOTABLE7d" not in plain
+
+
+class TestUpdatingInPlace:
+    """A whole-page refresh replaced the ask box mid-sentence.
+
+    The numbers have to keep moving while someone types a question at them, so
+    the data regions are patched from a fragment and the ask box is left alone.
+    """
+
+    def _ancestors_of_form_controls(self, markup: str) -> set[str]:
+        """Ids of every element containing a form control, however deep."""
+        from html.parser import HTMLParser
+
+        VOID = {"input", "br", "img", "meta", "link", "hr"}
+
+        class Walk(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.open, self.hits = [], set()
+
+            def handle_starttag(self, tag, attrs):
+                ident = dict(attrs).get("id")
+                if tag not in VOID:
+                    self.open.append(ident)
+                if tag in ("form", "input", "button", "textarea"):
+                    self.hits.update(i for i in self.open if i)
+
+            def handle_startendtag(self, tag, attrs):
+                self.handle_starttag(tag, attrs)
+
+            def handle_endtag(self, tag):
+                if tag not in VOID and self.open:
+                    self.open.pop()
+
+        w = Walk()
+        w.feed(markup)
+        return w.hits
+
+    def test_the_ask_box_is_in_no_region_a_tick_overwrites(self):
+        """The regression itself: if the box lives inside a patched region, an
+        update replaces the field and whatever was typed into it."""
+        out = page.render_html(_snap(), ask=True, live_endpoint="/live")
+        clobbered = self._ancestors_of_form_controls(out) & set(page.LIVE_IDS)
+        assert not clobbered, f"a tick would replace the ask box inside {clobbered}"
+
+    def test_the_fragment_carries_no_controls_at_all(self):
+        """Belt and braces: nothing the updater writes can be a control."""
+        assert "<form" not in page.render_live(_snap())
+        assert "<input" not in page.render_live(_snap())
+
+    def test_the_answer_survives_a_tick(self):
+        answer = {"question": "why?", "text": "because", "provider": "p",
+                  "model": "m", "input_tokens": 1, "output_tokens": 2}
+        out = page.render_html(_snap(), ask=True, answer=answer,
+                               live_endpoint="/live")
+        assert "because" in out
+        assert "because" not in page.render_live(_snap())
+
+    def test_page_and_fragment_cannot_drift(self):
+        """Both are built from `_live_parts`, so the updater always patches
+        markup shaped like the page it is patching."""
+        snap = _snap()
+        page_out, fragment = page.render_html(snap), page.render_live(snap)
+        for part in page._live_parts(snap).values():
+            assert part in page_out
+            assert part in fragment
+
+    def test_every_named_region_exists_in_both(self):
+        snap = _snap()
+        for ident in page.LIVE_IDS:
+            marker = f'id="{ident}"'
+            assert marker in page.render_html(snap), f"{ident} missing from the page"
+            assert marker in page.render_live(snap), f"{ident} missing from the fragment"
+
+    def test_an_empty_notable_strip_keeps_its_slot(self):
+        """The strip is absent when nothing qualifies. Its wrapper is not, or
+        the update has nowhere to put one back."""
+        out = page.render_html(_snap())
+        assert '<section class="notable">' not in out
+        assert 'id="notable"' in out
+
+
+class TestRefreshMechanism:
+    def test_a_live_endpoint_replaces_the_document_reload(self):
+        out = page.render_html(_snap(), live_endpoint="/live")
+        assert "<noscript><meta http-equiv=\"refresh\"" in out, \
+            "reloading stays as the fallback for a browser without scripts"
+        assert "/live" in out and "setInterval" in out
+
+    def test_without_one_the_document_still_reloads(self):
+        """A file:// page and a static server have nothing to fetch from."""
+        out = page.render_html(_snap())
+        assert "http-equiv=\"refresh\"" in out and "<noscript>" not in out
+        assert "setInterval" not in out
+
+    def test_refresh_none_updates_by_neither_route(self):
+        out = page.render_html(_snap(), refresh=None, live_endpoint="/live")
+        assert "http-equiv=\"refresh\"" not in out and "setInterval" not in out
+
+    def test_the_interval_is_the_refresh_seconds(self):
+        assert "setInterval(tick, 30000)" in page.render_html(
+            _snap(), refresh=30, live_endpoint="/live")
+
+    def test_the_updater_keeps_the_page_self_contained(self):
+        out = page.render_html(_snap(), ask=True, live_endpoint="/live")
+        for external in ("<script src", "http://", "https://"):
+            assert external not in out, f"page must not reference {external}"
+
+    def test_the_endpoint_cannot_open_a_tag_from_inside_the_script(self):
+        out = page.render_html(_snap(), live_endpoint="/live</script><b>")
+        assert "</script><b>" not in out.split("<script>")[1]
+        assert "\\u003c" in out

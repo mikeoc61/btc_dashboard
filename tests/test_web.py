@@ -111,6 +111,45 @@ class TestAsk:
         assert "<img src=x" not in page and "&lt;img" in page
 
 
+class TestTheDataUpdatesWithoutDisturbingTheAskBox:
+    """The page used to reload whole. A tick landing while someone typed a
+    question replaced the field and took the question with it."""
+
+    def test_the_page_updates_from_the_fragment_rather_than_reloading(self, client):
+        body = client.get("/").text
+        assert web.LIVE_PATH in body and "setInterval" in body
+        assert '<noscript><meta http-equiv="refresh"' in body
+
+    def test_the_fragment_has_no_ask_box(self, client):
+        """What a tick writes into the page. A control here is the bug."""
+        live = client.get(web.LIVE_PATH)
+        assert live.status_code == 200
+        assert "<form" not in live.text and "<input" not in live.text
+
+    def test_the_fragment_carries_the_data_regions(self, client):
+        live = client.get(web.LIVE_PATH).text
+        from btc_dashboard import html as page
+        for ident in page.LIVE_IDS:
+            assert f'id="{ident}"' in live
+
+    def test_polling_collects_nothing(self, client, built):
+        """A tab open all day must not turn into a scrape every minute."""
+        client.get("/")
+        for _ in range(10):
+            client.get(web.LIVE_PATH)
+        assert built["n"] == 1
+
+    def test_an_answer_is_not_touched_by_a_poll(self, client, monkeypatch):
+        monkeypatch.setattr(
+            web.analyst, "ask",
+            lambda *a, **k: analyst.AnalystResult(
+                text="an answer", provider="p", model="m",
+                input_tokens=1, output_tokens=2))
+        client.post("/ask", data={"q": "why is vol low?"})
+        assert "an answer" not in client.get(web.LIVE_PATH).text
+        assert "an answer" in client.get("/").text
+
+
 class TestBindDefault:
     """This process holds the provider key and /ask spends money."""
 

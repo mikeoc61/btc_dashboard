@@ -244,8 +244,19 @@ unit file — `systemctl show` prints a unit's environment in full. See
 [`deploy/README.md`](deploy/README.md).
 
 Same page as `--html`, plus an **ask box** wired to the analyst. A question is
-a form POST that redirects back to `/`, so reloading never re-submits and the
-page's auto-refresh keeps working.
+a form POST that redirects back to `/`, so reloading never re-submits.
+
+**The page updates its data in place, not by reloading.** A meta refresh
+replaced the whole document, which meant a tick landing mid-sentence wiped
+whatever was half-typed in the ask box. Instead the regions that carry data —
+the source ticks, the timestamp, the `NOTABLE` strip and the cards — are named
+by id and patched from `/live`, which serves exactly those regions and no
+controls. The ask box is outside all of them and changes only when an answer
+comes back. Both the page and the fragment are built by `html._live_parts()`,
+so the updater can never patch markup shaped differently from the page it is
+patching. A failed fetch is swallowed and the last good render stays up; the
+timestamp then visibly stops advancing, which is the signal that updates have
+stopped. With scripting off, a `<noscript>` meta refresh reloads as before.
 
 **This process holds your provider key**, which is a deliberate departure from
 the boundary that holds everywhere else — see
@@ -262,8 +273,9 @@ is why:
 
 Collection is decoupled from HTTP: the app holds a snapshot in memory with a
 short TTL, so an auto-refreshing tab doesn't scrape Farside once a minute and
-three questions cost three LLM calls and zero collections. `refresh data` on
-the page forces a re-collect.
+three questions cost three LLM calls and zero collections. `/live` serves that
+same in-memory snapshot, so polling it collects nothing. `refresh data` on the
+page forces a re-collect.
 
 ### Adding a source
 
