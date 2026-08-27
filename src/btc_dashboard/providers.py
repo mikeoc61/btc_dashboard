@@ -417,12 +417,25 @@ def _http_error(provider: Provider, e: urllib.error.HTTPError,
     if e.code == 429:
         return f"{provider.name} rate limited{': ' + detail if detail else ''}"
     if e.code == 400 and tools:
-        # Not every OpenAI-shaped endpoint takes tools — a small local model
-        # behind ollama often does not — and a bare "API error 400" sends the
-        # operator looking at their prompt instead of their model choice.
+        # A bare "API error 400" sends the operator looking at their prompt
+        # instead of at the pairing of model and endpoint, which is what is
+        # usually wrong. Two endpoints reject this: a small local model behind
+        # ollama with no tool support at all, and an OpenAI reasoning model,
+        # which refuses tools on /v1/chat/completions alongside its own
+        # reasoning default — a default this client never sends and therefore
+        # cannot unset, so the provider's own text is the real diagnosis and
+        # is passed through first.
+        #
+        # Order matters. Switching provider keeps the warehouse queries;
+        # --no-tools answers the question without them, which for a question
+        # about history is rarely the answer that was wanted. The cheap escape
+        # listed first gets taken first.
+        switch = f"--provider {DEFAULT_PROVIDER}"
+        width = max(len(switch), len("--no-tools"))
         return (
-            f"{provider.name} rejected the request{': ' + detail if detail else ''}. "
-            f"Tools were offered; if this model does not support them, run with "
-            f"--no-tools."
+            f"{provider.name} rejected the request{': ' + detail if detail else ''}\n"
+            f"Tools were offered, and this model or endpoint will not take them.\n"
+            f"    {switch:<{width}}  # keeps the warehouse queries\n"
+            f"    {'--no-tools':<{width}}  # answers from the snapshot alone"
         )
     return f"{provider.name} API error {e.code}{': ' + detail if detail else ''}"

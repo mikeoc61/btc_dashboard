@@ -588,6 +588,45 @@ class TestOpenAIToolLoop:
             providers.complete(providers.PROVIDERS["deepseek"], "deepseek-chat",
                                "s", "p", tools=(_tool(),), run_tool=lambda n, a: "")
 
+    def test_it_offers_switching_provider_before_dropping_the_tools(self, monkeypatch):
+        """Regression: the message named only --no-tools, which answers from
+        the snapshot alone — for a question that asked about history, that is
+        not the answer wanted. The escape listed first gets taken first."""
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+        _fake_http(monkeypatch, error=urllib.error.HTTPError(
+            "u", 400, "Bad Request", {}, io.BytesIO(b'{"error":{"message":"no tools"}}')))
+        with pytest.raises(providers.ProviderError) as e:
+            providers.complete(providers.PROVIDERS["deepseek"], "deepseek-chat",
+                               "s", "p", tools=(_tool(),), run_tool=lambda n, a: "")
+        text = str(e.value)
+        assert f"--provider {providers.DEFAULT_PROVIDER}" in text
+        assert text.index("--provider") < text.index("--no-tools")
+        assert "warehouse" in text, "say what switching buys"
+
+    def test_the_providers_own_diagnosis_is_passed_through(self, monkeypatch):
+        """The API knows why it refused — an OpenAI reasoning model names the
+        endpoint and the setting. Replacing that with something vaguer of our
+        own would throw away the only accurate part of the message."""
+        monkeypatch.setenv("OPENAI_API_KEY", "k")
+        detail = (b'{"error":{"message":"Function tools with reasoning_effort are not '
+                  b'supported for gpt-5.6-luna in /v1/chat/completions."}}')
+        _fake_http(monkeypatch, error=urllib.error.HTTPError(
+            "u", 400, "Bad Request", {}, io.BytesIO(detail)))
+        with pytest.raises(providers.ProviderError, match="reasoning_effort"):
+            providers.complete(providers.PROVIDERS["openai"], "gpt-5.6-luna",
+                               "s", "p", tools=(_tool(),), run_tool=lambda n, a: "")
+
+    def test_this_client_never_sends_reasoning_effort(self, monkeypatch):
+        """The setting in that rejection is the API's own default. If we ever
+        started sending one, the advice in the message would become wrong."""
+        monkeypatch.setenv("OPENAI_API_KEY", "k")
+        cap = {}
+        self._http(monkeypatch, [self._payload({"content": "hi"})], cap)
+        providers.complete(providers.PROVIDERS["openai"], "gpt-5.6-luna", "s", "p",
+                           effort="high", tools=(_tool(),), run_tool=lambda n, a: "")
+        assert "reasoning_effort" not in cap["bodies"][0]
+        assert "reasoning" not in cap["bodies"][0]
+
     def test_a_400_without_tools_does_not_blame_tools(self, monkeypatch):
         monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
         _fake_http(monkeypatch, error=urllib.error.HTTPError(

@@ -605,6 +605,34 @@ in the terminal and on the page, distinguishing a missing warehouse from a
 remote path and queries do not, so on any machine that isn't the one holding
 the warehouse, snapshot-only is the normal case rather than the exception.
 
+#### Which providers can drive it
+
+Tool use is implemented for both wire protocols, so every provider here can in
+principle run the query tool. Whether a given *model* can is between you and
+your provider:
+
+- **anthropic** — works, and is the default.
+- **OpenAI reasoning models may refuse.** `gpt-5.6-luna` returns *"Function
+  tools with reasoning_effort are not supported ... in /v1/chat/completions"*.
+  That `reasoning_effort` is the API's own default — this client sends none, so
+  there is nothing to unset from here, and chat-completions is the only OpenAI
+  endpoint it speaks.
+- **ollama** — down to the local model; many small ones have no tool support.
+
+A rejection prints both ways out, provider switch first:
+
+```
+    --provider anthropic  # keeps the warehouse queries
+    --no-tools            # answers from the snapshot alone
+```
+
+Reach for `--no-tools` last. It answers from the snapshot alone, which for a
+question about history is rarely the answer you wanted.
+
+Related, and easy to miss: **`--effort` reaches Anthropic only.** On an
+OpenAI-shaped provider it is accepted and ignored, so a config reading
+`effort: high` is doing nothing there.
+
 #### What the model cannot do with it
 
 A model composes the SQL, so the connection is built assuming it eventually
