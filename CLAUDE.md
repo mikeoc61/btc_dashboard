@@ -6,6 +6,33 @@ block, and raw JSON. Full design in `README.md` — read the *Design* and
 *Measurement notes* sections before changing how any figure is computed or
 displayed.
 
+## Working agreement
+
+**Propose before implementing. Wait for explicit approval.**
+
+Before writing or changing anything, post:
+
+1. **Observations** — what the relevant code actually does now, and anything
+   found while looking that changes the shape of the request.
+2. **Proposed approach** — the design, the files it touches, and the
+   alternatives rejected, with the reason.
+3. **Concerns** — constraints it strains, risks, and anything in the request
+   that looks wrong from inside the code.
+
+Then stop. Silence is not approval; neither is a question answered, nor an
+earlier approval of something adjacent. Only an explicit go-ahead starts the
+work. The point is room to refine the instruction while it is still cheap to
+refine — before there is a diff to argue with.
+
+Applies to code, tests, docs and config alike, and to a one-line change as much
+as a large one. It does not apply to reading the repo, searching, running the
+tests, or answering a question about how something works: the investigation
+needed to write the proposal is part of the proposal.
+
+Stated as a gate rather than as advice deliberately. The advisory version in
+*Working practices* §1 was already in this file when ~1,200 lines of analyst
+tooling arrived unannounced.
+
 ## Current state
 
 - **Sources** (`src/btc_dashboard/sources/`): `price` (CoinGecko → Binance),
@@ -173,3 +200,76 @@ needs belongs with the code that knows why.
 - No long-history directional flow series exists. Adding one (exchange
   netflows, stablecoin issuance) would do more for the analysis than refining
   any existing measure.
+
+## Working practices
+
+Behavioral guidelines to reduce common LLM coding mistakes.
+
+**Tradeoff:** these bias toward caution over speed, and for a trivial task that
+is a poor trade — use judgment about *how much* of this to apply. Not about
+whether to apply *Working agreement* above: the approval gate has no trivial
+case, which is the whole reason it is stated separately from these.
+
+### 1. Think Before Coding
+
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
+
+The hard version of this is *Working agreement* at the top of this file, which
+requires explicit approval before implementation begins. What follows is how to
+spend the time before that approval well.
+
+Before implementing:
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them - don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
+
+### 2. Simplicity First
+
+**Minimum code that solves the problem. Nothing speculative.**
+
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
+
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+
+### 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+When editing existing code:
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it - don't delete it.
+
+When your changes create orphans:
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+The test: Every changed line should trace directly to the user's request.
+
+### 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+```
+
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+
+---
+
+**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
