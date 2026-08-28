@@ -634,19 +634,26 @@ Coverage moves once a day at most.
 
 #### Which providers can drive it
 
-Tool use is implemented for both wire protocols, so every provider here can in
-principle run the query tool. Whether a given *model* can is between you and
-your provider:
-
 - **anthropic** — works, and is the default.
-- **OpenAI reasoning models may refuse.** `gpt-5.6-luna` returns *"Function
-  tools with reasoning_effort are not supported ... in /v1/chat/completions"*.
-  That `reasoning_effort` is the API's own default — this client sends none, so
-  there is nothing to unset from here, and chat-completions is the only OpenAI
-  endpoint it speaks.
+- **openai** — works, over the Responses API. See below.
+- **deepseek, openrouter** — chat-completions; down to the model.
 - **ollama** — down to the local model; many small ones have no tool support.
 
-A rejection prints both ways out, provider switch first:
+**Why OpenAI gets its own transport.** Its reasoning models refuse function
+tools on chat-completions unless reasoning is switched off entirely. Probed
+against `gpt-5.6-luna`, tools are accepted there with `reasoning_effort:
+"none"` and rejected at `low`, `medium` and the default alike — it is not a
+graduated restriction but a binary one, and the only value that works buys tool
+use by discarding the reasoning the tools exist to serve. `/v1/responses` takes
+both together, so that is what this client speaks to OpenAI.
+
+Two consequences: **`--effort` now reaches OpenAI** as `reasoning.effort`,
+where on chat-completions it was accepted and silently ignored; and the
+conversation is sent with `store: false`, so the snapshot is not retained on
+OpenAI's servers past the request that needed it.
+
+A provider that still rejects tools — a small local model behind ollama, most
+likely — prints both ways out, provider switch first:
 
 ```
     --provider anthropic  # keeps the warehouse queries
@@ -655,10 +662,6 @@ A rejection prints both ways out, provider switch first:
 
 Reach for `--no-tools` last. It answers from the snapshot alone, which for a
 question about history is rarely the answer you wanted.
-
-Related, and easy to miss: **`--effort` reaches Anthropic only.** On an
-OpenAI-shaped provider it is accepted and ignored, so a config reading
-`effort: high` is doing nothing there.
 
 #### What the model cannot do with it
 
@@ -714,8 +717,9 @@ whichever provider was selected, so `--provider openai` would have requested an
 Anthropic model id from OpenAI. Providers without a stable default (OpenAI,
 OpenRouter) ask you to name one rather than guessing at an id that moves.
 
-Only Anthropic receives `--effort`; the OpenAI-shaped path never sends it, and
-`max_tokens` is omitted where a provider rejects it.
+`--effort` reaches Anthropic and OpenAI. The chat-completions path (DeepSeek,
+OpenRouter, Ollama) never sends it, and `max_tokens` is omitted where a
+provider rejects it.
 
 ## Credential boundary: the LLM is client-side only
 

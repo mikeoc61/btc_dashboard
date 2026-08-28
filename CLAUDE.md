@@ -43,9 +43,10 @@ tooling arrived unannounced.
 - **Cache**: 60-minute TTL for `warehouse` and `flows` only. `price` and `node`
   are live tip state and are never cached.
 - **Analyst**: `--ask`, opt-in, client-side. Providers in `providers.py` —
-  anthropic (default), openai, deepseek, openrouter, ollama. Tool use is
-  supported on both wire protocols; the warehouse lends a read-only SQL tool,
-  and `--no-tools` forces the old single-shot behaviour.
+  anthropic (default), openai, deepseek, openrouter, ollama. Three wire
+  protocols: Anthropic Messages, OpenAI **Responses**, and chat-completions for
+  the rest. Tool use works on all three; the warehouse lends a read-only SQL
+  tool, and `--no-tools` forces the old single-shot behaviour.
 - **Web**: `btc-dashboard-web` — FastAPI on `127.0.0.1:8001`, ask box,
   `NOTABLE` strip, systemd unit in `deploy/`. Live on the Pi. The page patches
   its data regions from `/live` on a timer; it does not reload.
@@ -142,6 +143,11 @@ needs belongs with the code that knows why.
 - **Percentiles are mid-ranked with an epsilon.** DuckDB evaluates a sliding
   `avg()` incrementally, so mathematically equal values differ in their last
   bits; a strict `<` ranked a flat series at the 58th percentile.
+- **OpenAI reasoning models refuse tools on chat-completions.** Probed against
+  `gpt-5.6-luna`: accepted with `reasoning_effort: "none"`, rejected at `low`,
+  `medium` and the default alike. Binary, not graduated — and the one value
+  that works discards the reasoning the tools are for. Hence the Responses
+  transport. Do not "simplify" OpenAI back onto chat-completions.
 - **Volatility annualises on √365, not √252.** The difference is ~17% — enough
   to move a reading across a published threshold.
 - **On the Mac, `node` and `warehouse` report unavailable.** That is correct,

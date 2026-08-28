@@ -130,11 +130,19 @@ class TestOpenAICompatibleTransport:
         assert "Authorization" not in cap["headers"]
 
     def test_max_tokens_omitted_where_unsupported(self, monkeypatch):
-        """OpenAI's newer models reject max_tokens; guessing would 400."""
-        monkeypatch.setenv("OPENAI_API_KEY", "k")
+        """A provider that declares no max_tokens support must not be sent one.
+
+        Exercised through a synthetic provider rather than `openai`, which now
+        speaks Responses: the flag governs this chat-completions body, and the
+        test should keep testing that branch rather than follow openai away
+        from it.
+        """
+        provider = providers.Provider(
+            name="capped", kind="openai", base_url="https://example.invalid/v1",
+            env_key=None, default_model="m", supports_max_tokens=False)
         cap = {}
         _fake_http(monkeypatch, payload=_ok(), capture=cap)
-        providers.complete(providers.PROVIDERS["openai"], "some-model", "s", "p")
+        providers.complete(provider, "some-model", "s", "p")
         assert "max_tokens" not in cap["body"]
 
     def test_effort_is_never_sent_to_openai_shaped_apis(self, monkeypatch):
@@ -616,13 +624,13 @@ class TestOpenAIToolLoop:
             providers.complete(providers.PROVIDERS["openai"], "gpt-5.6-luna",
                                "s", "p", tools=(_tool(),), run_tool=lambda n, a: "")
 
-    def test_this_client_never_sends_reasoning_effort(self, monkeypatch):
-        """The setting in that rejection is the API's own default. If we ever
-        started sending one, the advice in the message would become wrong."""
-        monkeypatch.setenv("OPENAI_API_KEY", "k")
+    def test_the_chat_completions_path_sends_no_reasoning_effort(self, monkeypatch):
+        """Only OpenAI's Responses path carries effort. DeepSeek and the rest
+        take no such field, and inventing one would 400 them."""
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
         cap = {}
         self._http(monkeypatch, [self._payload({"content": "hi"})], cap)
-        providers.complete(providers.PROVIDERS["openai"], "gpt-5.6-luna", "s", "p",
+        providers.complete(providers.PROVIDERS["deepseek"], "deepseek-chat", "s", "p",
                            effort="high", tools=(_tool(),), run_tool=lambda n, a: "")
         assert "reasoning_effort" not in cap["bodies"][0]
         assert "reasoning" not in cap["bodies"][0]
@@ -634,3 +642,174 @@ class TestOpenAIToolLoop:
         with pytest.raises(providers.ProviderError) as e:
             providers.complete(providers.PROVIDERS["deepseek"], "deepseek-chat", "s", "p")
         assert "--no-tools" not in str(e.value)
+
+
+class TestOpenAIResponsesTransport:
+    """OpenAI's Responses API. Shapes here mirror what the live API returned
+    when this was validated against gpt-5.6-luna, not what docs imply."""
+
+    def _fc(self, call_id="call_abc", name="query_warehouse",
+            arguments='{"sql": "SELECT 1"}'):
+        return {"type": "function_call", "id": "fc_xyz", "call_id": call_id,
+                "name": name, "arguments": arguments, "status": "completed"}
+
+    def _msg(self, text="the answer"):
+        return {"type": "message", "role": "assistant",
+                "content": [{"type": "output_text", "text": text}]}
+
+    def _payload(self, output, status="completed"):
+        return {"model": "gpt-5.6-luna", "status": status, "output": output,
+                "usage": {"input_tokens": 10, "output_tokens": 20}}
+
+    def _http(self, monkeypatch, payloads, capture):
+        bodies = []
+
+        def urlopen(req, timeout=None):
+            bodies.append(json.loads(req.data.decode()))
+            capture["bodies"] = bodies
+            capture["url"] = req.full_url
+            payload = payloads[len(bodies) - 1]
+
+            class R:
+                def read(self): return json.dumps(payload).encode()
+                def __enter__(self): return self
+                def __exit__(self, *a): return False
+            return R()
+        monkeypatch.setattr(providers.urllib.request, "urlopen", urlopen)
+        return bodies
+
+    def _complete(self, monkeypatch, payloads, cap, **kw):
+        monkeypatch.setenv("OPENAI_API_KEY", "k")
+        self._http(monkeypatch, payloads, cap)
+        return providers.complete(providers.PROVIDERS["openai"], "gpt-5.6-luna",
+                                  "SYS", "PROMPT", **kw)
+
+    def test_openai_uses_the_responses_endpoint(self, monkeypatch):
+        cap = {}
+        self._complete(monkeypatch, [self._payload([self._msg()])], cap)
+        assert cap["url"].endswith("/responses")
+
+    def test_the_system_prompt_travels_as_instructions(self, monkeypatch):
+        """Losing it would silently drop every analyst rule — no-advice, never
+        treat n/a as zero, the untrusted-input rule — and read as the model
+        being bad rather than the request being wrong."""
+        cap = {}
+        self._complete(monkeypatch, [self._payload([self._msg()])], cap)
+        assert cap["bodies"][0]["instructions"] == "SYS"
+
+    def test_effort_reaches_this_provider(self, monkeypatch):
+        """It was accepted and silently ignored on chat-completions."""
+        cap = {}
+        self._complete(monkeypatch, [self._payload([self._msg()])], cap,
+                       effort="xhigh")
+        assert cap["bodies"][0]["reasoning"] == {"effort": "xhigh"}
+
+    def test_the_conversation_is_not_stored(self, monkeypatch):
+        """Left at its default the API retains it, leaving the snapshot on
+        someone else's server after the request that needed it."""
+        cap = {}
+        self._complete(monkeypatch, [self._payload([self._msg()])], cap)
+        assert cap["bodies"][0]["store"] is False
+
+    def test_tools_are_declared_flat(self, monkeypatch):
+        """No nested "function" object here, unlike chat-completions."""
+        cap = {}
+        self._complete(monkeypatch, [self._payload([self._msg()])], cap,
+                       tools=(_tool(),), run_tool=lambda n, a: "")
+        spec = cap["bodies"][0]["tools"][0]
+        assert spec["type"] == "function" and spec["name"] == "query_warehouse"
+        assert "function" not in spec
+
+    def test_a_tool_call_round_trips(self, monkeypatch):
+        cap = {}
+        ran = []
+        done = self._complete(monkeypatch, [
+            self._payload([{"type": "reasoning", "id": "rs_1"}, self._fc()]),
+            self._payload([self._msg("4,696 rows")]),
+        ], cap, tools=(_tool(),),
+            run_tool=lambda n, a: ran.append((n, a)) or "days\n4696")
+        assert done.text == "4,696 rows"
+        assert ran == [("query_warehouse", {"sql": "SELECT 1"})]
+        assert done.tool_calls[0].result == "days\n4696"
+
+    def test_the_result_is_keyed_by_call_id_not_id(self, monkeypatch):
+        """The item carries both and only call_id matches a result to its
+        call. Using `id` looks right and silently fails to pair."""
+        cap = {}
+        self._complete(monkeypatch, [
+            self._payload([self._fc(call_id="call_REAL")]),
+            self._payload([self._msg()]),
+        ], cap, tools=(_tool(),), run_tool=lambda n, a: "ROWS")
+        sent = cap["bodies"][1]["input"][-1]
+        assert sent["type"] == "function_call_output"
+        assert sent["call_id"] == "call_REAL" and sent["output"] == "ROWS"
+
+    def test_reasoning_items_are_echoed_back(self, monkeypatch):
+        """Same rule as the Anthropic loop: what preceded a tool call has to
+        travel back with it."""
+        cap = {}
+        reasoning = {"type": "reasoning", "id": "rs_1", "summary": []}
+        self._complete(monkeypatch, [
+            self._payload([reasoning, self._fc()]),
+            self._payload([self._msg()]),
+        ], cap, tools=(_tool(),), run_tool=lambda n, a: "r")
+        assert reasoning in cap["bodies"][1]["input"]
+
+    def test_tokens_accumulate_over_rounds(self, monkeypatch):
+        cap = {}
+        done = self._complete(monkeypatch, [
+            self._payload([self._fc()]),
+            self._payload([self._msg()]),
+        ], cap, tools=(_tool(),), run_tool=lambda n, a: "r")
+        assert (done.input_tokens, done.output_tokens) == (20, 40)
+
+    def test_the_last_round_withholds_the_tools(self, monkeypatch):
+        cap = {}
+        rounds = providers.MAX_TOOL_ROUNDS
+        done = self._complete(monkeypatch,
+            [self._payload([self._fc(call_id=f"c{i}")]) for i in range(rounds)]
+            + [self._payload([self._msg("forced")])],
+            cap, tools=(_tool(),), run_tool=lambda n, a: "r")
+        assert done.text == "forced"
+        assert "tools" in cap["bodies"][0] and "tools" not in cap["bodies"][-1]
+
+    def test_malformed_arguments_come_back_as_a_tool_failure(self, monkeypatch):
+        cap = {}
+        done = self._complete(monkeypatch, [
+            self._payload([self._fc(arguments="{not json")]),
+            self._payload([self._msg("recovered")]),
+        ], cap, tools=(_tool(),), run_tool=lambda n, a: "never reached")
+        assert done.text == "recovered"
+        assert "not valid JSON" in done.tool_calls[0].result
+
+    def test_text_is_walked_out_of_the_output_items(self, monkeypatch):
+        """There is no top-level `output_text` on this endpoint. Reaching for
+        one returns nothing and presents as an empty-response bug."""
+        cap = {}
+        done = self._complete(monkeypatch, [self._payload(
+            [{"type": "reasoning", "id": "r"},
+             {"type": "message", "content": [
+                 {"type": "output_text", "text": "one"},
+                 {"type": "output_text", "text": "two"}]}])], cap)
+        assert done.text == "one\ntwo"
+
+    def test_a_refusal_is_reported_not_returned_as_text(self, monkeypatch):
+        cap = {}
+        with pytest.raises(providers.ProviderError, match="declined"):
+            self._complete(monkeypatch, [self._payload(
+                [{"type": "message",
+                  "content": [{"type": "refusal", "refusal": "no"}]}])], cap)
+
+    def test_an_incomplete_response_says_why(self, monkeypatch):
+        cap = {}
+        payload = self._payload([{"type": "reasoning", "id": "r"}],
+                                status="incomplete")
+        payload["incomplete_details"] = {"reason": "max_output_tokens"}
+        with pytest.raises(providers.ProviderError, match="max_output_tokens"):
+            self._complete(monkeypatch, [payload], cap)
+
+    def test_no_tools_still_answers(self, monkeypatch):
+        cap = {}
+        done = self._complete(monkeypatch, [self._payload([self._msg("plain")])], cap)
+        assert done.text == "plain" and done.tool_calls == ()
+        assert "tools" not in cap["bodies"][0]

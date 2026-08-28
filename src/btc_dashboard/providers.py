@@ -4,12 +4,18 @@ Client-side only, like everything analyst-related: a provider is selected on
 the operator's machine and called with the operator's credential. A deployed
 snapshot service imports none of this.
 
-Two wire protocols cover every provider here. Anthropic has its own Messages
-API and gets the official SDK, which knows about thinking budgets, reasoning
-effort, and the refusal stop reason. Everything else speaks the OpenAI
-chat-completions shape, which is handled with stdlib HTTP rather than a second
-SDK dependency — the request is a JSON POST and the response is one field deep,
-so a client library would earn nothing.
+Three wire protocols. Anthropic has its own Messages API and gets the official
+SDK, which knows about thinking budgets, reasoning effort, and the refusal stop
+reason. OpenAI speaks its Responses API, because its reasoning models refuse
+function tools on chat-completions unless reasoning is switched off entirely —
+`gpt-5.6-luna` accepts tools there only with `reasoning_effort: "none"`, which
+buys tool use by discarding the reasoning the tools exist to serve. Responses
+takes both together. Everything else — DeepSeek, OpenRouter, Ollama — speaks
+the OpenAI chat-completions shape.
+
+The two HTTP protocols are handled with stdlib HTTP rather than an SDK: the
+request is a JSON POST and the response is a few fields deep, so a client
+library would earn nothing.
 
 Selecting one
 -------------
@@ -67,14 +73,17 @@ PROVIDERS: dict[str, Provider] = {
         supports_effort=True,
     ),
     "openai": Provider(
-        name="openai", kind="openai",
+        name="openai", kind="responses",
         base_url="https://api.openai.com/v1",
         env_key="OPENAI_API_KEY",
         # Deliberately none: OpenAI's model ids move faster than this file, and
         # a stale default fails as a confusing 404 rather than a clear message.
         default_model=None,
-        # Newer models reject `max_tokens` in favour of a different field, so
-        # the cap is left to the API's own default rather than guessed at.
+        # Responses carries reasoning effort, so --effort finally reaches this
+        # provider instead of being accepted and silently ignored.
+        supports_effort=True,
+        # Responses caps output with `max_output_tokens`, not `max_tokens`. The
+        # cap is left to the API's own default rather than guessed at.
         supports_max_tokens=False,
     ),
     "deepseek": Provider(
@@ -194,6 +203,9 @@ def complete(provider: Provider, model: str, system: str, prompt: str,
     if provider.kind == "anthropic":
         return _anthropic(provider, model, system, prompt, effort, timeout,
                           tools, run_tool)
+    if provider.kind == "responses":
+        return _openai_responses(provider, model, system, prompt, effort,
+                                 timeout, tools, run_tool)
     return _openai(provider, model, system, prompt, timeout, tools, run_tool)
 
 
@@ -286,6 +298,145 @@ def _anthropic(provider, model, system, prompt, effort, timeout,
     raise ProviderError("the model kept calling tools without answering")
 
 
+def _post_json(provider, url, body, headers, timeout, tools=False) -> dict:
+    """One JSON POST, with every transport failure phrased for the operator.
+
+    Shared by the two HTTP protocols. Factored when the third call site
+    appeared: the error translation is the part that has to stay identical, and
+    three copies of it is where it starts drifting.
+    """
+    req = urllib.request.Request(
+        url, data=json.dumps(body).encode(), headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        raise ProviderError(_http_error(provider, e, tools=tools))
+    except urllib.error.URLError as e:
+        raise ProviderError(
+            f"could not reach {provider.name} at {provider.base_url}: {e.reason}")
+    except (TimeoutError, OSError) as e:
+        raise ProviderError(f"{provider.name} request failed: {e}")
+
+
+def _responses_text(output) -> str:
+    """The answer text out of a Responses payload.
+
+    Walked rather than read from a convenience field: this endpoint returns no
+    top-level `output_text`, so reaching for one yields nothing and presents as
+    an empty-response bug rather than as the parsing mistake it is.
+    """
+    parts = []
+    for item in output or []:
+        for chunk in (item.get("content") or []):
+            if chunk.get("type") == "refusal" and chunk.get("refusal"):
+                raise ProviderError(f"request declined: {chunk['refusal']}")
+            if chunk.get("type") == "output_text" and chunk.get("text"):
+                parts.append(chunk["text"])
+    return "\n".join(parts).strip()
+
+
+def _openai_responses(provider, model, system, prompt, effort, timeout,
+                      tools=(), run_tool=None) -> Completion:
+    """OpenAI's Responses API, which takes reasoning and tools together.
+
+    The chat-completions path cannot: a reasoning model there rejects function
+    tools unless reasoning is disabled outright, which trades away the thing
+    the tools are for. See the module docstring.
+    """
+    key = api_key(provider)
+    if key is None and provider.env_key is not None:
+        raise ProviderError(_missing_key(provider))
+
+    # Flat, unlike chat-completions: no nested "function" object.
+    spec = [
+        {"type": "function", "name": t.name, "description": t.description,
+         "parameters": t.parameters}
+        for t in tools
+    ]
+    conversation = [{"role": "user", "content": prompt}]
+    calls: list[ToolCall] = []
+    headers = {"content-type": "application/json", "Authorization": f"Bearer {key}"}
+    in_tokens = out_tokens = 0
+    seen_usage = False
+    last_model = model
+
+    for round_number in range(MAX_TOOL_ROUNDS + 1):
+        body = {
+            "model": model,
+            # The system prompt's own field here, rather than a role in the
+            # input list. All three forms work; this one keeps the rules out of
+            # the conversation being echoed back each round.
+            "instructions": system,
+            "input": conversation,
+            "reasoning": {"effort": effort},
+            # Stateless on purpose. Left at its default the API retains the
+            # conversation, which would leave the snapshot sitting on someone
+            # else's server after the request that needed it. Nothing here
+            # wants server-side state, and the credential boundary this project
+            # keeps everywhere else deserves the same care about the data.
+            "store": False,
+        }
+        # As with the other two loops: the last round withholds the tools so a
+        # model that would keep querying has to answer with what it has.
+        if spec and round_number < MAX_TOOL_ROUNDS:
+            body["tools"] = spec
+
+        payload = _post_json(provider, f"{provider.base_url}/responses", body,
+                             headers, timeout, tools=bool(spec))
+
+        usage = payload.get("usage") or {}
+        if usage:
+            seen_usage = True
+            in_tokens += usage.get("input_tokens") or 0
+            out_tokens += usage.get("output_tokens") or 0
+        last_model = payload.get("model") or last_model
+
+        output = payload.get("output") or []
+        requested = [o for o in output if o.get("type") == "function_call"]
+        if requested and run_tool is not None:
+            # Every output item goes back, reasoning items included — the same
+            # rule the Anthropic loop follows for thinking blocks: what
+            # preceded a tool call has to travel with it.
+            conversation.extend(output)
+            for call in requested:
+                name = call.get("name") or ""
+                try:
+                    arguments = json.loads(call.get("arguments") or "{}")
+                except ValueError as e:
+                    arguments, text = {}, f"TOOL FAILED: arguments were not valid JSON: {e}"
+                else:
+                    text = run_tool(name, arguments)
+                calls.append(ToolCall(name, arguments, text))
+                conversation.append({
+                    "type": "function_call_output",
+                    # `call_id`, not `id`. The item carries both and only this
+                    # one matches a result to the call that asked for it.
+                    "call_id": call.get("call_id"),
+                    "output": text,
+                })
+            continue
+
+        text = _responses_text(output)
+        if not text:
+            detail = payload.get("incomplete_details") or {}
+            raise ProviderError(
+                f"empty response from {provider.name} "
+                f"(status={payload.get('status')}"
+                + (f", {detail.get('reason')}" if detail.get("reason") else "")
+                + ")"
+            )
+        return Completion(
+            text=text,
+            model=last_model,
+            input_tokens=in_tokens if seen_usage else None,
+            output_tokens=out_tokens if seen_usage else None,
+            tool_calls=tuple(calls),
+        )
+
+    raise ProviderError("the model kept calling tools without answering")
+
+
 def _openai(provider, model, system, prompt, timeout,
             tools=(), run_tool=None) -> Completion:
     key = api_key(provider)
@@ -320,20 +471,8 @@ def _openai(provider, model, system, prompt, timeout,
         if spec and round_number < MAX_TOOL_ROUNDS:
             body["tools"] = spec
 
-        req = urllib.request.Request(
-            f"{provider.base_url}/chat/completions",
-            data=json.dumps(body).encode(), headers=headers,
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                payload = json.load(r)
-        except urllib.error.HTTPError as e:
-            raise ProviderError(_http_error(provider, e, tools=bool(spec)))
-        except urllib.error.URLError as e:
-            raise ProviderError(
-                f"could not reach {provider.name} at {provider.base_url}: {e.reason}")
-        except (TimeoutError, OSError) as e:
-            raise ProviderError(f"{provider.name} request failed: {e}")
+        payload = _post_json(provider, f"{provider.base_url}/chat/completions",
+                             body, headers, timeout, tools=bool(spec))
 
         try:
             choice = payload["choices"][0]
