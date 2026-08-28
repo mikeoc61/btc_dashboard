@@ -143,6 +143,12 @@ needs belongs with the code that knows why.
 - **Percentiles are mid-ranked with an epsilon.** DuckDB evaluates a sliding
   `avg()` incrementally, so mathematically equal values differ in their last
   bits; a strict `<` ranked a flat series at the 58th percentile.
+- **`sources.fmt()` is where a value gets bounded, not just formatted.** A
+  format spec rejects a non-number already; a bare `fmt(x)` does not, and an
+  ingested snapshot can put a string in a numeric field. Values are collapsed
+  to one line and capped there, which is what stops one from posing as a line
+  of output in the context block or the terminal panel. Removing that makes a
+  prompt-injection path, not a formatting change.
 - **OpenAI reasoning models refuse tools on chat-completions.** Probed against
   `gpt-5.6-luna`: accepted with `reasoning_effort: "none"`, rejected at `low`,
   `medium` and the default alike. Binary, not graduated — and the one value

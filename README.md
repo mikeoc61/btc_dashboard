@@ -769,6 +769,14 @@ prompt, and it's handled as such:
 - Free-text fields (`error`) are whitespace-collapsed and truncated before
   reaching the prompt, so an injected `\n\nIGNORE PRIOR INSTRUCTIONS…` can't
   forge its own section — it stays on one labelled data line.
+- **So is every rendered value**, in `sources.fmt()`. A format spec already
+  rejects a string — `fmt("x", ".0f")` is `n/a` — but a bare `fmt(x)` used to
+  reproduce one verbatim, newlines included. A field that should hold a number
+  could therefore emit a line beginning `[SYSTEM]` at column 0 of the context
+  block, reading as a section header rather than as the value of a field, and
+  fake a row in the terminal panel the same way. Collapsing is what closes
+  that: the newline is what lets a value stop being a value. The HTML page
+  escapes everything and was never exposed.
 - The context block is explicitly framed as data, and the system prompt tells
   the model to flag instruction-like content as an anomaly rather than obey it.
 - A source this build has no renderer for is reported as present-but-

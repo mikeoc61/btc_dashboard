@@ -167,19 +167,45 @@ class Tool:
     run: Callable[..., str]
 
 
+# A rendered value is one scalar on one line. Longer or multi-line is not a
+# reading; it is a field carrying something that was never a measurement.
+MAX_VALUE_CHARS = 120
+
+
 def fmt(value, spec: str = "", *, prefix: str = "", suffix: str = "",
         missing: str = "n/a") -> str:
-    """Format a possibly-missing value without ever raising.
+    """Format a possibly-missing value without ever raising, on one line.
 
     Renderers run over data that may be partial: a source can legitimately
     return some fields and not others, and an *ingested* snapshot may carry a
     field of the wrong type entirely. A bare f-string blows up on both, and
     because a raise costs the whole block, one missing number takes out an
     entire section of the panel. Everything numeric goes through here.
+
+    Which is why the bounding goes here too. A format spec rejects a string
+    already — `fmt("x", ".0f")` is `n/a` — but with no spec the value was
+    reproduced verbatim, newlines and all. That was enough for an ingested
+    snapshot to put a line beginning "[SYSTEM]" at column 0 of the analyst's
+    context block, where it reads as a section header rather than as the value
+    of a field, and to fake a row in the terminal panel the same way. The HTML
+    page escapes everything, so it was never exposed; the other two consumers
+    were.
+
+    Collapsing whitespace is the part that matters — the newline is what lets a
+    value stop being a value and start being a line. The length cap only bounds
+    how much one field can contribute. Truncation is marked rather than silent:
+    a value that got cut is itself worth seeing.
+
+    No call site formats with an alignment or padding spec, so collapsing runs
+    of whitespace cannot disturb a layout.
     """
     if value is None:
         return missing
     try:
-        return f"{prefix}{value:{spec}}{suffix}"
+        text = f"{value:{spec}}"
     except (TypeError, ValueError):
         return missing
+    text = " ".join(text.split())
+    if len(text) > MAX_VALUE_CHARS:
+        text = text[:MAX_VALUE_CHARS] + "…(truncated)"
+    return f"{prefix}{text}{suffix}"
