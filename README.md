@@ -777,8 +777,21 @@ prompt, and it's handled as such:
   fake a row in the terminal panel the same way. Collapsing is what closes
   that: the newline is what lets a value stop being a value. The HTML page
   escapes everything and was never exposed.
-- The context block is explicitly framed as data, and the system prompt tells
-  the model to flag instruction-like content as an anomaly rather than obey it.
+- The context block draws the trust boundary where it actually falls. The
+  *wording* of each line is composed by this client — including the lines that
+  say how to read a figure — and is guidance to follow. What came from the
+  snapshot is the figures inside those lines and anything in quotation marks,
+  and only that is framed as untrusted, with instructions there to be reported
+  as an anomaly rather than obeyed.
+
+  The earlier framing called the whole block untrusted, which was not true of
+  it: the sources phrase interpretive guidance into that block, and a model
+  applying the rule literally reported *"Prefer the 2-year percentile"* as an
+  injection attempt. Guidance the analyst is meant to weigh is not an anomaly,
+  and a rule that cries wolf on first-party text erodes the one that matters.
+  Quote characters are stripped from free-text fields before they are wrapped,
+  so a field cannot close the quotation early and continue as though it were
+  the tool speaking.
 - A source this build has no renderer for is reported as present-but-
   uninterpretable; its raw contents are never dumped into the prompt as a guess.
 
