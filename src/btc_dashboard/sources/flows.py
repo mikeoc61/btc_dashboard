@@ -263,6 +263,22 @@ def summarize(rows: list[dict]) -> dict:
         have = [f for f in FUNDS if last.get(f) is not None]
         partial = {
             "date": last["date"],
+            # Three numbers, because two of them are on different bases and
+            # the panel's other figures use only one of them.
+            #
+            # `published_total` is Farside's own Total for the row: everything
+            # published for that day so far, tracked funds and untracked alike.
+            # Every other figure here — latest, the windows, the streak — is on
+            # that basis, so the headline has to be too or it is not comparable
+            # with the numbers it sits under.
+            #
+            # `reported_total` sums only the tracked funds that have reported.
+            # It was the headline once, and on 27 Aug 2026 it read -81.1M
+            # against a published -35.3M: 56% of the magnitude sitting in the
+            # untracked remainder, which on another day is enough to flip the
+            # sign. A partial day whose sign can flip is the exact hazard this
+            # module excludes partial days from the windows to avoid.
+            "published_total": last.get("Total"),
             "reported_total": round(sum(last[f] for f in have), 1),
             "other": _other(last),
             "reported": have,
@@ -383,10 +399,13 @@ def render_lines(d: dict) -> list[str]:
     if isinstance(p, dict):
         reported = p.get("reported") or []
         pending = p.get("pending") or []
+        value, basis = _partial_headline(p)
+        split = _partial_split(p)
         out.append(
-            f"partial {p.get('date') or 'today'}: {_m(p.get('reported_total'))} from "
-            f"{len(reported)}/{len(FUNDS)} funds, pending "
-            f"{', '.join(pending) or 'n/a'}"
+            f"partial {p.get('date') or 'today'}: {value} {basis}"
+            + (f" ({split})" if split else "")
+            + f", {len(reported)}/{len(FUNDS)} tracked funds in, pending "
+            + (', '.join(pending) or 'n/a')
         )
     return out
 
@@ -450,12 +469,17 @@ def context_lines(d: dict) -> list[str]:
         )
     p = d.get("partial")
     if isinstance(p, dict):
+        value, basis = _partial_headline(p)
+        split = _partial_split(p)
         out.append(
             f"BTC ETF partial day {p.get('date') or 'today'} is IN PROGRESS and "
-            f"excluded from every figure above: {_m(p.get('reported_total'))} from "
-            f"{', '.join(p.get('reported') or []) or 'no funds yet'}, still pending "
-            f"{', '.join(p.get('pending') or []) or 'n/a'}. Its direction is not yet "
-            f"settled."
+            f"excluded from every figure above: {value} {basis}"
+            + (f" ({split})" if split else "")
+            + f". Reported so far: "
+            f"{', '.join(p.get('reported') or []) or 'no tracked funds yet'}, still "
+            f"pending {', '.join(p.get('pending') or []) or 'n/a'}. This is on the "
+            f"same basis as the figures above — every published fund, not only the "
+            f"itemized ones. Its direction is not yet settled."
         )
     return out
 
@@ -490,18 +514,51 @@ def html_panels(d: dict) -> list[Panel]:
 
     rows.append(Metric(
         "Streak", f"{fmt(d.get('streak_days'))}d {d.get('streak_sign') or 'n/a'}",
-        note="most recent run only — says nothing about size, and can point "
-             "the other way from the window above"))
+        # Both halves earn their place: the streak counts days, not dollars, and
+        # it routinely disagrees with the windows beside it — an 8d inflow run
+        # sat next to a 60d net of -571.1M the day this was shortened. Trimmed,
+        # not dropped; the regime tag was moved off this measure once already
+        # for pointing the other way.
+        note="run length, not size — can point opposite the windows above"))
 
     p = d.get("partial")
     if isinstance(p, dict):
+        value, basis = _partial_headline(p)
+        split = _partial_split(p)
         rows.append(Metric(
-            "In Progress", _m(p.get("reported_total")),
-            note=f"{p.get('date') or 'today'} · "
-                 f"{len(p.get('reported') or [])}/{len(FUNDS)} funds in, pending "
-                 f"{', '.join(p.get('pending') or []) or 'n/a'} — excluded above",
+            "In Progress", value,
+            note=f"{p.get('date') or 'today'} · {basis}"
+                 + (f" · {split}" if split else "")
+                 + f" · {len(p.get('reported') or [])}/{len(FUNDS)} tracked funds in, "
+                 f"pending {', '.join(p.get('pending') or []) or 'n/a'} — excluded above",
             tone="warn"))
     return [Panel("ETF FLOWS (US SPOT)", rows, priority=60)]
+
+
+def _partial_split(p: dict) -> str:
+    """How a partial day's published figure divides into tracked and untracked.
+
+    Stated wherever the figure is, because the headline is on Farside's Total
+    basis and the funds this module itemizes are only part of it. Without the
+    split the reader cannot reconcile the number to the per-fund rows above it,
+    and the gap invites being read as a pending fund's value — which it is not.
+    """
+    tracked, other = p.get("reported_total"), p.get("other")
+    if p.get("published_total") is None or other is None:
+        return ""
+    return f"tracked {_m(tracked)} + untracked {_m(other)}"
+
+
+def _partial_headline(p: dict) -> tuple[str, str]:
+    """The partial figure and what it is measured over.
+
+    Falls back to the tracked-only sum when Farside published no Total for the
+    row — labelled as such rather than quietly changing basis, since a number
+    on a different basis wearing the same label is the defect this replaced.
+    """
+    if p.get("published_total") is not None:
+        return _m(p.get("published_total")), "published so far"
+    return _m(p.get("reported_total")), f"{', '.join(FUNDS)} only, no published total"
 
 
 def _tone(v) -> str | None:

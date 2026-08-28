@@ -100,6 +100,14 @@ Breaking one of these is a regression even when the number is right.
   longer label. Applies to flow windows, SMAs and volatility alike.
 - **A reported zero is not a missing value.** Farside renders unpublished as
   `-`; only an explicit `0` is `0.0`.
+- **Every ETF figure is on Farside's `Total` basis — every listed fund, not the
+  four itemized ones.** `latest`, the windows and the streak always were; the
+  in-progress row was not, and summed tracked funds only. On 27 Aug 2026 that
+  showed -81.1M where the day had published -35.3M, the difference being
+  untracked funds, and a larger remainder flips the sign outright. The panel's
+  headline figures must stay on one basis; the tracked/untracked split belongs
+  in the note beside it. `farside/` totals the same way, which is why the two
+  repos disagreed and this one was wrong.
 - **No imports from sibling projects, no shelling out to their scripts.** The
   only shared thing is the DuckDB *file*.
   - The cost of that rule: the Farside scrape lives in **two** places, here and

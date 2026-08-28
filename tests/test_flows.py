@@ -273,3 +273,96 @@ class TestScopeIsStated:
         lines = flows.context_lines(self._summary())
         for fund in flows.FUNDS:
             assert fund in lines[0]
+
+
+class TestThePartialDayIsOnTheSameBasisAsEverythingAboveIt:
+    """It was not. Every other figure on the panel — latest, the windows, the
+    streak — uses Farside's Total, which sums every listed ETF. The partial
+    summed only the tracked funds that had reported, so the one number the
+    reader is most likely to compare against its neighbours was the one
+    measured differently, and nothing said so.
+
+    On 27 Aug 2026 that read -81.1M against a published -35.3M: 56% of the
+    magnitude sitting in the untracked remainder. Enough, on another day, to
+    print an outflow where the day published an inflow — the exact hazard
+    partial days are kept out of the windows to avoid.
+    """
+
+    def _partial(self, **over):
+        rows = _complete_days(5)
+        row = _day("6 Jan 2026", None, -83.6, 29.7, -27.2, over.pop("total", -35.3))
+        row.update(over)
+        rows.append(row)
+        return flows.summarize(rows)["partial"]
+
+    def test_the_published_total_is_carried(self):
+        p = self._partial()
+        assert p["published_total"] == -35.3, "Farside's own Total for the row"
+        assert p["reported_total"] == -81.1, "tracked funds only, still available"
+        assert p["other"] == 45.8
+
+    def test_the_three_numbers_reconcile(self):
+        p = self._partial()
+        assert round(p["reported_total"] + p["other"], 1) == p["published_total"]
+
+    def test_the_headline_is_the_published_figure(self):
+        value, basis = flows._partial_headline(self._partial())
+        assert "-35.3" in value and "published so far" in basis
+        assert "-81.1" not in value
+
+    def test_the_split_reconciles_in_words(self):
+        split = flows._partial_split(self._partial())
+        assert "tracked" in split and "-81.1" in split
+        assert "untracked" in split and "45.8" in split
+
+    def test_a_sign_flip_follows_the_published_basis(self):
+        """The case that makes this more than cosmetic: tracked funds net out
+        while the day as published is an inflow."""
+        p = self._partial(total=120.0)
+        assert p["reported_total"] == -81.1 and p["published_total"] == 120.0
+        value, _ = flows._partial_headline(p)
+        assert value.startswith("+"), "the day published an inflow; say so"
+
+    def test_no_published_total_falls_back_and_says_so(self):
+        """Rather than quietly changing basis, which is the defect this
+        replaced."""
+        p = self._partial(total=None)
+        value, basis = flows._partial_headline(p)
+        assert "-81.1" in value
+        assert "only" in basis and "no published total" in basis
+        assert flows._partial_split(p) == "", "nothing to reconcile against"
+
+    def test_every_consumer_shows_the_published_figure(self):
+        p = self._partial()
+        d = {"as_of": "5 Jan 2026", "age_days": 1, "latest_total": -10.0,
+             "latest_lead": 1.0, "windows": [], "streak_days": 3,
+             "streak_sign": "outflow", "regime_window_days": 5, "partial": p}
+
+        terminal = next(l for l in flows.render_lines(d) if l.startswith("partial"))
+        context = next(l for l in flows.context_lines(d) if "IN PROGRESS" in l)
+        metric = next(m for m in flows.html_panels(d)[0].metrics
+                      if m.label == "In Progress")
+
+        for where, text in (("terminal", terminal), ("analyst", context),
+                            ("page", f"{metric.value} {metric.note}")):
+            assert "-35.3" in text, f"{where} must lead with the published figure"
+            assert "-81.1" in text and "45.8" in text, f"{where} must show the split"
+
+    def test_the_page_leads_with_the_published_value(self):
+        p = self._partial()
+        d = {"as_of": "5 Jan 2026", "age_days": 1, "latest_total": -10.0,
+             "latest_lead": 1.0, "windows": [], "streak_days": 3,
+             "streak_sign": "outflow", "regime_window_days": 5, "partial": p}
+        metric = next(m for m in flows.html_panels(d)[0].metrics
+                      if m.label == "In Progress")
+        assert "-35.3" in metric.value and "-81.1" not in metric.value
+        assert "-81.1" in metric.note, "the split belongs in the note"
+
+    def test_the_analyst_is_told_the_basis_matches(self):
+        p = self._partial()
+        d = {"as_of": "5 Jan 2026", "age_days": 1, "latest_total": -10.0,
+             "latest_lead": 1.0, "windows": [], "streak_days": 3,
+             "streak_sign": "outflow", "regime_window_days": 5, "partial": p}
+        context = next(l for l in flows.context_lines(d) if "IN PROGRESS" in l)
+        assert "same basis as the figures above" in context
+        assert "not only the itemized ones" in context
