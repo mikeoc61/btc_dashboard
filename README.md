@@ -294,6 +294,7 @@ def html_panels(data) -> list[Panel]:   # optional; cards for --html and the web
 def notable(data) -> list[str]:         # optional; entries for the NOTABLE strip
 def refresh_derived(data) -> dict:      # optional; only if fields age with the clock
 def analyst_tools(cfg) -> list[Tool]:   # optional; live queries offered to --ask
+def analyst_scope(data) -> str | None:  # optional; what that tool can reach
 ```
 
 Keeping all three presentations next to the collector is deliberate: the caveats
@@ -604,6 +605,32 @@ in the terminal and on the page, distinguishing a missing warehouse from a
 `--no-tools` you asked for. This matters most over `--from`: the snapshot has a
 remote path and queries do not, so on any machine that isn't the one holding
 the warehouse, snapshot-only is the normal case rather than the exception.
+
+#### The ask box says what it can reach
+
+Above the cost note, the page states the history available to query:
+
+> History available to query: price from 2013-10-06, on-chain from 2016-01-01,
+> both through 2026-08-26 — complete UTC days.
+
+**Each span is stated separately, and never summed.** `btc` runs from 2013 and
+`onchain` from 2016 — two and a half years apart — so a single "N days of
+history" figure would be right for a price question and badly wrong for an
+on-chain one. The shared end date is factored out so the differing starts are
+what the eye lands on, since those are the part that changes an answer.
+
+The coverage travels in the snapshot rather than being read from the database
+at render time: it is collected once per `warehouse.collect()` and rides the
+60-minute cache, where a page asking the file directly would reopen it on every
+render and every 60-second poll. A source supplies its own line through
+`analyst_scope(data)`, so the renderer never has to know which source owns
+history.
+
+With no source offering history, the box says so rather than going quiet.
+
+One known staleness: the ask card sits outside the regions the page updates in
+place, so this line refreshes on a full page load rather than on a tick.
+Coverage moves once a day at most.
 
 #### Which providers can drive it
 

@@ -420,6 +420,93 @@ def _connect_sandboxed(db_path: Path):
     return con
 
 
+# Table names as a reader would say them. A table without an entry keeps its
+# own name rather than vanishing, so a new one the ingester adds still shows up.
+COVERAGE_LABELS = {"btc": "price", "onchain": "on-chain"}
+
+
+def table_span(con, table: str) -> dict | None:
+    """First date, last date and row count for one table, or None.
+
+    The two tables do not cover the same period — price runs from 2013 and
+    on-chain from 2016 — so coverage is per table and never summed. A single
+    "N days of history" figure would be right for one question and years wrong
+    for the other, which is the kind of unqualified number this project treats
+    as a defect rather than a rounding.
+    """
+    try:
+        lo, hi, n = con.execute(
+            f"SELECT min(date), max(date), count(*) FROM {_ident(table)}"
+        ).fetchone()
+    except Exception:
+        return None
+    if lo is None or hi is None:
+        return None
+    return {"first": lo.isoformat(), "last": hi.isoformat(), "days": int(n)}
+
+
+def _dated_tables(con) -> list[str]:
+    """Tables carrying a `date` column, which is all coverage means here."""
+    rows = con.execute(
+        "SELECT table_name FROM information_schema.columns "
+        "WHERE table_schema = 'main' AND column_name = 'date' "
+        "ORDER BY table_name"
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def coverage(con) -> dict:
+    """What history exists, per table, for the snapshot to carry.
+
+    Collected here rather than read live by whoever wants to show it: this runs
+    once per collection and rides the 60-minute cache, where a consumer asking
+    the database directly would reopen it on every page render and every poll.
+    """
+    out = {}
+    for table in _dated_tables(con):
+        span = table_span(con, table)
+        if span is not None:
+            out[table] = span
+    return out
+
+
+def analyst_scope(data: dict) -> str | None:
+    """One line naming the history `--ask` can actually reach.
+
+    Rendered where a question is composed, so the reader knows what is
+    answerable before asking rather than after. Each span is stated in full for
+    the same reason every other figure here carries its window: "history since
+    2013" is false for an on-chain question by two and a half years.
+    """
+    spans = {
+        t: c for t, c in ((data or {}).get("coverage") or {}).items()
+        if c.get("first") and c.get("last")
+    }
+    if not spans:
+        return None
+
+    # Oldest series first, so the line reads chronologically and the longest
+    # history leads. Alphabetical would open with "on-chain", which is both the
+    # shorter series and the less obvious one to lead with.
+    named = [
+        (COVERAGE_LABELS.get(t, t), c)
+        for t, c in sorted(spans.items(), key=lambda kv: (kv[1]["first"], kv[0]))
+    ]
+    lasts = {c["last"] for _, c in named}
+    if len(named) == 1:
+        label, c = named[0]
+        body = f"{label} {c['first']} to {c['last']}"
+    elif len(lasts) == 1:
+        # Shared end date factored out, so the differing starts are what the
+        # eye lands on — those are the part that changes an answer.
+        joined = ", ".join(f"{label} from {c['first']}" for label, c in named)
+        both = "both" if len(named) == 2 else "all"
+        body = f"{joined}, {both} through {lasts.pop()}"
+    else:
+        body = ", ".join(f"{label} {c['first']} to {c['last']}" for label, c in named)
+    return f"History available to query: {body} — complete UTC days."
+
+
 def schema_text(con) -> str:
     """The warehouse's shape, for a model that has to write SQL against it.
 
@@ -444,15 +531,11 @@ def schema_text(con) -> str:
         names = ", ".join(f"{c} {t.lower()}" for c, t in cols)
         span = ""
         if any(c == "date" for c, _ in cols):
-            try:
-                lo, hi, n = con.execute(
-                    f"SELECT min(date), max(date), count(*) FROM {_ident(table)}"
-                ).fetchone()
-                span = f"  -- {n} rows, {lo} to {hi}"
-            except Exception:
-                # Shape is still useful without coverage; never lose the table
-                # because one count failed.
-                pass
+            # Shape is still useful without coverage, and `table_span` returns
+            # None rather than raising, so one failed count never loses a table.
+            got = table_span(con, table)
+            if got:
+                span = f"  -- {got['days']} rows, {got['first']} to {got['last']}"
         out.append(f"{table}({names}){span}")
     return "\n".join(out)
 
@@ -674,6 +757,8 @@ def collect(cfg) -> SourceResult:
             "sma200_pct": sma_pct,
             "day_pace_retarget": _try(day_pace_retarget, con),
         }
+
+        data["coverage"] = _try(coverage, con) or {}
 
         behind = days_behind(date)
         data["days_behind"] = behind

@@ -795,3 +795,60 @@ class TestTheAnswerSaysWhenItCouldNotCheck:
                                answer=self._answer(no_tools_reason="no tool was available"))
         stripped = re.sub(r"<style>.*?</style>", "", out, flags=re.S)
         assert "no tool was available" in stripped
+
+
+class TestTheAskBoxSaysWhatItCanReach:
+    """Knowing what history is answerable belongs where the question is
+    composed, not in the answer that comes back."""
+
+    def _with_scope(self, monkeypatch, line):
+        """Give a source a scope hook for the length of one test.
+
+        `price` has none of its own, which is the point: the renderer must find
+        the hook by asking the sources, not by knowing which one owns history.
+        """
+        from btc_dashboard.sources import price
+        monkeypatch.setattr(price, "analyst_scope", lambda d: line, raising=False)
+
+    def test_a_sources_scope_line_appears_in_the_ask_card(self, monkeypatch):
+        self._with_scope(monkeypatch, "History available to query: price from 2013.")
+        out = page.render_html(_snap(), ask=True)
+        assert "History available to query: price from 2013." in out
+
+    def test_it_sits_above_the_cost_note(self, monkeypatch):
+        """It is needed while composing the question, not after sending it."""
+        self._with_scope(monkeypatch, "SCOPE LINE")
+        out = page.render_html(_snap(), ask=True)
+        assert out.index("SCOPE LINE") < out.index("each question costs money")
+
+    def test_no_scope_says_so_rather_than_going_quiet(self):
+        out = page.render_html(_snap(), ask=True)
+        assert page.NO_SCOPE_NOTE in out
+
+    def test_a_source_with_no_hook_is_simply_skipped(self):
+        out = page.render_html(_snap(), ask=True)
+        assert "History available to query" not in out
+
+    def test_an_unavailable_source_offers_no_scope(self, monkeypatch):
+        """It cannot be queried, so it must not claim reachable history."""
+        self._with_scope(monkeypatch, "SCOPE LINE")
+        snap = _snap(available=False, error="gone")
+        assert "SCOPE LINE" not in page.render_html(snap, ask=True)
+
+    def test_a_raising_hook_does_not_cost_the_ask_box(self, monkeypatch):
+        from btc_dashboard.sources import price
+        monkeypatch.setattr(price, "analyst_scope",
+                            lambda d: (_ for _ in ()).throw(RuntimeError("boom")),
+                            raising=False)
+        out = page.render_html(_snap(), ask=True)
+        assert "<form" in out and page.NO_SCOPE_NOTE in out
+
+    def test_it_is_escaped(self, monkeypatch):
+        self._with_scope(monkeypatch, "<img src=x onerror=alert(1)>")
+        out = page.render_html(_snap(), ask=True)
+        assert "<img src=x" not in out and "&lt;img" in out
+
+    def test_the_static_page_has_no_scope_line(self):
+        """No ask box, so nothing to scope."""
+        out = page.render_html(_snap())
+        assert page.NO_SCOPE_NOTE not in out

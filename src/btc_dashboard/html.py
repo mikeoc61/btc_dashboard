@@ -316,6 +316,38 @@ def _panels_for(name: str, block: dict) -> list[Panel]:
 
 ANSWER_RESULT_LINES = 12
 
+# Shown in the ask box when no source offers live history, so the absence is
+# stated rather than left to be inferred from a thinner answer.
+NO_SCOPE_NOTE = (
+    "No history available to query — answers use only the figures on this page."
+)
+
+
+def _analyst_scope(snapshot: dict) -> list[str]:
+    """What the analyst can reach beyond this page, as each source describes it.
+
+    Asked of the sources rather than read out of a known key here: which source
+    owns history is not this renderer's business, and a page that reached into
+    `sources["warehouse"]` by name would have to be edited every time that
+    changed. Same shape as `notable()` — the source phrases its own line.
+    """
+    out: list[str] = []
+    for name in snap.ordered_names(snapshot):
+        block = snapshot["sources"][name]
+        if not block.get("available"):
+            continue
+        mod = snap.module_for(name)
+        if mod is None or not hasattr(mod, "analyst_scope"):
+            continue
+        try:
+            line = mod.analyst_scope(block["data"])
+        except Exception:
+            # Never cost the ask box because a scope line failed to build.
+            continue
+        if line:
+            out.append(line)
+    return out
+
 
 def _queries(calls) -> str:
     """What the analyst ran to answer, and what came back.
@@ -551,6 +583,11 @@ def render_html(snapshot: dict, *, title: str = "BTC DASHBOARD",
 
     ask_html = ""
     if ask:
+        scope = _analyst_scope(snapshot)
+        scope_html = "".join(
+            f'<div class="note">{_esc(line)}</div>' for line in scope
+        ) or f'<div class="note">{_esc(NO_SCOPE_NOTE)}</div>'
+
         # Its own grid, deliberately outside the live region: an update
         # replaces the data cards wholesale, and this must survive it. It
         # changes when an answer arrives, never on a tick.
@@ -564,7 +601,10 @@ def render_html(snapshot: dict, *, title: str = "BTC DASHBOARD",
             '<input name="q" autofocus autocomplete="off" '
             'placeholder="ask a question about this snapshot">'
             '<button type="submit">Ask</button></form>'
-            '<div class="note">Sent to the configured provider using the key on '
+            # Above the cost note on purpose: this is what you need while
+            # composing the question, not after sending it.
+            + scope_html
+            + '<div class="note">Sent to the configured provider using the key on '
             'this machine — each question costs money. The analyst sees the '
             'facts on this page, including which are cached or stale.</div>'
             '</section>'

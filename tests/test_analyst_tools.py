@@ -324,3 +324,88 @@ class TestTheReaderIsToldWhenThereWasNoTool:
         r = analyst.ask(self._snap(), "q", Config.from_env(
             provider="deepseek", model="deepseek-chat", db_path=db))
         assert r.tool_calls == () and r.no_tools_reason is None
+
+
+class TestCoverageTravelsInTheSnapshot:
+    """The ask box needs to say what history is reachable. It reads that from
+    the snapshot, not from the database: a consumer peeking at the file would
+    reopen it on every page render and every 60-second poll."""
+
+    def test_collect_carries_a_span_per_table(self, db):
+        data = warehouse.collect(Config.from_env(db_path=db)).data
+        cov = data["coverage"]
+        assert set(cov) == {"btc", "onchain"}
+        assert cov["btc"]["first"] == "2024-01-01"
+        assert cov["btc"]["days"] == 400
+
+    def test_a_table_without_dates_has_no_coverage(self, db):
+        con = duckdb.connect(str(db))
+        con.execute("CREATE TABLE notes(memo VARCHAR)")
+        con.close()
+        con = warehouse._connect_sandboxed(db)
+        try:
+            assert "notes" not in warehouse.coverage(con)
+        finally:
+            con.close()
+
+    def test_an_empty_table_reports_no_span(self, db):
+        """min(date) over no rows is NULL, not a date. A span of None to None
+        would render as a real window covering nothing."""
+        con = duckdb.connect(str(db))
+        con.execute("CREATE TABLE future(date DATE)")
+        con.close()
+        con = warehouse._connect_sandboxed(db)
+        try:
+            assert warehouse.table_span(con, "future") is None
+        finally:
+            con.close()
+
+    def test_coverage_failing_does_not_cost_the_source(self, db, monkeypatch):
+        monkeypatch.setattr(warehouse, "coverage",
+                            lambda con: (_ for _ in ()).throw(RuntimeError("boom")))
+        result = warehouse.collect(Config.from_env(db_path=db))
+        assert result.available and result.data["coverage"] == {}
+
+
+class TestTheScopeLineNamesEachSpan:
+    """price runs from 2013 and on-chain from 2016. One "N days of history"
+    figure would be right for one question and years wrong for the other."""
+
+    def _cov(self, **over):
+        base = {"btc": {"first": "2013-10-06", "last": "2026-08-26", "days": 4695},
+                "onchain": {"first": "2016-01-01", "last": "2026-08-26", "days": 3891}}
+        base.update(over)
+        return {"coverage": base}
+
+    def test_both_starts_are_stated(self):
+        line = warehouse.analyst_scope(self._cov())
+        assert "2013-10-06" in line and "2016-01-01" in line
+
+    def test_a_shared_end_date_is_said_once(self):
+        line = warehouse.analyst_scope(self._cov())
+        assert line.count("2026-08-26") == 1, "the differing starts are the point"
+        assert "both through" in line
+
+    def test_the_oldest_series_leads(self):
+        line = warehouse.analyst_scope(self._cov())
+        assert line.index("price") < line.index("on-chain")
+
+    def test_differing_ends_are_stated_in_full(self):
+        line = warehouse.analyst_scope(
+            self._cov(onchain={"first": "2016-01-01", "last": "2026-08-20", "days": 3891}))
+        assert "2026-08-20" in line and "2026-08-26" in line
+        assert "both through" not in line
+
+    def test_it_says_the_days_are_complete_utc_days(self):
+        """The warehouse is structurally at least a day behind today."""
+        assert "complete UTC days" in warehouse.analyst_scope(self._cov())
+
+    def test_no_coverage_produces_no_line(self):
+        assert warehouse.analyst_scope({}) is None
+        assert warehouse.analyst_scope({"coverage": {}}) is None
+
+    def test_an_unlabelled_table_keeps_its_own_name(self):
+        """A table the ingester adds should appear, not vanish."""
+        line = warehouse.analyst_scope(self._cov(
+            mempool={"first": "2020-01-01", "last": "2026-08-26", "days": 2000}))
+        assert "mempool" in line

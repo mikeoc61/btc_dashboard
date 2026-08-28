@@ -122,6 +122,7 @@ def html_panels(data) -> list[Panel]:   # optional; cards, each with a priority
 def notable(data) -> list[str]:         # optional; NOTABLE strip, threshold-selected
 def refresh_derived(data) -> dict:      # optional; only if fields age with the clock
 def analyst_tools(cfg) -> list[Tool]:   # optional; live queries lent to --ask
+def analyst_scope(data) -> str | None:  # optional; what that tool can reach
 ```
 
 All presentations live beside the collector on purpose: the caveat a number

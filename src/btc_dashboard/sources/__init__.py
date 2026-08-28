@@ -8,7 +8,10 @@ Every source is a module exposing the same four names:
     context_lines(d)-> list[str], facts phrased for the LLM
 
 and optionally `analyst_tools(cfg) -> list[Tool]`, for a source that can answer
-questions the snapshot does not contain. See `Tool`.
+questions the snapshot does not contain (see `Tool`), plus
+`analyst_scope(data) -> str | None`, one line saying what that tool can reach —
+rendered where a question is composed, so the reader knows what is answerable
+before asking rather than after.
 
 Colocating the two presentations with the collector means adding a source is a
 single new file plus one entry in `snapshot.SOURCES` — nothing else changes.
