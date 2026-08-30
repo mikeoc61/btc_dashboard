@@ -8,7 +8,9 @@ Two jobs, one file:
 2. **Stale-on-failure** — when the TTL has expired *and* the live collection
    fails, the expired copy is served flagged `stale` rather than the block
    disappearing. Yesterday's finalized flows beat nothing, provided the reader
-   is told they're old.
+   is told they're old. That rescue is bounded by `STALE_MAX_AGE`: past it the
+   block goes unavailable, because on a host where the live path always fails
+   an unbounded fallback serves the same copy forever.
 
 Only sources that declare a `CACHE_TTL` participate. Live tip state (spot
 price, mempool, block height) deliberately does not: serving a 40-minute-old
@@ -30,9 +32,31 @@ import os
 import tempfile
 from pathlib import Path
 
-from .sources import SourceResult
+from .sources import SourceResult, unavailable
 
 CACHED_AT = "cached_at"
+
+# How long an expired copy may go on rescuing a failed live path.
+#
+# Without a bound the fallback never ends. On a host where the live path always
+# fails — a laptop with no warehouse file — the entry is re-aged and re-served
+# on every run, so the block keeps asserting figures that no future run can
+# ever correct. That is not hypothetical: a payload written from a database
+# this project had never read stayed on the panel for three days, badged
+# accurately as old and wrong in every value.
+#
+# Note what the badge cannot do. `_rederive` keeps the *age* honest, which is
+# the reason a stale block is safe to show at all — but age is not provenance,
+# and no amount of labelling turns an indefinitely-served copy into a current
+# reading.
+#
+# Four days is the shortest bound that still covers the longest transient the
+# cached sources actually see: a Friday-evening failure across a weekend and a
+# Monday holiday runs about three and a half days. It also has to clear three,
+# because `test_rederive_also_runs_on_the_stale_fallback_path` pins a
+# three-day-old payload as still worth serving — this codebase's own statement
+# about where the line sits.
+STALE_MAX_AGE = 4 * 24 * 3600
 
 
 def path_for(cfg, name: str) -> Path:
@@ -140,12 +164,31 @@ def collect(mod, cfg, *, refresh: bool = False) -> SourceResult:
         return fresh
 
     # Live collection failed. An expired copy is better than an empty block,
-    # so long as it is labelled — including the reason the live path failed.
+    # so long as it is labelled — including the reason the live path failed —
+    # and so long as it has not aged past the point where it describes a
+    # different market than the one being asked about. See STALE_MAX_AGE.
     if entry is not None:
         result, age = entry
         if result.available:
+            if age > STALE_MAX_AGE:
+                return unavailable(mod.NAME, _discarded(fresh.error, age))
             return _rederive(mod, result).as_stale(age, fresh.error)
     return fresh
+
+
+def _discarded(error: str | None, age: float) -> str:
+    """Why the block is empty when a cached copy is sitting on disk.
+
+    Reporting only the live failure would send a reader hunting for a missing
+    database when the more useful fact is that a copy was there and was refused
+    for its age — a different problem with a different fix.
+    """
+    if age == float("inf"):
+        detail = "a cached copy stamped in the future was discarded"
+    else:
+        detail = (f"a cached copy {age / 86400:.1f} days old was discarded, "
+                  f"past the {STALE_MAX_AGE // 86400}-day limit")
+    return f"{error}; {detail}" if error else detail
 
 
 def _rederive(mod, result: SourceResult) -> SourceResult:

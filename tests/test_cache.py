@@ -131,6 +131,68 @@ class TestFailureFallback:
         assert not cache.path_for(cfg, mod.NAME).exists()
 
 
+class TestStaleRescueHasAnUpperBound:
+    """The fallback must end, or on a host where the live path always fails it
+    never does.
+
+    Regression: a warehouse payload written from a database this project had
+    never read was re-aged and re-served on every run for three days, on a
+    laptop where the live path cannot succeed by design. Every label was
+    accurate and every figure was wrong — age is not provenance, so the only
+    thing that stops it is a limit.
+    """
+
+    def _mod_cfg(self, tmp_path):
+        good = SourceResult("demo", True, data={"v": "good"})
+        bad = SourceResult("demo", False, error="site unreachable")
+        return _module(results=[good, bad]), _cfg(tmp_path)
+
+    def test_a_copy_past_the_limit_is_not_served(self, tmp_path):
+        mod, cfg = self._mod_cfg(tmp_path)
+        cache.collect(mod, cfg)
+        _age_cache(cache.path_for(cfg, mod.NAME), cache.STALE_MAX_AGE + 3600)
+
+        result = cache.collect(mod, cfg)
+        assert result.available is False
+        # Both facts, because they point at different fixes: the live path is
+        # broken, *and* a copy was on disk and refused for its age.
+        assert "site unreachable" in result.error
+        assert "discarded" in result.error
+
+    def test_a_copy_inside_the_limit_still_rescues(self, tmp_path):
+        """The bound must not quietly become "no fallback at all"."""
+        mod, cfg = self._mod_cfg(tmp_path)
+        cache.collect(mod, cfg)
+        _age_cache(cache.path_for(cfg, mod.NAME), cache.STALE_MAX_AGE - 3600)
+
+        result = cache.collect(mod, cfg)
+        assert result.available is True and result.stale is True
+        assert result.data == {"v": "good"}
+
+    def test_a_future_stamped_copy_is_never_a_rescue(self, tmp_path):
+        """A clock correction reads as infinitely old, so it cannot be served.
+
+        The alternative is a copy that outlives every limit precisely because
+        its timestamp is wrong.
+        """
+        mod, cfg = self._mod_cfg(tmp_path)
+        cache.collect(mod, cfg)
+        _age_cache(cache.path_for(cfg, mod.NAME), -86400)
+
+        result = cache.collect(mod, cfg)
+        assert result.available is False
+        assert "future" in result.error
+
+    def test_the_bound_clears_the_payload_the_rescue_tests_rely_on(self):
+        """`TestTimeDerivedFieldsAreRecomputed` serves a three-day-old copy.
+
+        That test is this codebase's statement about where the line sits, so
+        tightening the bound under it would break re-derivation coverage for a
+        reason nowhere near the failure.
+        """
+        assert cache.STALE_MAX_AGE > 3 * 86400
+
+
 class TestCorruptCache:
     @pytest.mark.parametrize("content", [
         "", "not json", "[]", '{"no_timestamp": 1}',

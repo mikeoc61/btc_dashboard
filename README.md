@@ -106,6 +106,18 @@ unreachable, yesterday's finalized flows still render rather than the block
 disappearing. The analyst is told which state applies, so it can't describe an
 hour-old reading as "right now".
 
+**That rescue stops after four days.** Past `STALE_MAX_AGE` the block goes
+unavailable instead, and the error names both the live failure and the copy
+that was refused — two facts with two different fixes. Without a limit the
+fallback never ends: on a host where the live path *always* fails, such as a
+laptop with no warehouse file, the same copy is re-aged and re-served on every
+run, asserting figures that no later run can ever correct. This is not
+hypothetical. A payload written from a database this project had never read sat
+on the panel for three days with every label accurate and every value wrong,
+because re-derivation keeps the *age* honest — and age is not provenance. Four
+days is the shortest bound that still covers a Friday-evening failure across a
+weekend and a Monday holiday.
+
 **Time-relative fields are recomputed on every cache read.** `age_days` and
 `days_behind` are relative to when they are *read*, not when they were
 fetched — otherwise a three-day-old stale payload would report a trading day
