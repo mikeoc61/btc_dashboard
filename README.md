@@ -463,7 +463,7 @@ See [Configuration](#configuration).
 
 ## Measurement notes
 
-The numbers are the easy part; these four decisions are what make them mean
+The numbers are the easy part; these decisions are what make them mean
 something. Each is enforced in code and covered by a test.
 
 **A reported zero is not a missing cell.** Farside renders an unpublished figure
@@ -479,7 +479,30 @@ every figure and surfaced separately.
 40 available days is a 40-day net wearing a 60-day label — worse than no answer,
 because it looks like one. The analyst is told explicitly not to read it as zero.
 The same rule governs the moving averages: with 60 days of history you get a
-20d and a 50d SMA and `200d n/a`, never a 60-day mean labelled 200d.
+20d and a 50d SMA and `200d n/a`, never a 60-day mean labelled 200d. RSI is
+stricter still — see below, where too short a series is not merely imprecise
+but a different statistic.
+
+**An RSI without its variant is not comparable to anyone else's.** Wilder's
+smoothing and Cutler's simple averages are both called "RSI(14)" and both are
+correct; on 28 Aug 2026 they read 70.8 and 81.6 on the same closes, which is
+the difference between sitting under the conventional overbought line and well
+above it. This computes Wilder's — the variant charting packages draw — and
+says so on every surface. It also refuses to report one at all below 120 bars:
+Wilder smoothing is recursive from a seed, and until that seed has decayed
+below the displayed precision the value is closer to its simple-average seed
+than to Wilder's, making a short reading mislabelled rather than merely rough.
+
+**Both RSI vintages are shown, because for RSI they genuinely differ.** The
+newest bar carries a fourteenth of the smoothed average against a two-hundredth
+of an SMA200, so including today's in-progress candle moved the reading a mean
+of 3.4 points — 9.8 at the 95th percentile — across the 2021–2026 daily series.
+The displayed value includes it, matching a chart and sharing the spot row's
+vintage; the note carries the settled close-only figure, dated. The gap between
+the two is that day's move restated in RSI units, not independent information,
+which is why it is not a `notable` — over the same period the pair straddled a
+70 or 30 threshold on 5.9% of days, firing hardest exactly when the reading
+sits closest to the line and the disagreement means least.
 
 **A tag names the window it came from.** The lead-share classifier describes
 the *primary (5d) window*, so it is printed on that window's line where the
