@@ -760,6 +760,12 @@ btc-dashboard --ask "..." --model deepseek/deepseek-chat    # provider in the id
 btc-dashboard --ask "..." --provider ollama --model llama3  # local, no key
 ```
 
+Ollama is the one provider whose address is yours to move — set `OLLAMA_HOST`,
+in the environment or the env file, and it is read when the request is made
+rather than when the module loads. A bare `host:port` is accepted, since that
+is the form ollama's own tooling uses; `http://` is supplied when no scheme is
+given.
+
 A `provider/` prefix on `--model` beats `--provider`, so `BTC_DASHBOARD_MODEL`
 can carry both in one variable for a scheduled run. Each provider reads its own
 key (`ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, …) from the environment or the

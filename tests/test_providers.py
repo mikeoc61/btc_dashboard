@@ -813,3 +813,68 @@ class TestOpenAIResponsesTransport:
         done = self._complete(monkeypatch, [self._payload([self._msg("plain")])], cap)
         assert done.text == "plain" and done.tool_calls == ()
         assert "tools" not in cap["bodies"][0]
+
+
+class TestTheLocalProvidersAddressIsResolvedLate:
+    """`OLLAMA_HOST` was read while the registry dict was built — at import,
+    which is before `Config.from_env()` reads the env file. A line in that file
+    was therefore ignored while the API key beside it worked, though the file
+    is documented to set any variable.
+
+    Ollama is the one provider whose address belongs to the operator; the rest
+    are fixed vendor URLs.
+    """
+
+    def _ollama(self):
+        return providers.PROVIDERS["ollama"]
+
+    def test_the_default_is_loopback(self, monkeypatch):
+        monkeypatch.delenv("OLLAMA_HOST", raising=False)
+        assert providers.endpoint(self._ollama()) == "http://localhost:11434/v1"
+
+    def test_the_environment_wins(self, monkeypatch):
+        monkeypatch.setenv("OLLAMA_HOST", "http://box.local:11434")
+        assert providers.endpoint(self._ollama()) == "http://box.local:11434/v1"
+
+    def test_the_env_file_is_read(self, monkeypatch, tmp_path):
+        """The defect. Resolved at import, this value could never win."""
+        monkeypatch.delenv("OLLAMA_HOST", raising=False)
+        f = tmp_path / "env"
+        f.write_text("OLLAMA_HOST=http://pibot:11434\n")
+        monkeypatch.setenv("BTC_DASHBOARD_ENV", str(f))
+        assert providers.endpoint(self._ollama()) == "http://pibot:11434/v1"
+
+    def test_a_bare_host_and_port_gets_a_scheme(self, monkeypatch):
+        """Ollama's own docs write it this way — `OLLAMA_HOST=0.0.0.0:11434`.
+        Concatenated onto a path it yields `pibot:11434/v1`, which urllib
+        refuses with "unknown url type: pibot"; fixing only the timing would
+        turn an ignored variable into a hard failure."""
+        monkeypatch.setenv("OLLAMA_HOST", "pibot:11434")
+        assert providers.endpoint(self._ollama()) == "http://pibot:11434/v1"
+
+    def test_a_trailing_slash_does_not_double_up(self, monkeypatch):
+        monkeypatch.setenv("OLLAMA_HOST", "https://box.local:11434/")
+        assert providers.endpoint(self._ollama()) == "https://box.local:11434/v1"
+
+    def test_a_vendor_provider_is_untouched(self, monkeypatch):
+        monkeypatch.setenv("OLLAMA_HOST", "http://pibot:11434")
+        for name in ("anthropic", "openai", "deepseek", "openrouter"):
+            p = providers.PROVIDERS[name]
+            assert providers.endpoint(p) == p.base_url
+
+    def test_the_request_actually_goes_there(self, monkeypatch):
+        """Resolution has to reach the wire, not just the helper — the three
+        call sites are what this is for."""
+        monkeypatch.setenv("OLLAMA_HOST", "pibot:11434")
+        cap = {}
+        _fake_http(monkeypatch, payload=_ok(), capture=cap)
+        providers.complete(providers.PROVIDERS["ollama"], "llama3", "s", "p")
+        assert cap["url"] == "http://pibot:11434/v1/chat/completions"
+
+    def test_an_unreachable_host_is_named_as_configured(self, monkeypatch):
+        """The error says where it tried. Off the stale field it would name
+        localhost while the request went elsewhere."""
+        monkeypatch.setenv("OLLAMA_HOST", "pibot:11434")
+        _fake_http(monkeypatch, error=urllib.error.URLError("refused"))
+        with pytest.raises(providers.ProviderError, match="pibot:11434"):
+            providers.complete(providers.PROVIDERS["ollama"], "llama3", "s", "p")

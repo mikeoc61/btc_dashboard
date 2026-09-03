@@ -189,7 +189,9 @@ needs belongs with the code that knows why.
 - **Node**: `bitcoin-cli`, Pi only.
 - **Cache**: `~/.cache/btc_dashboard/` (XDG). Disposable.
 - **Env file**: `~/.config/btc_dashboard/env`, chmod 600 — holds the provider
-  key, and sets *any* `BTC_DASHBOARD_*` variable.
+  key, and sets *any* variable, not only the `BTC_DASHBOARD_*` ones:
+  `OLLAMA_HOST` belongs there too. Anything reading it must do so at call time
+  — the file is folded in by `Config.from_env()`, long after imports run.
 - **Pi** is `pibot` over ssh. Non-interactive ssh has no `~/.local/bin` on
   `PATH`, so use `ssh pibot '~/.local/bin/btc-dashboard --json'` or
   `bash -lc`. Reach the web views with

@@ -64,6 +64,10 @@ class Provider:
     supports_max_tokens: bool = True
 
 
+# Where ollama listens unless the operator says otherwise. A constant rather
+# than an inline default so `endpoint()` and the registry cannot disagree.
+OLLAMA_DEFAULT_HOST = "http://localhost:11434"
+
 PROVIDERS: dict[str, Provider] = {
     "anthropic": Provider(
         name="anthropic", kind="anthropic",
@@ -102,7 +106,13 @@ PROVIDERS: dict[str, Provider] = {
         name="ollama", kind="openai",
         # Local models keep the snapshot on the machine that collected it,
         # which is the only option here that involves no third party at all.
-        base_url=os.environ.get("OLLAMA_HOST", "http://localhost:11434") + "/v1",
+        #
+        # The default only. This is the one provider whose address is the
+        # operator's to move, so read it through `endpoint()` and never off
+        # this field — resolved here, at import, `OLLAMA_HOST` from the env
+        # file could never win, because the file is not read until something
+        # builds a Config and this dict was built when the module loaded.
+        base_url=OLLAMA_DEFAULT_HOST + "/v1",
         env_key=None,
         default_model=None,
     ),
@@ -156,6 +166,35 @@ def api_key(provider: Provider, env_file: Path | None = None) -> str | None:
     # picks the file up.
     config.load_env_file(env_file)
     return os.environ.get(provider.env_key) or None
+
+
+def endpoint(provider: Provider, env_file: Path | None = None) -> str:
+    """Where to reach this provider, resolved now rather than at import.
+
+    Every other provider is a fixed vendor URL. Ollama runs on the operator's
+    own machine — or their Pi, or another box on the LAN — so its address is
+    theirs to set, and `OLLAMA_HOST` is the variable its own tooling uses.
+
+    Resolved at call time for the same reason `api_key` is, and it folds the
+    env file in the same way: that file is read by `Config.from_env()`, which
+    runs long after this module is imported. Read at import, as this was, a
+    line in the env file was silently ignored while the API key beside it
+    worked.
+
+    The scheme is supplied when the value lacks one. Ollama's own documentation
+    writes this variable as a bare `host:port` — `OLLAMA_HOST=0.0.0.0:11434` —
+    and concatenating that onto a path yields `pibot:11434/v1`, which urllib
+    rejects outright as "unknown url type: pibot". Correcting only the timing
+    would therefore turn a variable that was ignored into one that fails, for
+    exactly the value an operator is most likely to set.
+    """
+    if provider.name != "ollama":
+        return provider.base_url
+    config.load_env_file(env_file)
+    host = (os.environ.get("OLLAMA_HOST") or OLLAMA_DEFAULT_HOST).strip().rstrip("/")
+    if "://" not in host:
+        host = f"http://{host}"
+    return f"{host}/v1"
 
 
 @dataclass(frozen=True)
@@ -314,7 +353,7 @@ def _post_json(provider, url, body, headers, timeout, tools=False) -> dict:
         raise ProviderError(_http_error(provider, e, tools=tools))
     except urllib.error.URLError as e:
         raise ProviderError(
-            f"could not reach {provider.name} at {provider.base_url}: {e.reason}")
+            f"could not reach {provider.name} at {endpoint(provider)}: {e.reason}")
     except (TimeoutError, OSError) as e:
         raise ProviderError(f"{provider.name} request failed: {e}")
 
@@ -382,7 +421,7 @@ def _openai_responses(provider, model, system, prompt, effort, timeout,
         if spec and round_number < MAX_TOOL_ROUNDS:
             body["tools"] = spec
 
-        payload = _post_json(provider, f"{provider.base_url}/responses", body,
+        payload = _post_json(provider, f"{endpoint(provider)}/responses", body,
                              headers, timeout, tools=bool(spec))
 
         usage = payload.get("usage") or {}
@@ -471,7 +510,7 @@ def _openai(provider, model, system, prompt, timeout,
         if spec and round_number < MAX_TOOL_ROUNDS:
             body["tools"] = spec
 
-        payload = _post_json(provider, f"{provider.base_url}/chat/completions",
+        payload = _post_json(provider, f"{endpoint(provider)}/chat/completions",
                              body, headers, timeout, tools=bool(spec))
 
         try:
