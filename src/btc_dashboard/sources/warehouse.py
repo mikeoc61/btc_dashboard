@@ -34,7 +34,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import Metric, Panel, SourceResult, Tool, fmt, unavailable
+from . import Metric, Panel, SourceResult, Tool, fmt, safe_text, unavailable
 
 NAME = "warehouse"
 
@@ -842,7 +842,9 @@ def _day_label(raw) -> str:
         date = datetime.date.fromisoformat(raw)
         return f"UTC {date} {date:%a}"
     except (TypeError, ValueError):
-        return f"UTC {raw or 'unknown date'}"
+        # The fallback echoes the payload's own string, so it is bounded like
+        # any other ingested value before it becomes part of a line.
+        return f"UTC {safe_text(raw or 'unknown date')}"
 
 
 def render_lines(d: dict) -> list[str]:

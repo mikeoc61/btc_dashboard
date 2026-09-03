@@ -37,6 +37,7 @@ from dataclasses import dataclass
 
 from . import providers
 from . import snapshot as snap
+from .text import safe_text
 
 SYSTEM = (
     "You are a Bitcoin market analyst working for a long-horizon investor who "
@@ -159,10 +160,12 @@ def _quote_untrusted(text) -> str:
     a boundary the model cannot see. Quote characters are stripped from the
     content first: without that, a field could close the quotation early and
     continue as though it were the tool speaking.
+
+    `safe_text` supplies the rest — one line, printable, bounded — with a
+    longer cap than a value gets, because an error is prose and a truncated
+    reason is a worse fact than a long one.
     """
-    s = " ".join(str(text).split()).replace('"', "'")
-    if len(s) > MAX_ERROR_CHARS:
-        s = s[:MAX_ERROR_CHARS] + "…(truncated)"
+    s = safe_text(text, limit=MAX_ERROR_CHARS).replace('"', "'")
     return f'"{s}"'
 
 
@@ -198,7 +201,10 @@ def build_context(snapshot: dict) -> str:
     ]
     for name in snap.ordered_names(snapshot):
         block = snapshot["sources"][name]
-        label = snap.TITLES.get(name, name)
+        # A name this build has no title for came from the payload. Quoted
+        # like any other snapshot text, because "[" and "]" are how this
+        # block marks a section and an unquoted name could claim one.
+        label = snap.TITLES.get(name) or _quote_untrusted(name)
         if not block["available"]:
             lines.append(f"[{label}] UNAVAILABLE: {_quote_untrusted(block.get('error'))}")
             continue

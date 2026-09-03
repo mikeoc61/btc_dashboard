@@ -151,12 +151,18 @@ needs belongs with the code that knows why.
 - **Percentiles are mid-ranked with an epsilon.** DuckDB evaluates a sliding
   `avg()` incrementally, so mathematically equal values differ in their last
   bits; a strict `<` ranked a flat series at the 58th percentile.
-- **`sources.fmt()` is where a value gets bounded, not just formatted.** A
-  format spec rejects a non-number already; a bare `fmt(x)` does not, and an
-  ingested snapshot can put a string in a numeric field. Values are collapsed
-  to one line and capped there, which is what stops one from posing as a line
-  of output in the context block or the terminal panel. Removing that makes a
-  prompt-injection path, not a formatting change.
+- **`text.safe_text()` bounds untrusted text; `fmt()` is one caller of it, not
+  the choke point.** A format spec rejects a non-number already; a bare
+  `fmt(x)` does not, and an ingested snapshot can put a string in a numeric
+  field. But the *frame* around the values never went through `fmt` at all —
+  the error, the timestamp, a source's own name, and the categorical strings
+  (`regime`, `streak_sign`, `as_of`, `source`, `position`). `render()` indents
+  only the first physical line of a body string, so a newline anywhere in that
+  frame starts a line at column 0, which is the shape of a block heading. Hence
+  one helper doing three things: collapse to one line, strip control and bidi
+  characters (`\x1b` is not whitespace, and `ESC [ 2 J` clears the reader's
+  screen), cap. Weakening any of them makes a prompt-injection path, not a
+  formatting change.
 - **OpenAI reasoning models refuse tools on chat-completions.** Probed against
   `gpt-5.6-luna`: accepted with `reasoning_effort: "none"`, rejected at `low`,
   `medium` and the default alike. Binary, not graduated — and the one value

@@ -10,6 +10,7 @@ import os
 import sys
 
 from . import snapshot as snap
+from .text import safe_text
 
 RULE = "─" * 60
 
@@ -88,18 +89,23 @@ def render(snapshot: dict, *, show_errors: bool = True, color: bool | None = Non
     """Render the panel. `color=None` auto-detects; True/False force it."""
     paint = _Paint(supports_color() if color is None else color)
     lines: list[str] = []
-    generated = snapshot["generated_at"][:19].replace("T", " ")
+    # Sanitized before slicing, not after: an escape sequence short enough to
+    # fit inside a 19-character timestamp is still an escape sequence.
+    generated = safe_text(snapshot["generated_at"])[:19].replace("T", " ")
     lines.append(paint(f"BTC DASHBOARD — {generated} UTC", BOLD))
     lines.append(paint(RULE, DIM))
 
     for name in snap.ordered_names(snapshot):
         block = snapshot["sources"][name]
-        title = snap.TITLES.get(name, name.upper())
+        # A name this build does not know comes from the payload, so it is
+        # bounded like any other ingested value before it becomes a heading.
+        title = snap.TITLES.get(name) or safe_text(name).upper()
 
         if not block["available"]:
             if show_errors:
                 lines.append(
-                    paint(title, DIM, BOLD) + paint(f": unavailable — {block.get('error')}", DIM)
+                    paint(title, DIM, BOLD)
+                    + paint(f": unavailable — {safe_text(block.get('error'))}", DIM)
                 )
                 lines.append("")
             continue
@@ -118,13 +124,17 @@ def render(snapshot: dict, *, show_errors: bool = True, color: bool | None = Non
             try:
                 body = mod.render_lines(block["data"])
             except Exception as e:
-                body = [f"render failed: {type(e).__name__}: {e}"]
+                # The message can quote the data that broke the renderer.
+                body = [f"render failed: {type(e).__name__}: {safe_text(e)}"]
         lines.extend(f"  {line}" for line in body)
         if block.get("stale") and block.get("error") and show_errors:
-            lines.append(paint(f"  live refresh failed: {block['error']}", YELLOW))
+            lines.append(
+                paint(f"  live refresh failed: {safe_text(block['error'])}", YELLOW)
+            )
         lines.append("")
 
     missing = snap.missing(snapshot)
     if missing and not show_errors:
-        lines.append(paint(f"unavailable: {', '.join(missing)}", DIM))
+        names = ", ".join(safe_text(n) for n in missing)
+        lines.append(paint(f"unavailable: {names}", DIM))
     return "\n".join(lines).rstrip() + "\n"

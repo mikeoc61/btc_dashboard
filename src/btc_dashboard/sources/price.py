@@ -14,7 +14,7 @@ import json
 import urllib.request
 from typing import Any
 
-from . import Metric, Panel, SourceResult, fmt, unavailable
+from . import Metric, Panel, SourceResult, fmt, safe_text, unavailable
 
 NAME = "price"
 
@@ -296,7 +296,7 @@ def render_lines(d: dict) -> list[str]:
     chg = (f" {fmt(d.get('change_pct'), '+.2f', suffix='%')} vs "
            f"{_close_label(d)}" if d.get("change_pct") is not None else "")
     out = [f"spot {fmt(d.get('spot'), ',.0f', prefix='$')}{chg} "
-           f"({d.get('source') or 'unknown'})"]
+           f"({safe_text(d.get('source') or 'unknown')})"]
 
     parts = []
     for s in _sma_entries(d):
@@ -313,7 +313,7 @@ def render_lines(d: dict) -> list[str]:
     if parts:
         # The classifier rides the primary window only — it is the regime
         # marker, and repeating above/near/below three times reads as noise.
-        pos = d.get("sma200_position")
+        pos = safe_text(d.get("sma200_position") or "")
         out.append("SMA " + " | ".join(parts) + (f" ({pos} 200d)" if pos else ""))
 
     live, closed = _rsi_entries(d)
@@ -356,7 +356,7 @@ def context_lines(d: dict) -> list[str]:
             out.append(
                 f"BTC {days}d SMA: {fmt(s.get('value'), ',.0f', prefix='$')}, spot is "
                 f"{fmt(s.get('pct'), '+.1f', suffix='%')} vs it "
-                f"({s.get('position') or 'position unknown'})"
+                f"({safe_text(s.get('position') or 'position unknown')})"
             )
         else:
             out.append(

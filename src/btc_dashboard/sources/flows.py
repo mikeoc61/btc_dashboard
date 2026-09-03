@@ -30,7 +30,7 @@ import re
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from . import Metric, Panel, SourceResult, fmt, unavailable
+from . import Metric, Panel, SourceResult, fmt, safe_text, unavailable
 
 NAME = "flows"
 
@@ -366,11 +366,16 @@ def render_lines(d: dict) -> list[str]:
         return ["no fully-reported day available"]
     # age_days is None when the upstream date string didn't parse; show the
     # date alone rather than the string "None".
-    age = f", {d['age_days']}d ago" if d.get("age_days") is not None else ""
-    lead = d.get("lead") or LEAD
+    age = f", {fmt(d['age_days'])}d ago" if d.get("age_days") is not None else ""
+    # The fund name, the date and the regime tag below are the snapshot's text,
+    # not this module's wording, so they are bounded before they reach a line.
+    # An ingested payload owns all three, and a newline in any of them starts a
+    # line at column 0, where the panel's body indent no longer applies.
+    lead = safe_text(d.get("lead") or LEAD)
+    as_of = safe_text(d.get("as_of") or "unknown date")
     out = [
         f"latest {_m(d.get('latest_total'))} total | {_m(d.get('latest_lead'))} {lead} "
-        f"({d.get('as_of') or 'unknown date'}{age})"
+        f"({as_of}{age})"
     ]
     for w in d.get("windows") or []:
         if not isinstance(w, dict):
@@ -391,21 +396,24 @@ def render_lines(d: dict) -> list[str]:
         if w.get("days") == d.get("regime_window_days") and d.get("regime"):
             share = d.get("lead_share_pct")
             share_txt = f"{fmt(share, '.0f')}% {lead} — " if share is not None else ""
-            line += f" ({share_txt}{d['regime']})"
+            line += f" ({share_txt}{safe_text(d['regime'])})"
         out.append(line)
 
-    out.append(f"streak {fmt(d.get('streak_days'))}d {d.get('streak_sign') or 'n/a'}")
+    sign = safe_text(d.get("streak_sign") or "n/a")
+    out.append(f"streak {fmt(d.get('streak_days'))}d {sign}")
     p = d.get("partial")
     if isinstance(p, dict):
         reported = p.get("reported") or []
         pending = p.get("pending") or []
         value, basis = _partial_headline(p)
         split = _partial_split(p)
+        day = safe_text(p.get("date") or "today")
+        still = ", ".join(safe_text(f) for f in pending) or "n/a"
         out.append(
-            f"partial {p.get('date') or 'today'}: {value} {basis}"
+            f"partial {day}: {value} {basis}"
             + (f" ({split})" if split else "")
             + f", {len(reported)}/{len(FUNDS)} tracked funds in, pending "
-            + (', '.join(pending) or 'n/a')
+            + still
         )
     return out
 
@@ -413,7 +421,8 @@ def render_lines(d: dict) -> list[str]:
 def context_lines(d: dict) -> list[str]:
     if not d.get("as_of"):
         return []
-    lead = d.get("lead") or LEAD
+    lead = safe_text(d.get("lead") or LEAD)
+    as_of = safe_text(d["as_of"])
     age = (
         f"{fmt(d.get('age_days'))}d ago, " if d.get("age_days") is not None else ""
     )
@@ -424,7 +433,7 @@ def context_lines(d: dict) -> list[str]:
         f"BTC ETF flows below cover U.S. spot ETFs only ({', '.join(FUNDS)} and "
         f"the untracked remainder). They are one channel of demand, not total "
         f"market flow.",
-        f"BTC ETF flows as of {d['as_of']} ({age}fully reported): "
+        f"BTC ETF flows as of {as_of} ({age}fully reported): "
         f"{_m(d.get('latest_total'))} total, {_m(d.get('latest_lead'))} {lead}"
     ]
     # Naming the weekday explicitly: without it the model tends to infer one
@@ -450,16 +459,17 @@ def context_lines(d: dict) -> list[str]:
                 f"smaller window's figure."
             )
 
+    sign = safe_text(d.get("streak_sign") or "same-sign")
     out.append(
         f"BTC ETF streak: {fmt(d.get('streak_days'))} consecutive "
-        f"{d.get('streak_sign') or 'same-sign'} days. This counts only the most "
+        f"{sign} days. This counts only the most "
         f"recent run and says nothing about the size of the flows in it."
     )
     if d.get("regime"):
         window = fmt(d.get("regime_window_days"))
         share = d.get("lead_share_pct")
         out.append(
-            f"BTC ETF regime over the {window}d window: {d['regime']} "
+            f"BTC ETF regime over the {window}d window: {safe_text(d['regime'])} "
             + (f"({lead} is {fmt(share, '.0f')}% of that window's net). "
                if share is not None else "")
             + f"This describes the {window}d window ONLY — it is not a property "
@@ -471,13 +481,15 @@ def context_lines(d: dict) -> list[str]:
     if isinstance(p, dict):
         value, basis = _partial_headline(p)
         split = _partial_split(p)
+        day = safe_text(p.get("date") or "today")
+        so_far = ", ".join(safe_text(f) for f in p.get("reported") or [])
+        still = ", ".join(safe_text(f) for f in p.get("pending") or [])
         out.append(
-            f"BTC ETF partial day {p.get('date') or 'today'} is IN PROGRESS and "
+            f"BTC ETF partial day {day} is IN PROGRESS and "
             f"excluded from every figure above: {value} {basis}"
             + (f" ({split})" if split else "")
-            + f". Reported so far: "
-            f"{', '.join(p.get('reported') or []) or 'no tracked funds yet'}, still "
-            f"pending {', '.join(p.get('pending') or []) or 'n/a'}. This is on the "
+            + f". Reported so far: {so_far or 'no tracked funds yet'}, still "
+            f"pending {still or 'n/a'}. This is on the "
             f"same basis as the figures above — every published fund, not only the "
             f"itemized ones. Its direction is not yet settled."
         )

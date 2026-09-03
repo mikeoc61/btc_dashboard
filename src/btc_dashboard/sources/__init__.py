@@ -27,6 +27,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
+from ..text import safe_text
+
 
 @dataclass(frozen=True)
 class SourceResult:
@@ -167,11 +169,6 @@ class Tool:
     run: Callable[..., str]
 
 
-# A rendered value is one scalar on one line. Longer or multi-line is not a
-# reading; it is a field carrying something that was never a measurement.
-MAX_VALUE_CHARS = 120
-
-
 def fmt(value, spec: str = "", *, prefix: str = "", suffix: str = "",
         missing: str = "n/a") -> str:
     """Format a possibly-missing value without ever raising, on one line.
@@ -191,10 +188,10 @@ def fmt(value, spec: str = "", *, prefix: str = "", suffix: str = "",
     page escapes everything, so it was never exposed; the other two consumers
     were.
 
-    Collapsing whitespace is the part that matters — the newline is what lets a
-    value stop being a value and start being a line. The length cap only bounds
-    how much one field can contribute. Truncation is marked rather than silent:
-    a value that got cut is itself worth seeing.
+    The bounding itself lives in `text.safe_text`, because `fmt` is not the
+    only way a snapshot field reaches a line — a categorical value like
+    `regime` or a source's own name is interpolated directly — and one rule
+    stated once is easier to keep true than the same rule written twice.
 
     No call site formats with an alignment or padding spec, so collapsing runs
     of whitespace cannot disturb a layout.
@@ -205,7 +202,4 @@ def fmt(value, spec: str = "", *, prefix: str = "", suffix: str = "",
         text = f"{value:{spec}}"
     except (TypeError, ValueError):
         return missing
-    text = " ".join(text.split())
-    if len(text) > MAX_VALUE_CHARS:
-        text = text[:MAX_VALUE_CHARS] + "…(truncated)"
-    return f"{prefix}{text}{suffix}"
+    return f"{prefix}{safe_text(text)}{suffix}"
