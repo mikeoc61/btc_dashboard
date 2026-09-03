@@ -205,16 +205,22 @@ h1 { font-size:1.05rem; margin:0; letter-spacing:.06em; color:var(--accent); }
    arithmetic on this number. */
 .grid { display:grid; gap:.85rem;
         grid-template-columns:repeat(auto-fit,minmax(372px,1fr)); }
+/* Vertical rhythm is tight on purpose. Every card is a stack of value + note
+   pairs, so a tenth of a rem per row compounds: loosening these five numbers
+   back to their earlier values added 115px at 1920, which is roughly what a
+   browser's own chrome takes off a 1080-tall screen -- the difference between
+   the page fitting and the reader scrolling to reach ETF flows. Density is not
+   a licence to drop a note: the qualifier stays, it just sits closer. */
 .card { background:var(--card); border:1px solid var(--line); border-radius:8px;
-        padding:.85rem 1rem; }
-.card h2 { font-size:.85rem; margin:0 0 .7rem; letter-spacing:.05em;
+        padding:.7rem .9rem; }
+.card h2 { font-size:.85rem; margin:0 0 .5rem; letter-spacing:.05em;
            color:var(--accent); display:flex; justify-content:space-between;
            align-items:baseline; gap:.6rem; font-weight:600; }
 .badge { font-size:.78rem; font-weight:400; color:var(--muted);
          white-space:nowrap; font-family:var(--mono); }
 .badge.warn { color:var(--warn); }
 .row { display:flex; justify-content:space-between; align-items:baseline;
-       gap:1rem; padding:.28rem 0; }
+       gap:1rem; padding:.16rem 0; }
 .row + .row, .note + .row {
   border-top:1px solid color-mix(in srgb, var(--line) 45%, transparent); }
 .label { color:var(--muted); font-size:.9rem; }
@@ -222,12 +228,12 @@ h1 { font-size:1.05rem; margin:0; letter-spacing:.06em; color:var(--accent); }
          white-space:nowrap; font-weight:600; letter-spacing:-.01em; }
 .value.up { color:var(--up); } .value.down { color:var(--down); }
 .value.warn { color:var(--warn); }
-.note { color:var(--muted); font-size:.8rem; line-height:1.45;
-        padding:0 0 .3rem; margin-top:-.1rem; }
+.note { color:var(--muted); font-size:.8rem; line-height:1.32;
+        padding:0 0 .18rem; margin-top:-.15rem; }
 /* Sits between the heading and the first row, so it carries the gap the
    heading's margin would otherwise leave. */
-.cardnote { color:var(--muted); font-size:.8rem; line-height:1.45;
-            margin:-.4rem 0 .55rem; }
+.cardnote { color:var(--muted); font-size:.8rem; line-height:1.32;
+            margin:-.3rem 0 .4rem; }
 /* Muted so a coloured note stays secondary to the value it sits under. */
 .note.up { color:color-mix(in srgb, var(--up) 78%, var(--muted)); }
 .note.down { color:color-mix(in srgb, var(--down) 78%, var(--muted)); }
