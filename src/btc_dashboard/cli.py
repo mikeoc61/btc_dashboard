@@ -7,6 +7,7 @@ import sys
 
 from . import analyst, render, snapshot
 from .config import Config
+from .text import safe_block, safe_text
 
 EPILOG = """\
 examples:
@@ -164,12 +165,19 @@ def main(argv=None) -> int:
     if args.ask:
         result = analyst.ask(snap, args.ask, cfg, use_tools=not args.no_tools)
         if not result.ok:
-            print(f"\nanalyst unavailable: {result.error}", file=sys.stderr)
+            # Provider errors can carry an API response body, so they are
+            # bounded like any other text this process did not write.
+            print(f"\nanalyst unavailable: {safe_text(result.error)}",
+                  file=sys.stderr)
             return 2
         paint = render._Paint(render.supports_color() if color is None else color)
+        # The answer keeps its own line structure — it is prose, and
+        # collapsing it would destroy it — but not the characters that let a
+        # remote model repaint or reorder this terminal. A hostile snapshot
+        # steers the model; the model's output lands here.
         print(
             f"\n{paint('ANALYSIS', render.BOLD, render.CYAN)}\n"
-            f"{paint('─' * 60, render.DIM)}\n{result.text}"
+            f"{paint('─' * 60, render.DIM)}\n{safe_block(result.text)}"
         )
         # The queries are shown, not just counted. A figure the answer leans on
         # that came from a query nobody saw cannot be checked, and checking the
@@ -177,7 +185,8 @@ def main(argv=None) -> int:
         # asking the model what it remembers.
         for call in result.tool_calls:
             print(
-                f"\n{paint('QUERIED', render.DIM)} {paint(call.name, render.DIM)}\n"
+                f"\n{paint('QUERIED', render.DIM)} "
+                f"{paint(safe_text(call.name), render.DIM)}\n"
                 + "\n".join(
                     f"  {line}" for line in _tool_call_lines(call)
                 ),
@@ -189,7 +198,8 @@ def main(argv=None) -> int:
         if result.no_tools_reason:
             print(f"\n{paint(result.no_tools_reason, render.DIM)}", file=sys.stderr)
         print(
-            f"\n[{result.provider}/{result.model} · {result.input_tokens} in / "
+            f"\n[{result.provider}/{safe_text(result.model)} · "
+            f"{result.input_tokens} in / "
             f"{result.output_tokens} out"
             + (f" · {len(result.tool_calls)} quer"
                f"{'y' if len(result.tool_calls) == 1 else 'ies'}"
@@ -209,13 +219,18 @@ def _tool_call_lines(call, max_result_lines: int = 6) -> list[str]:
     the reader does not.
     """
     out: list[str] = []
-    for key, value in (call.arguments or {}).items():
+    for raw_key, value in (call.arguments or {}).items():
+        # Every string here was written by the model or returned by a tool it
+        # called, so none of it is this client's text. The line structure is
+        # kept — a query is meant to span lines — and the characters that
+        # could repaint the terminal are not.
+        key = safe_text(raw_key)
         # SQL arrives multi-line and stays multi-line; the continuation is
         # indented under its key so a long query still reads as one argument.
-        lines = str(value).strip().splitlines() or [""]
+        lines = safe_block(value).strip().splitlines() or [""]
         out.append(f"{key}: {lines[0]}")
         out.extend(f"{' ' * (len(key) + 2)}{line}" for line in lines[1:])
-    body = (call.result or "").splitlines()
+    body = safe_block(call.result or "").splitlines()
     out.extend(f"→ {line}" for line in body[:max_result_lines])
     if len(body) > max_result_lines:
         out.append(f"→ … {len(body) - max_result_lines} more lines")

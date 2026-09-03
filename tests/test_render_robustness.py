@@ -6,15 +6,20 @@ that was always None (read from the wrong table) turned into
 
 These tests take a fully-populated payload per source and knock out each field
 in turn, plus every field at once, asserting the renderer still returns lines.
+
+The classes at the end guard the other half of the same boundary: an ingested
+payload — or a model steered by one — must not be able to make a value stop
+being a value and start being a line.
 """
 from __future__ import annotations
 
 import copy
+import json
 
 import pytest
 
 from btc_dashboard.sources import flows, fmt, node, price, warehouse
-from btc_dashboard.text import MAX_VALUE_CHARS, safe_text
+from btc_dashboard.text import MAX_VALUE_CHARS, safe_block, safe_text
 
 FULL = {
     "price": {
@@ -375,6 +380,19 @@ class TestAValueCannotBecomeALineOfItsOwn:
             "café — ±0.5% ann \u221a365 · 63,423"
         )
 
+    def test_a_block_keeps_its_lines_but_not_its_escapes(self):
+        """Prose and SQL are meant to span lines, so `safe_block` strips the
+        characters without collapsing the structure."""
+        assert safe_block("SELECT 1\n  FROM t\twhere x") == "SELECT 1\n  FROM t\twhere x"
+        assert safe_block("a\x1b[31mb\u202ec") == "a[31mbc", (
+            "the ESC byte goes; its payload stays visible as plain text"
+        )
+
+    def test_a_block_still_drops_carriage_returns(self):
+        """`\r` is not a line break — it overwrites the line already printed,
+        which is the same forgery by another route."""
+        assert safe_block("real answer\rFAKE") == "real answerFAKE"
+
     def test_a_long_value_is_capped_and_says_so(self):
         out = fmt("x" * (MAX_VALUE_CHARS * 3))
         assert len(out) < MAX_VALUE_CHARS * 2
@@ -570,3 +588,59 @@ class TestTextThatNeverPassedThroughFmt:
             _snapshot({"weird\nsource": _block(None, available=False, error="x")})
         )
         assert '["weird source"]' in ctx
+
+
+class TestTheAnalystsOwnOutputIsBoundedToo:
+    """The same boundary, one hop further out.
+
+    A hostile snapshot steers the model; the model's reply, the queries it
+    wrote and the names the API echoed back all land on a terminal. None of
+    that text was written by this client, and `--ask` printed it verbatim.
+
+    `safe_block` rather than `safe_text` here: an answer is prose and a query
+    is a query, so the lines stay and only the characters go.
+    """
+
+    def test_an_answer_cannot_repaint_the_terminal(self, tmp_path, monkeypatch,
+                                                   capsys):
+        from btc_dashboard import analyst, cli
+
+        payload = _snapshot({"price": _block(FULL["price"])})
+        origin = tmp_path / "snap.json"
+        origin.write_text(json.dumps(payload))
+
+        monkeypatch.setattr(analyst, "ask", lambda *a, **kw: analyst.AnalystResult(
+            text="Line one.\x1b[2J\x1b[HLine two.\rFAKE‮",
+            provider="anthropic", model="m\x1b[31m", input_tokens=1, output_tokens=2,
+        ))
+        assert cli.main([
+            "--from", str(origin), "--ask", "q", "--color", "never"
+        ]) == 0
+
+        out = capsys.readouterr()
+        assert "\x1b" not in out.out and "\x1b" not in out.err
+        assert "\r" not in out.out, "a carriage return overwrites the line printed"
+        assert "‮" not in out.out and "‮" not in out.err
+        assert "Line one." in out.out and "Line two." in out.out, (
+            "the answer is bounded, not censored"
+        )
+        assert "\nLine two." not in out.out, "its own line breaks are its own"
+
+    def test_a_query_keeps_its_lines_and_loses_its_escapes(self):
+        """The SQL is shown so the answer's figures can be checked, which means
+        it is model-authored text printed to a terminal on purpose."""
+        from btc_dashboard import cli
+        from btc_dashboard.providers import ToolCall
+
+        call = ToolCall(
+            name="query\x1b[31m",
+            arguments={"sql‮": "SELECT 1\n  FROM btc\x1b[2J"},
+            result="date | close\n2026-08-28 | 63900\rFAKE",
+        )
+        lines = cli._tool_call_lines(call)
+        joined = "\n".join(lines)
+        assert "\x1b" not in joined and "\r" not in joined and "‮" not in joined
+        assert "sql: SELECT 1" in joined
+        assert any(ln.strip() == "FROM btc[2J" for ln in lines), (
+            "the query still spans its own lines"
+        )

@@ -35,20 +35,23 @@ import re
 # reading; it is a field carrying something that was never a measurement.
 MAX_VALUE_CHARS = 120
 
+# The invisible-formatting set: zero-width characters and the bidi overrides.
+# These are neither control codes nor whitespace, so nothing else here would
+# catch them, and U+202E alone is enough to make a line read backwards from
+# what it contains. Named once so the two patterns below cannot drift apart.
+_INVISIBLE = "\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069"
+
 # What survives whitespace collapsing and still isn't a printable character.
-#
-# C0/DEL/C1 covers ESC and every other control byte. The whitespace members of
-# that range (\t \n \r \v \f, and the separators) are already spaces by the
-# time this runs, so listing the range whole costs nothing and leaves no gap.
-#
-# The second row is the invisible-formatting set: zero-width characters and
-# the bidi overrides. These are neither control codes nor whitespace, so
-# nothing else here would catch them, and U+202E alone is enough to make a
-# line read backwards from what it contains.
-_UNSAFE = re.compile(
-    "[\x00-\x1f\x7f-\x9f"
-    "\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069]"
-)
+# C0/DEL/C1 covers ESC and every other control byte; the whitespace members of
+# that range are already spaces by the time this runs, so listing the range
+# whole costs nothing and leaves no gap.
+_UNSAFE = re.compile(f"[\x00-\x1f\x7f-\x9f{_INVISIBLE}]")
+
+# The same, for text whose own line structure is the point. `\t` and `\n`
+# survive; `\r` does not, because a carriage return overwrites the line
+# already printed rather than starting a new one — the same forgery by another
+# route, and the reason this is not simply "everything except newline".
+_UNSAFE_BLOCK = re.compile(f"[\x00-\x08\x0b-\x1f\x7f-\x9f{_INVISIBLE}]")
 
 
 def safe_text(value, *, limit: int = MAX_VALUE_CHARS) -> str:
@@ -67,3 +70,20 @@ def safe_text(value, *, limit: int = MAX_VALUE_CHARS) -> str:
     if len(text) > limit:
         text = text[:limit] + "…(truncated)"
     return text
+
+
+def safe_block(value) -> str:
+    """Printable, but still multi-line — for text whose lines are its meaning.
+
+    An analyst answer is prose and a query is a query: collapsing either to one
+    line destroys the thing being shown, and capping it would truncate the
+    answer the reader asked for. So this strips only what cannot be a
+    character of that text — the escape sequences, the carriage returns and the
+    bidi overrides — and keeps everything else, length included.
+
+    Use `safe_text` for anything that belongs on one line. The distinction is
+    the whole reason there are two: a field that is allowed to span lines can
+    no longer be told apart from the frame around it by its shape, so the
+    caller has to have decided which it is.
+    """
+    return _UNSAFE_BLOCK.sub("", str(value))

@@ -801,17 +801,30 @@ prompt, and it's handled as such:
 - `schema_version`, `sources`, and per-block shape are validated on ingest; a
   payload from a newer service is refused with "upgrade the client" rather than
   half-read.
-- Free-text fields (`error`) are whitespace-collapsed and truncated before
-  reaching the prompt, so an injected `\n\nIGNORE PRIOR INSTRUCTIONS…` can't
-  forge its own section — it stays on one labelled data line.
-- **So is every rendered value**, in `sources.fmt()`. A format spec already
-  rejects a string — `fmt("x", ".0f")` is `n/a` — but a bare `fmt(x)` used to
-  reproduce one verbatim, newlines included. A field that should hold a number
-  could therefore emit a line beginning `[SYSTEM]` at column 0 of the context
-  block, reading as a section header rather than as the value of a field, and
-  fake a row in the terminal panel the same way. Collapsing is what closes
-  that: the newline is what lets a value stop being a value. The HTML page
-  escapes everything and was never exposed.
+- Free-text fields (`error`) are collapsed to one line, stripped of control and
+  bidi characters, and truncated before reaching the prompt, so an injected
+  `\n\nIGNORE PRIOR INSTRUCTIONS…` can't forge its own section — it stays on one
+  labelled data line.
+- **So is every rendered value — and so is the frame around them.** The rule
+  lives in `text.safe_text`; `sources.fmt()` is one caller of it, not the choke
+  point. A format spec already rejects a string — `fmt("x", ".0f")` is `n/a` —
+  but a bare `fmt(x)` used to reproduce one verbatim, newlines included, and
+  the frame never went through `fmt` at all: the error, the timestamp, a
+  source's own name, and the categorical strings (`regime`, `streak_sign`,
+  `as_of`, `source`, `position`) are interpolated straight into a sentence.
+  `render()` indents only the first physical line of a body string, so a
+  newline anywhere in that frame emitted a line at column 0 — a `[SYSTEM]`
+  header in the context block, or a whole fake PRICE section in the terminal
+  panel with a plausible spot price in it. Three things close it: collapsing to
+  one line, stripping control and bidi characters (`\x1b` is not whitespace,
+  and `ESC [ 2 J` clears the reader's screen), and capping the length. The HTML
+  page escapes everything and was never exposed.
+- **The answer is bounded on the way back too**, in `text.safe_block`. A
+  hostile snapshot steers the model, and the model's reply lands on a terminal:
+  the answer and the queries keep their own lines, because prose and SQL are
+  meant to span them, but not the escape sequences, carriage returns or bidi
+  overrides. `--html` and the web view escape it instead, as they do everything
+  else.
 - The context block draws the trust boundary where it actually falls. The
   *wording* of each line is composed by this client — including the lines that
   say how to read a figure — and is guidance to follow. What came from the
