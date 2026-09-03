@@ -11,6 +11,11 @@ and it is why:
 
 - the default bind is 127.0.0.1, never 0.0.0.0. On 0.0.0.0 anyone who can
   reach the port can spend your API budget;
+- a request another page caused is refused, and so is a `Host` that is not
+  ours. Binding loopback keeps other *machines* out; it does not keep other
+  *pages* out, because the browser that would be tricked into making the
+  request is already inside — and a form POST needs no permission from us to
+  arrive;
 - `/ask` has a cooldown, because each request costs real money and a
   double-submit should not cost twice;
 - the token count of every answer is shown, so the cost is visible rather than
@@ -30,9 +35,10 @@ from __future__ import annotations
 
 import threading
 import time
+from urllib.parse import urlsplit
 
-from fastapi import FastAPI, Form
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import FastAPI, Form, Request
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 
 from . import analyst, html as page, snapshot
 from .config import Config
@@ -52,6 +58,61 @@ LIVE_PATH = "/live"
 # Not 8000: bitcoin_peer_monitor conventionally takes that, and two local
 # dashboards on one host should not fight over a port by default.
 DEFAULT_PORT = 8001
+
+# Names this service answers to when it is bound to loopback. Compared
+# without the port on purpose: an SSH tunnel may forward a different local
+# port than the one bound here (`ssh -L 9001:localhost:8001`), and a port is
+# not what a rebinding attack controls. The name is.
+LOCAL_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
+
+# Verbs with no side effect, which therefore need no cross-origin check. A
+# cross-origin GET cannot be read back by the page that caused it, and none
+# of these spends money.
+SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def _authority(value: str | None) -> tuple[str, int | None] | None:
+    """`(hostname, port)` from a `Host` header or an `Origin` URL.
+
+    Parsed rather than split on ":", because an IPv6 literal carries colons of
+    its own — `[::1]:8001` is one host and one port, not five. A `Host` header
+    has no scheme, so `//` is prepended to make it parse as an authority; an
+    `Origin` already carries one and is left alone.
+    """
+    if not value:
+        return None
+    try:
+        parts = urlsplit(value if "//" in value else f"//{value}")
+        return (parts.hostname or "", parts.port)
+    except ValueError:
+        return None
+
+
+def _caused_by_another_site(request: Request) -> bool:
+    """Whether some other page made the browser send this request.
+
+    A form POST is a "simple request": no preflight, and the browser sends it
+    whatever the target says about CORS. The attacker cannot read the reply,
+    but the side effect has already happened — and here the side effect spends
+    money, runs SQL, and writes an answer into the page the operator will read
+    next. So it has to be refused before the handler, not after.
+
+    `Sec-Fetch-Site` is the answer when it is there. Note the test is against
+    `same-origin` and not merely `cross-site`: a page on another *port* of
+    localhost reports `same-site`, and that is still someone else's page.
+
+    `Origin` is the fallback for a browser too old to send the first, compared
+    on host and port because that is what an origin is. Neither header present
+    means the caller is not a browser — curl, a script — and a request nobody's
+    browser was tricked into making is not a forgery.
+    """
+    site = request.headers.get("sec-fetch-site")
+    if site is not None:
+        return site != "same-origin"
+    origin = request.headers.get("origin")
+    if origin is None:
+        return False
+    return _authority(origin) != _authority(request.headers.get("host"))
 
 
 class SnapshotCache:
@@ -80,11 +141,57 @@ class SnapshotCache:
             return self._snapshot
 
 
-def create_app(cfg: Config | None = None) -> FastAPI:
+def create_app(cfg: Config | None = None, *,
+               require_local_host: bool = True) -> FastAPI:
+    """The app. `require_local_host` should stay on unless the bind is wider.
+
+    Binding loopback keeps other machines out; it does not keep other *pages*
+    out, because the browser making the request is already inside. That is what
+    the middleware below is for.
+    """
     cfg = cfg or Config.from_env()
     app = FastAPI(title="btc_dashboard")
     cache = SnapshotCache(cfg)
     state = {"answer": None, "last_ask": 0.0}
+
+    @app.middleware("http")
+    async def refuse_requests_we_did_not_cause(request: Request, call_next):
+        """Two guards, and they close different holes.
+
+        The `Host` check is against **DNS rebinding**, which is the one attack
+        an origin check cannot see: the attacker points a name they own at
+        127.0.0.1, and their page then *is* same-origin — `Origin` matches
+        `Host`, `Sec-Fetch-Site` says `same-origin`, and every check below
+        passes. What gives it away is the name in `Host`, which is theirs and
+        not one of ours. Only meaningful while the bind is loopback, hence the
+        flag: on a wider bind the legitimate name is whatever the operator's
+        network calls this machine, and we do not know it.
+
+        The cross-origin check is against ordinary CSRF, and applies only to
+        the verbs that change something.
+
+        Refused before the handler runs, which is the point: `state["answer"]`
+        is never written and `ASK_COOLDOWN` is never consumed, so a forged
+        request cannot plant an answer on the page or lock out a real question
+        for the next five seconds.
+
+        Middleware rather than a per-route dependency so that a route added
+        later inherits this instead of needing someone to remember it.
+        """
+        host = _authority(request.headers.get("host"))
+        if require_local_host and (host is None or host[0] not in LOCAL_HOSTNAMES):
+            return PlainTextResponse(
+                "This service answers on loopback only. Reach it at "
+                "http://localhost:<port>, over an SSH tunnel if it is remote.",
+                status_code=403,
+            )
+        if request.method not in SAFE_METHODS and _caused_by_another_site(request):
+            return PlainTextResponse(
+                "Refused: this request came from another page. Ask from the "
+                "dashboard itself — each question spends real money.",
+                status_code=403,
+            )
+        return await call_next(request)
 
     def render(refresh: int | None = PAGE_REFRESH) -> str:
         return page.render_html(
@@ -197,15 +304,20 @@ def main(argv=None) -> int:
         )
         return 1
 
-    if args.host not in ("127.0.0.1", "localhost", "::1"):
+    local = args.host in LOCAL_HOSTNAMES
+    if not local:
         print(
             f"WARNING: binding {args.host} exposes this beyond loopback. This "
             f"process holds your LLM provider key and /ask spends money. Prefer "
             f"the default and reach it over an SSH tunnel:\n"
-            f"    ssh -L {args.port}:localhost:{args.port} <host>"
+            f"    ssh -L {args.port}:localhost:{args.port} <host>\n"
+            f"The Host check is off on a wider bind — the legitimate name is "
+            f"whatever your network calls this machine, which this process "
+            f"cannot know. Cross-origin POSTs are still refused."
         )
 
-    uvicorn.run(create_app(), host=args.host, port=args.port, log_level="warning")
+    uvicorn.run(create_app(require_local_host=local),
+                host=args.host, port=args.port, log_level="warning")
     return 0
 
 

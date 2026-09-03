@@ -80,7 +80,9 @@ Breaking one of these is a regression even when the number is right.
 - **`--ask` is client-side.** `analyst.py` must never be imported by a data
   plane that serves other people; a snapshot service holds no credential. The
   web view is the one documented exception — it holds the key, which is why it
-  binds loopback and `/ask` has a cooldown.
+  binds loopback, refuses any request another page caused or any `Host` that is
+  not a loopback name, and gives `/ask` a cooldown. Loopback alone was never
+  enough: the browser a forged POST comes from is already inside it.
 - **Every figure carries its qualifier.** Percentile window (`2y` vs all
   history), volatility annualisation (`√365`), the date a close belongs to, the
   noise band on a one-day count. These are what make a number comparable to

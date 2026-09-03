@@ -280,6 +280,17 @@ is why:
 - **the default bind is `127.0.0.1`.** On `0.0.0.0` anyone who can reach the
   port can spend your API budget. A wider bind prints a warning naming the SSH
   alternative.
+- **a request another page caused is refused**, and so is a `Host` that isn't
+  ours. Loopback keeps other *machines* out, not other *pages*: a form POST
+  needs no permission to arrive, so any site you visited could otherwise drive
+  `/ask` from inside your own browser. `Sec-Fetch-Site` must say `same-origin`
+  — not merely "not cross-site", since another *port* of localhost reports
+  `same-site` and is still not us — with `Origin` against `Host` as the
+  fallback for older browsers. The `Host` check is the separate one: under DNS
+  rebinding the attacker's page really is same-origin, and only the name gives
+  it away. Neither header present means the caller isn't a browser, so `curl`
+  still works. On a wider bind the `Host` check is off, because the legitimate
+  name is then whatever your network calls the machine.
 - **`/ask` has a cooldown**, so a double-submit costs one call, not two.
 - **every answer shows its token count**, so the cost is visible.
 

@@ -27,7 +27,11 @@ def built(monkeypatch):
 
 @pytest.fixture
 def client(built, tmp_path):
-    return TestClient(web.create_app(Config.from_env(cache_dir=tmp_path)))
+    # A loopback base_url, because the app now refuses a Host it does not
+    # answer to. TestClient's default is `testserver`, which is exactly the
+    # shape of the rebinding the Host check exists to refuse.
+    return TestClient(web.create_app(Config.from_env(cache_dir=tmp_path)),
+                      base_url="http://localhost:8001")
 
 
 class TestSnapshotIsNotRebuiltPerRequest:
@@ -327,3 +331,119 @@ class TestThePageSaysWhenTheAnalystCouldNotQuery:
                 text="checked", provider="p", model="m"))
         client.post("/ask", data={"q": "x"})
         assert "snapshot alone" not in client.get("/").text
+
+
+class TestOnlyThisPageMayDriveIt:
+    """A form POST is a "simple request": no preflight, sent whatever the
+    target says about CORS. Binding loopback keeps other machines out, not
+    other pages — the browser making the request is already inside.
+
+    Before this guard, a page on any site the operator visited could POST to
+    127.0.0.1:8001/ask, spend an API call, run SQL through the analyst's tool,
+    and leave its question *and the model's answer* in `state["answer"]`, where
+    the operator would read them as their own on the next page load.
+    """
+
+    @pytest.fixture
+    def app(self, built, tmp_path):
+        return web.create_app(Config.from_env(cache_dir=tmp_path))
+
+    @staticmethod
+    def _client(app, base="http://localhost:8001"):
+        return TestClient(app, base_url=base)
+
+    @staticmethod
+    def _counting_ask(monkeypatch, sent):
+        def ask(*a, **k):
+            sent["n"] += 1
+            return analyst.AnalystResult(text="an answer", provider="p", model="m")
+
+        monkeypatch.setattr(web.analyst, "ask", ask)
+
+    def test_a_cross_site_post_is_refused(self, app):
+        r = self._client(app).post(
+            "/ask", data={"q": "spend your money"},
+            headers={"sec-fetch-site": "cross-site",
+                     "origin": "https://evil.example"},
+            follow_redirects=False)
+        assert r.status_code == 403
+
+    def test_another_port_on_localhost_is_also_another_page(self, app):
+        """`cross-site` is the wrong test to write: a page served from another
+        port of localhost reports `same-site`, and it is still not ours."""
+        r = self._client(app).post(
+            "/refresh", headers={"sec-fetch-site": "same-site"},
+            follow_redirects=False)
+        assert r.status_code == 403
+
+    def test_an_old_browser_is_caught_by_origin_instead(self, app):
+        """No `Sec-Fetch-Site`, so the `Origin` fallback has to do it."""
+        r = self._client(app).post(
+            "/ask", data={"q": "x"}, headers={"origin": "https://evil.example"},
+            follow_redirects=False)
+        assert r.status_code == 403
+
+    def test_the_page_itself_is_allowed(self, app, monkeypatch):
+        sent = {"n": 0}
+        self._counting_ask(monkeypatch, sent)
+        r = self._client(app).post(
+            "/ask", data={"q": "why is vol low?"},
+            headers={"sec-fetch-site": "same-origin",
+                     "origin": "http://localhost:8001"},
+            follow_redirects=False)
+        assert r.status_code == 303 and sent["n"] == 1
+
+    def test_a_client_that_is_not_a_browser_still_works(self, app, monkeypatch):
+        """Neither header means nobody's browser was tricked into anything —
+        curl and the test client have to keep working."""
+        sent = {"n": 0}
+        self._counting_ask(monkeypatch, sent)
+        r = self._client(app).post("/ask", data={"q": "x"}, follow_redirects=False)
+        assert r.status_code == 303 and sent["n"] == 1
+
+    def test_a_refused_post_leaves_the_page_and_the_cooldown_alone(
+            self, app, monkeypatch):
+        """The reason to refuse before the handler. If a forgery could write
+        `state["answer"]` the guard would only downgrade planting an answer to
+        planting an error — and if it consumed the cooldown it would lock out
+        the real question for the next five seconds."""
+        sent = {"n": 0}
+        self._counting_ask(monkeypatch, sent)
+        client = self._client(app)
+
+        client.post("/ask", data={"q": "planted"},
+                    headers={"sec-fetch-site": "cross-site"},
+                    follow_redirects=False)
+        assert sent["n"] == 0
+        assert "planted" not in client.get("/").text
+
+        r = client.post("/ask", data={"q": "a real question"},
+                        follow_redirects=False)
+        assert r.status_code == 303 and sent["n"] == 1, (
+            "the forgery must not have consumed the cooldown"
+        )
+
+    def test_a_name_that_is_not_ours_is_refused(self, app):
+        """DNS rebinding is the one attack an origin check cannot see: point a
+        name you own at 127.0.0.1 and your page *is* same-origin. What gives it
+        away is the name in `Host`."""
+        client = self._client(app, base="http://evil.example:8001")
+        assert client.get("/").status_code == 403
+        assert client.post("/refresh", follow_redirects=False).status_code == 403
+
+    def test_a_tunnel_on_a_different_local_port_still_works(self, app):
+        """`ssh -L 9001:localhost:8001` — the browser's port is not the bound
+        one, so the Host check must compare the name and not the port."""
+        assert self._client(app, base="http://127.0.0.1:9001").get("/").status_code == 200
+
+    def test_a_wider_bind_drops_the_host_check_but_not_the_rest(
+            self, built, tmp_path):
+        """On 0.0.0.0 the legitimate name is whatever the network calls this
+        machine, which this process cannot know. CSRF is still refused."""
+        app = web.create_app(Config.from_env(cache_dir=tmp_path),
+                             require_local_host=False)
+        client = self._client(app, base="http://pi.local:8001")
+        assert client.get("/").status_code == 200
+        assert client.post(
+            "/refresh", headers={"sec-fetch-site": "cross-site"},
+            follow_redirects=False).status_code == 403
