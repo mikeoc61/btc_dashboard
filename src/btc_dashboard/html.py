@@ -198,13 +198,24 @@ h1 { font-size:1.05rem; margin:0; letter-spacing:.06em; color:var(--accent); }
 .tick.no { color:var(--muted); }
 /* A breakpoint, not a card width. auto-fit stretches tracks to fill the row, so
    a rendered card is always wider than this number and never equal to it: at
-   1920, the width this is tuned for, four columns come out at 461px. The value
-   therefore does not scale a card. Raising it drops a column, and the width
-   jumps in steps -- going 310 to 372 widened cards 26% at 1920 but 52% at 1164,
-   where it falls to two columns. Retune against a real viewport, never by
-   arithmetic on this number. */
+   1920, the width this is tuned for, three columns come out at 619px. It does
+   not scale a card either -- changing it changes the column count, and the
+   width jumps in steps.
+
+   Sized to hold exactly three, because there are six cards and 3x2 packs with
+   nothing left over. Four columns was measurably worse on both counts: two
+   empty slots, AND a taller page (939px against 874px), because narrower cards
+   wrap more notes onto a second line. Fewer, wider columns making the page
+   shorter is the counterintuitive part, and it is why this is tuned by
+   measurement rather than by arithmetic on this number.
+
+   The cost is narrow windows: at a viewport around 1500 and narrower it falls
+   to two columns, where 372 held three down to about 1178. At 1367 that is a
+   1210px page against roughly 1100 before. Retune against a real
+   viewport, and beware a zoomed-out browser -- it reports a viewport the reader
+   does not actually use. */
 .grid { display:grid; gap:.85rem;
-        grid-template-columns:repeat(auto-fit,minmax(372px,1fr)); }
+        grid-template-columns:repeat(auto-fit,minmax(480px,1fr)); }
 /* Vertical rhythm is tight on purpose. Every card is a stack of value + note
    pairs, so a tenth of a rem per row compounds: loosening these five numbers
    back to their earlier values added 115px at 1920, which is roughly what a
