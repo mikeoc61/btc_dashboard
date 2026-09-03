@@ -25,7 +25,8 @@ def _utc_today() -> datetime.date:
 
 
 def _build_db(path, days=400, fee=lambda i: 2.0, hashrate=lambda i: 800.0,
-              vol=lambda i: 1000.0, close=lambda i: 90000.0, end_date=None):
+              vol=lambda i: 1000.0, close=lambda i: 90000.0, end_date=None,
+              trades=lambda i: 5000, tx_rate=lambda i: 6.5):
     """Write a synthetic warehouse ending on `end_date` (default today), oldest first."""
     con = duckdb.connect(str(path))
     con.execute(
@@ -43,9 +44,10 @@ def _build_db(path, days=400, fee=lambda i: 2.0, hashrate=lambda i: 800.0,
         d = today - datetime.timedelta(days=days - 1 - i)
         con.execute(
             "INSERT INTO onchain VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [d, hashrate(i), 100.0, 144, 95.0, 2.0, 450.0, fee(i), 6.5, 0.0],
+            [d, hashrate(i), 100.0, 144, 95.0, 2.0, 450.0, fee(i), tx_rate(i), 0.0],
         )
-        con.execute("INSERT INTO btc VALUES (?, ?, ?, ?)", [d, close(i), vol(i), 5000])
+        con.execute("INSERT INTO btc VALUES (?, ?, ?, ?)",
+                    [d, close(i), vol(i), trades(i)])
     con.close()
     return path
 
@@ -754,3 +756,142 @@ class TestBeingBehindIsNotBeingACache:
         assert served.stale is True and served.cached is True
         ctx = analyst.build_context(self._snap(served))
         assert "live refresh failed" in ctx and "2h" in ctx
+
+
+class TestExchangeActivity:
+    """Volume, trade count and average trade size — the three activity reads.
+
+    The regression these mostly guard is one of *reach*, not arithmetic: all
+    three are ranked correctly and then have to survive the trip to a reader.
+    """
+
+    def _collect(self, tmp_path, name="a", **kw):
+        path = _build_db(tmp_path / f"{name}.duckdb", days=800, **kw)
+        return warehouse.collect(
+            Config.from_env(db_path=path, cache_dir=tmp_path / "cc")).data
+
+    def test_an_ordinary_reading_reaches_every_consumer(self, tmp_path):
+        """The bug this fixes: gated at the 95th percentile, volume reached a
+        reader about 19 days a year, so an ordinary tape was indistinguishable
+        from a dead source — and could not corroborate the apathy streak
+        rendered one line above it."""
+        d = self._collect(tmp_path)
+        assert d["signals"]["vol_pctile"] == pytest.approx(50.0)
+
+        line = next(l for l in warehouse.render_lines(d) if l.startswith("activity"))
+        assert "volume" in line and "trades" in line and "avg trade" in line
+
+        names = [m.label for p in warehouse.html_panels(d) for m in p.metrics]
+        assert "Exchange Volume" in names and "Trade Count" in names
+        assert "Avg Trade Size" in names
+
+        assert any("exchange activity" in c for c in warehouse.context_lines(d))
+
+    def test_each_reading_carries_its_own_window(self, tmp_path):
+        """Trade size is ranked over 90 days and the other two over 2y. A
+        window label borrowed from the wrong signal is the exact form of
+        dropped qualifier that makes a percentile incomparable."""
+        d = self._collect(tmp_path)
+        line = next(l for l in warehouse.render_lines(d) if l.startswith("activity"))
+        assert "volume 50th pctile 2y" in line
+        assert "avg trade 50th pctile 90d" in line
+
+        note = next(m.note for p in warehouse.html_panels(d) for m in p.metrics
+                    if m.label == "Avg Trade Size")
+        assert note.startswith("90d")
+
+    def test_trade_size_ranks_the_ratio_not_the_volume(self, tmp_path):
+        """The series is derived, not stored. With volume flat and the last
+        day's trade count collapsing, size must spike while volume does not —
+        which is the whole reason the third reading exists."""
+        d = self._collect(
+            tmp_path, trades=lambda i: 500 if i == 799 else 5000)
+        assert d["signals"]["vol_pctile"] == pytest.approx(50.0)
+        assert d["signals"]["trade_size_pctile"] > 99
+        assert d["signals"]["trades_pctile"] < 1
+
+    def test_a_zero_trade_day_is_dropped_not_ranked_as_infinite(self, tmp_path):
+        """DuckDB divides by zero to `inf`, which passes IS NOT NULL. Left in,
+        it would make its weekday's mean `inf` and every residual in that group
+        NaN — collapsing the signal into a plausible-looking number rather than
+        an error."""
+        d = self._collect(tmp_path, trades=lambda i: 0 if i == 700 else 5000)
+        size = d["signals"]["trade_size_pctile"]
+        assert size is not None and 0 <= size <= 100
+
+    def test_the_strip_still_gates_at_the_threshold(self, tmp_path):
+        """Unconditional on the panel, threshold-selected on the strip. A strip
+        that always finds something trains the reader to stop looking."""
+        ordinary = self._collect(tmp_path, name="calm")
+        assert not any("exchange" in n for n in warehouse.notable(ordinary))
+
+        spike = self._collect(tmp_path, name="spike",
+                              vol=lambda i: 9e6 if i == 799 else 1000.0)
+        assert any(n.startswith("exchange volume") for n in warehouse.notable(spike))
+
+    def test_trade_size_is_never_notable(self, tmp_path):
+        """It is a mix, not an intensity: "smallest average trade in 90 days"
+        is a fact about market structure, not an event of the day."""
+        d = self._collect(tmp_path, trades=lambda i: 500 if i == 799 else 5000)
+        assert d["signals"]["trade_size_pctile"] > 99
+        assert not any("Avg Trade Size" in n or "avg trade" in n
+                       for n in warehouse.notable(d))
+
+    def test_the_venue_is_named_wherever_the_figure_appears(self, tmp_path):
+        """Kraken is a median 0.4% of cross-venue volume. Rendered without the
+        venue, a one-exchange percentile reads as a market-wide volume figure."""
+        d = self._collect(tmp_path)
+        line = next(l for l in warehouse.render_lines(d) if l.startswith("activity"))
+        assert "kraken" in line
+        note = next(m.note for p in warehouse.html_panels(d) for m in p.metrics
+                    if m.label == "Exchange Volume")
+        assert "kraken only" in note
+        ctx = " ".join(warehouse.context_lines(d))
+        assert "Kraken only" in ctx and "NOT a market-wide volume figure" in ctx
+
+    def test_tx_rate_reaches_the_reader_with_its_definition(self, tmp_path):
+        """Carried in the snapshot since the schema was written and rendered by
+        nothing. It is this day's count over 86400, not the 28d
+        `getchaintxstats` rate most sites quote, so the two are not comparable."""
+        d = self._collect(tmp_path, tx_rate=lambda i: 6.7)
+        line = next(l for l in warehouse.render_lines(d) if l.startswith("day ("))
+        assert "6.7 tx/s" in line
+
+        note = next(m.note for p in warehouse.html_panels(d) for m in p.metrics
+                    if m.label == "Tx Rate")
+        assert "28d" in note
+
+    def test_a_derived_series_does_not_widen_what_sql_a_caller_can_reach(self):
+        """`percentile_rank` takes a name, and only names this module owns skip
+        `_ident`. Anything else must still be rejected."""
+        assert warehouse._series_sql("kraken_vol") == "kraken_vol"
+        assert "nullif" in warehouse._series_sql("trade_size")
+        with pytest.raises(ValueError):
+            warehouse._series_sql("close; DROP TABLE btc")
+
+    def test_the_signals_heading_claims_no_window_of_its_own(self, tmp_path):
+        """It read `SIGNALS (vs 2y)`, which was true until a 90-day reading sat
+        under it. A heading cannot carry a qualifier its rows disagree about,
+        so each row carries its own and the heading claims nothing."""
+        d = self._collect(tmp_path)
+        panel = next(p for p in warehouse.html_panels(d)
+                     if p.title.startswith("SIGNALS"))
+        assert panel.title == "SIGNALS"
+        windows = {m.label: m.note.split(" ")[0] for m in panel.metrics
+                   if m.label in ("Exchange Volume", "Avg Trade Size")}
+        assert windows == {"Exchange Volume": "2y", "Avg Trade Size": "90d"}
+
+    def test_a_snapshot_from_before_these_fields_still_renders(self):
+        """`schema_version` exists so fields can be added, so an ingested
+        payload predating the two new signals must render the one it has
+        rather than emitting a blank row or raising."""
+        old = {"date": "2026-09-02", "onchain": {}, "smas": [], "volatility": {},
+               "signals": {"vol_pctile": 58.42}}
+        line = next(l for l in warehouse.render_lines(old)
+                    if l.startswith("activity"))
+        assert line.endswith("volume 58th pctile 2y")
+        assert "trades" not in line and "avg trade" not in line
+
+        names = [m.label for p in warehouse.html_panels(old) for m in p.metrics]
+        assert "Exchange Volume" in names
+        assert "Trade Count" not in names and "Avg Trade Size" not in names

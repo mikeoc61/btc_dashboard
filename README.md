@@ -590,6 +590,41 @@ differ in their last bits — a strict comparison split a perfectly flat series
 across the 58th percentile. Ties are now counted and halved, so a value equal to
 everything else reads 50th.
 
+**Exchange activity is three readings, not one, and each names its own
+window.** Volume alone cannot separate "more money traded" from "the same money
+traded in more pieces", so trade count and average trade size are carried beside
+it. They are not redundant: at this venue volume and trade count correlate 0.90,
+yet on 2 Sep 2026 volume ranked 58th of 2y and trade count 97th on identical
+treatment — near-record participation on an ordinary tape, which is a fact about
+who is trading. Average trade size is the residual that explains the gap.
+
+Trade size is ranked over **90 days** where the other two use 2y, because it
+trends hard enough that a longer window would rank the trend: the median trade
+ran $3,516 in Q3 2024 against $1,879 in Q3 2026, down 47% inside a 2y window, so
+today would sit near the floor almost every day by construction. This is the same
+trap the volatility percentiles document, and the fix is the same shape — rank
+against a window short enough that the structural drift is small.
+
+All three are weekday-detrended. Weekends run about 28% below the weekday mean
+for trade size, because volume falls further at a weekend than trade count does.
+
+**One venue is named as one venue, with the number.** These come from Kraken,
+the only exchange in the warehouse, whose dollar volume ran a median **0.4%** of
+CoinGecko's cross-venue aggregate over the 201 days to 2 Sep 2026, correlating
+0.74 with it. That is a real reading about participation and it is not a
+market-wide volume figure, so the venue travels with it in the terminal, on the
+page and in the analyst's context. "Single venue" without the share understates
+how narrow the sample is.
+
+**An ordinary reading still reaches the reader.** These percentiles were
+rendered only at or above the 95th, which by construction reaches a reader about
+19 days a year — so a quiet tape was indistinguishable from a dead source, and
+could not corroborate the apathy streak rendered one line above it. The panel now
+carries them always; the 95th-percentile gate still selects for the `NOTABLE`
+strip, which is what a threshold is for. Trade size is deliberately never
+notable: it is a mix rather than an intensity, and "smallest average trade in 90
+days" is a fact about market structure, not an event of the day.
+
 **A single day's block count is noise, and is labelled as such.** Block
 discovery is Poisson, so one day at the 144-block target has a standard
 deviation of 12 blocks — about 8%. A day at -12% is only 1.4sd low, which

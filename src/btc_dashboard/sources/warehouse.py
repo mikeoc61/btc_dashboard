@@ -65,6 +65,40 @@ APATHY_MAX = 1.0
 # roughly 18 days a year rather than ~36 at 90 — rare enough that surfacing it
 # still means something.
 VOL_PCTILE_MIN = 95.0
+# Average trade size is ranked over 90 days, not the 730 the other exchange
+# signals use, because it trends hard enough that a 2y percentile mostly
+# reports the trend. Median trade ran $3,516 in Q3 2024 against $1,879 in
+# Q3 2026 — down 47% inside the window — so today ranks near the floor of a 2y
+# distribution almost every day, by construction rather than by anything that
+# happened. 90 days is short enough that the drift is a few percent and long
+# enough to clear MIN_WINDOW_ROWS three times over.
+TRADE_SIZE_WINDOW_DAYS = 90
+# What "single venue" actually costs, measured rather than asserted: Kraken's
+# dollar volume ran a median 0.4% of CoinGecko's cross-venue aggregate over the
+# 201 days to 2026-09-02, correlating 0.74 with it. So these percentiles rank
+# this venue's participation against its own history. That is a real reading —
+# and it is not a market-wide volume figure, which is why every consumer names
+# the venue.
+VENUE_SHARE_PCT = 0.4
+# The three exchange-activity percentiles, in the order they are read: how much
+# traded, how many trades carried it, and how large the average one was. The
+# window travels with each because they are not the same length, and a label
+# borrowed from the wrong one is exactly the dropped qualifier that makes a
+# number incomparable.
+ACTIVITY_SIGNALS = (
+    ("volume", "vol_pctile", VOL_WINDOW_DAYS),
+    ("trades", "trades_pctile", VOL_WINDOW_DAYS),
+    ("avg trade", "trade_size_pctile", TRADE_SIZE_WINDOW_DAYS),
+)
+# Panel name and the one caveat each reading needs, kept beside the ordering
+# above so a signal cannot be added to one and forgotten in the other.
+ACTIVITY_PANEL = {
+    "vol_pctile": ("Exchange Volume", "marks events, not direction"),
+    "trades_pctile": ("Trade Count", "participation, not direction"),
+    "trade_size_pctile": (
+        "Avg Trade Size", "flow arriving in smaller orders — short window "
+        "because this trended -47% in 2y"),
+}
 MIN_WINDOW_ROWS = 30
 # Days behind the last COMPLETE UTC day before the panel says so. Not days
 # behind *today*: the warehouse only ever stores finished days, so it is
@@ -124,6 +158,32 @@ def _ident(name: str) -> str:
     return name
 
 
+# Series that are ranked but not stored. The ingester records a volume and a
+# trade count; average trade size is their ratio, derived at query time so a
+# definition change stays a code change rather than a backfill.
+DERIVED_SERIES = {
+    # nullif is load-bearing. DuckDB divides by zero to `inf` rather than
+    # raising or returning NULL, and `inf` survives `IS NOT NULL`, so a single
+    # zero-trade day would not merely rank at the top — it would make its
+    # weekday's mean `inf` and every residual in that group -inf or NaN,
+    # collapsing the whole signal into a plausible-looking number. Kraken has
+    # never reported such a day in 13 years; the cost of being wrong about
+    # that is silent corruption, so the day is dropped instead.
+    "trade_size": "kraken_vol / nullif(kraken_trades, 0)",
+}
+
+
+def _series_sql(name: str) -> str:
+    """A stored column's identifier, or a module-owned derived expression.
+
+    `DERIVED_SERIES` is reached by name and its values are literals in this
+    file, so letting `percentile_rank` rank a ratio does not widen what a
+    caller can inject: any name not in that table still goes through `_ident`.
+    """
+    derived = DERIVED_SERIES.get(name)
+    return derived if derived is not None else _ident(name)
+
+
 def _connect(db_path: Path):
     import duckdb
 
@@ -146,8 +206,11 @@ def percentile_rank(
     con, column: str, table: str = "onchain", window_days: int = 730,
     smooth_days: int = 1, detrend_dow: bool = False,
 ) -> float | None:
-    """Percentile (0-100) of the latest value within its trailing window."""
-    col, tbl = _ident(column), _ident(table)
+    """Percentile (0-100) of the latest value within its trailing window.
+
+    `column` is a stored column, or a `DERIVED_SERIES` key for a ratio.
+    """
+    col, tbl = _series_sql(column), _ident(table)
     if detrend_dow:
         series = f"""
             base AS (
@@ -764,6 +827,23 @@ def collect(cfg) -> SourceResult:
                     percentile_rank, con, "kraken_vol", table="btc",
                     window_days=VOL_WINDOW_DAYS, detrend_dow=True,
                 ),
+                # Trade count is participation, and it is not a restatement of
+                # volume even though the two correlate 0.90 at this venue: on
+                # 2 Sep 2026 volume ranked 58th and trades 97th on identical
+                # treatment. What separates them is the size of the average
+                # trade, which is why all three are carried.
+                "trades_pctile": _try(
+                    percentile_rank, con, "kraken_trades", table="btc",
+                    window_days=VOL_WINDOW_DAYS, detrend_dow=True,
+                ),
+                # Detrended for the same reason as the other two — weekends run
+                # 28% below the weekday mean, because volume falls further at a
+                # weekend than trade count does — but over a much shorter
+                # window. See TRADE_SIZE_WINDOW_DAYS.
+                "trade_size_pctile": _try(
+                    percentile_rank, con, "trade_size", table="btc",
+                    window_days=TRADE_SIZE_WINDOW_DAYS, detrend_dow=True,
+                ),
             },
             "close": close,
             # The close's own day, which is not necessarily the on-chain day
@@ -913,6 +993,26 @@ def _ordinal(p: float) -> str:
     return f"{n}{suffix}"
 
 
+def _window_label(days: int) -> str:
+    """`2y` for whole years, `90d` otherwise — a percentile's other half."""
+    return f"{days // 365}y" if days >= 365 and days % 365 == 0 else f"{days}d"
+
+
+def _activity_items(sig: dict) -> list[tuple[str, str, float, str]]:
+    """Present exchange-activity percentiles as `(key, label, value, window)`.
+
+    Shared so the terminal, the page and the analyst cannot come to disagree
+    about which of the three exist or how long a window each was ranked over.
+    The key travels because each carries a different caveat on the page.
+    """
+    out = []
+    for label, key, days in ACTIVITY_SIGNALS:
+        value = sig.get(key)
+        if isinstance(value, (int, float)):
+            out.append((key, label, value, _window_label(days)))
+    return out
+
+
 def _day_label(raw) -> str:
     """`UTC <date> <weekday>`, or a plain fallback if the date is unusable.
 
@@ -949,6 +1049,11 @@ def render_lines(d: dict) -> list[str]:
         parts.append(f"{fmt(oc.get('blocks_day'))} blks")
     if oc.get("block_fullness") is not None:
         parts.append(f"{fmt(oc.get('block_fullness'), '.0f')}% full")
+    if oc.get("tx_rate") is not None:
+        # This day's count over 86400, not the 28-day `getchaintxstats` rate
+        # most sites quote. The line's `day (...)` heading is what says so;
+        # every other figure on it is a single day's fact for the same reason.
+        parts.append(f"{fmt(oc.get('tx_rate'), '.1f')} tx/s")
     if oc.get("p50_fee") is not None:
         # getblockstats reports integer sat/vB, so 0 is a floor meaning "under
         # 1", not an absence of fees — rendering it as 0.0 reads as missing data.
@@ -972,11 +1077,21 @@ def render_lines(d: dict) -> list[str]:
     dd = sig.get("hashrate_drawdown")
     if isinstance(dd, (int, float)) and dd < -1:
         bits.append(f"hashrate {fmt(dd, '.1f')}% off 90d high")
-    vol = sig.get("vol_pctile")
-    if isinstance(vol, (int, float)) and vol >= VOL_PCTILE_MIN:
-        bits.append(f"volume {_ordinal(vol)} pctile 2y")
     if bits:
         out.append("signal: " + " | ".join(bits))
+
+    # Unconditional, unlike the signals above. These were gated at the 95th
+    # percentile, which by construction reaches a reader about 19 days a year —
+    # so an ordinary reading was indistinguishable from a dead source, and a
+    # quiet tape could not corroborate a long apathy streak sitting one line
+    # up. The threshold still governs the NOTABLE strip, which is what it is
+    # for.
+    activity = [
+        f"{label} {_ordinal(value)} pctile {window}"
+        for _, label, value, window in _activity_items(sig)
+    ]
+    if activity:
+        out.append("activity (kraken, weekday-adj): " + " | ".join(activity))
     # Every value below is guarded independently. A partially-populated
     # warehouse is normal — the price and on-chain tables advance separately,
     # and one lagging must not cost the whole block.
@@ -1097,14 +1212,32 @@ def context_lines(d: dict) -> list[str]:
             f"BTC hashrate: {fmt(dd, '.1f')}% off its 90d high (miner stress; historic "
             f"washouts ran -33% to -50%)"
         )
+    activity = _activity_items(sig)
+    if activity:
+        out.append(
+            "BTC exchange activity, weekday-adjusted: "
+            + "; ".join(f"{label} {_ordinal(v)} percentile of {w}"
+                        for _, label, v, w in activity)
+            + f". Kraken only — a median {VENUE_SHARE_PCT}% of cross-venue "
+            f"dollar volume, correlating 0.74 with it. So this ranks ONE "
+            f"venue's participation against its own history and is NOT a "
+            f"market-wide volume figure; do not present it as one."
+        )
+        out.append(
+            "Volume and trade count measure activity, NOT direction — pair them "
+            "with the price move. Average trade size is the mix between the "
+            "two: it falls when the same flow arrives as more, smaller orders. "
+            "It is ranked over 90 days rather than 2y because it has trended "
+            "down about 47% in two years, so a longer window would rank that "
+            "trend rather than the day."
+        )
     vol = sig.get("vol_pctile")
     if isinstance(vol, (int, float)) and vol >= VOL_PCTILE_MIN:
         out.append(
-            f"BTC exchange volume: {fmt(vol, '.0f')}th percentile of 2y (single venue, "
-            f"weekday-adjusted). Volume marks EVENTS, not direction — pair it with "
-            f"the price move. It fires on acute capitulation, stays quiet at slow "
-            f"bear bottoms and at every euphoria peak, so it flags the panic itself, "
-            f"not the low, which typically follows days later."
+            "That volume reading is an extreme. It fires on acute capitulation, "
+            "stays quiet at slow bear bottoms and at every euphoria peak, so it "
+            "flags the panic itself, not the low, which typically follows days "
+            "later."
         )
     vol = d.get("volatility") or {}
     covered = [w for w in (vol.get("windows") or [])
@@ -1180,6 +1313,9 @@ def html_panels(d: dict) -> list[Panel]:
                      f"±{PACE_NOISE_PCT:.0f}% day-to-day noise"
                      if pace is not None else None)),
         Metric("Block Fullness", f"{fmt(oc.get('block_fullness'), '.0f')}%"),
+        Metric("Tx Rate", f"{fmt(oc.get('tx_rate'), '.1f')} tx/s",
+               note="this day's count over 86400 — not the 28d chain rate "
+                    "most sites quote"),
         Metric("Median Fee",
                "<1 sat/vB" if isinstance(oc.get("p50_fee"), (int, float))
                and oc["p50_fee"] < 1 else f"{fmt(oc.get('p50_fee'), '.1f')} sat/vB",
@@ -1210,11 +1346,15 @@ def html_panels(d: dict) -> list[Panel]:
             "Hashrate Drawdown", f"{fmt(dd, '.1f')}%",
             note=f"off its {HASHRATE_WINDOW_DAYS}d high · washouts ran -33% to -50%",
             tone="warn" if dd < -20 else None))
-    v = sig.get("vol_pctile")
-    if isinstance(v, (int, float)) and v >= VOL_PCTILE_MIN:
+    # Unconditional. Gated at the 95th percentile these reached the page about
+    # 19 days a year, so an ordinary reading looked identical to a missing one.
+    # The threshold still selects for the NOTABLE strip.
+    for key, _, v, window in _activity_items(sig):
+        name, why = ACTIVITY_PANEL[key]
         signals.append(Metric(
-            "Exchange Volume", f"{_ordinal(v)} pctile",
-            note=f"{years}y, single venue · marks events, not direction"))
+            name, f"{_pctile(v)} pctile",
+            note=f"{window} · kraken only, ~{VENUE_SHARE_PCT}% of cross-venue "
+                 f"volume · {why}"))
 
     vols = []
     for w in vol.get("windows") or []:
@@ -1246,7 +1386,11 @@ def html_panels(d: dict) -> list[Panel]:
 
     panels = [Panel(heading, facts, priority=40)]
     if signals:
-        panels.append(Panel(f"SIGNALS (vs {years}y)", signals, priority=50))
+        # No window in the heading. It used to claim `vs 2y` for every row,
+        # which trade size (90d) makes false — and each row already opens its
+        # note with its own window, so the heading was asserting a qualifier
+        # the rows were better placed to carry.
+        panels.append(Panel("SIGNALS", signals, priority=50))
     if vols:
         # The annualisation lives in the title so every row inherits it — the
         # level is not comparable to anyone else's without it.
@@ -1311,9 +1455,18 @@ def notable(d: dict) -> list[str]:
     if isinstance(apathy, int) and apathy >= NOTABLE_APATHY_DAYS:
         out.append(f"{apathy}d under {APATHY_MAX}% fee/subsidy")
 
-    v = sig.get("vol_pctile")
-    if isinstance(v, (int, float)) and v >= NOTABLE_PCTILE_HIGH:
-        out.append(f"exchange volume {_pctile(v)} pctile of {years}y")
+    # Volume and trade count only, and only at the high end. This strip is for
+    # readings worth leading with, which is what the 95th percentile gate was
+    # always for — the panel now carries the ordinary readings, so the gate no
+    # longer hides them. Trade size is deliberately absent: it is a mix, not an
+    # intensity, and "smallest average trade in 90 days" is a fact about market
+    # structure rather than an event of the day.
+    for key, _label, v, window in _activity_items(sig):
+        if key == "trade_size_pctile":
+            continue
+        if v >= NOTABLE_PCTILE_HIGH:
+            name, _why = ACTIVITY_PANEL[key]
+            out.append(f"{name.lower()} {_pctile(v)} pctile of {window}")
 
     # The page's only sign that the ingester has fallen behind, now that this
     # block no longer claims to be a stale *cache* in order to get a badge.
