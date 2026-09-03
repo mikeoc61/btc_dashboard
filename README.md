@@ -118,11 +118,21 @@ because re-derivation keeps the *age* honest — and age is not provenance. Four
 days is the shortest bound that still covers a Friday-evening failure across a
 weekend and a Monday holiday.
 
-**Time-relative fields are recomputed on every cache read.** `age_days` and
-`days_behind` are relative to when they are *read*, not when they were
-fetched — otherwise a three-day-old stale payload would report a trading day
-as "1d ago", exactly when accuracy matters most. A source with such fields
-exposes `refresh_derived(data)`.
+**Time-relative fields are recomputed on every cache read.** `age_days`,
+`days_behind` and `stale_tables` are relative to when they are *read*, not when
+they were fetched — otherwise a three-day-old stale payload would report a
+trading day as "1d ago", exactly when accuracy matters most. A source with such
+fields exposes `refresh_derived(data)`.
+
+**Staleness is measured per table, and the lagging one is named.** The
+warehouse's price and on-chain tables are written by the same ingester but
+advance independently, so `days_behind` — which measures the on-chain table,
+the one the block is dated by — cannot speak for the other. With `onchain`
+current and `btc` three days short, the panel reported a healthy warehouse and
+showed a three-day-old close beside it. `stale_tables` carries one entry per
+table that is behind, both messages name it, and the volatility block and the
+daily close carry the date of the row they actually end on rather than the
+heading's.
 
 Cache files live in `~/.cache/btc_dashboard/<source>.json`. Writes are atomic
 (temp file + `os.replace`), so concurrent readers never see

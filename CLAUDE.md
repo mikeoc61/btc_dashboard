@@ -158,7 +158,12 @@ needs belongs with the code that knows why.
   `America/New_York`. UTC runs ahead and reports yesterday's flows as "2d ago".
 - **The warehouse is UTC-day bucketed and only stores finished days**, so it is
   structurally ≥1 day behind today. `days_behind` measures against the last
-  *complete* day, not today.
+  *complete* day, not today — and it measures the **on-chain table alone**,
+  because that is the day the block is dated by. It says nothing about the
+  price table, which is why `stale_tables` exists: read off `coverage`, one
+  entry per table that is behind, and `warehouse_stale` is true when any of
+  them is. `onchain` current with `btc` three days short used to report a
+  healthy warehouse next to a three-day-old close.
 - **Percentiles are mid-ranked with an epsilon.** DuckDB evaluates a sliding
   `avg()` incrementally, so mathematically equal values differ in their last
   bits; a strict `<` ranked a flat series at the 58th percentile.

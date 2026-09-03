@@ -780,9 +780,7 @@ def collect(cfg) -> SourceResult:
 
         data["coverage"] = _try(coverage, con) or {}
 
-        behind = days_behind(date)
-        data["days_behind"] = behind
-        data["warehouse_stale"] = behind > STALE_AFTER_DAYS
+        _apply_staleness(data, date)
 
         return SourceResult(
             name=NAME, available=True, data=data,
@@ -805,20 +803,74 @@ def days_behind(date: datetime.date, now: datetime.datetime | None = None) -> in
     return max(0, (last_complete - date).days)
 
 
+def stale_tables(cov: dict, now: datetime.datetime | None = None) -> dict:
+    """Which tables the ingester has fallen behind on, and by how many days.
+
+    `days_behind` measures the on-chain table alone, because that is the day
+    the block is dated by. It therefore said nothing at all about the price
+    table: with `onchain` current and `btc` three days short, the panel
+    reported a healthy warehouse and showed a three-day-old close beside it.
+    The tables are written by the same ingester but are allowed to advance
+    independently, which is exactly why one cannot speak for the other.
+
+    Read off `coverage`, which already carries each table's last date, so this
+    costs no query. Note that a table's last *row* is what is measured, not its
+    last usable value — the ingester having run is the question here, and
+    `close_date` answers the other one.
+    """
+    out = {}
+    for table, span in (cov or {}).items():
+        if not isinstance(span, dict) or not span.get("last"):
+            continue
+        try:
+            last = datetime.date.fromisoformat(span["last"])
+        except (TypeError, ValueError):
+            continue
+        behind = days_behind(last, now)
+        if behind > STALE_AFTER_DAYS:
+            out[table] = behind
+    return out
+
+
+def _apply_staleness(data: dict, date: datetime.date) -> None:
+    """Set `days_behind`, `stale_tables` and `warehouse_stale` from the clock.
+
+    One place, because `collect` and `refresh_derived` have to agree and used
+    not to be able to drift only by being two lines each.
+    """
+    data["days_behind"] = days_behind(date)
+    data["stale_tables"] = stale_tables(data.get("coverage"))
+    # Any table behind, not just the on-chain one. A payload from a build
+    # predating `coverage` has no per-table view, so it falls back to the
+    # on-chain measure alone rather than silently reporting health.
+    data["warehouse_stale"] = bool(data["stale_tables"]) or (
+        not data.get("coverage") and data["days_behind"] > STALE_AFTER_DAYS
+    )
+
+
+def _behind_phrase(d: dict) -> str:
+    """Which tables are behind and by how much, or the bare day count."""
+    tables = d.get("stale_tables") or {}
+    if not isinstance(tables, dict) or not tables:
+        return f"{fmt(d.get('days_behind'), missing='?')}d"
+    return ", ".join(
+        f"{COVERAGE_LABELS.get(t, t)} {fmt(n)}d"
+        for t, n in sorted(tables.items())
+    )
+
+
 def refresh_derived(data: dict) -> dict:
     """Recompute how far behind the warehouse is, against the clock now.
 
-    `days_behind` and `warehouse_stale` are relative to the current date, so
-    they age with the cache. Recomputed on every cache read, in UTC — the
-    warehouse buckets by UTC calendar day.
+    `days_behind`, `stale_tables` and `warehouse_stale` are relative to the
+    current date, so they age with the cache. Recomputed on every cache read,
+    in UTC — the warehouse buckets by UTC calendar day.
     """
     try:
         date = datetime.date.fromisoformat(data["date"])
     except (KeyError, TypeError, ValueError):
         return data
-    behind = days_behind(date)
-    data["days_behind"] = behind
-    data["warehouse_stale"] = behind > STALE_AFTER_DAYS
+    _apply_staleness(data, date)
     return data
 
 
@@ -971,9 +1023,15 @@ def render_lines(d: dict) -> list[str]:
         # points at the long end, where the all-history figure is substantially
         # reporting Bitcoin's declining volatility rather than today.
         years = fmt(vol.get("percentile_window_days", 730) // 365)
+        # Dated like the SMAs and for the same reason: these run over the same
+        # `btc` closes and end on the same row, so a 30-day window through
+        # Monday is not the one through Thursday. That row is the close's day,
+        # not the on-chain day this block is headed by.
+        day = _close_day(d)
         out.append(
-            f"vol (ann √{fmt(vol.get('annualisation_days'))}, pctile {years}y/all): "
-            + " | ".join(vparts)
+            f"vol (ann √{fmt(vol.get('annualisation_days'))}, pctile {years}y/all"
+            + (f", through {day}" if day else "")
+            + "): " + " | ".join(vparts)
         )
 
     # Described as that day's block pace, not as a "retarget projection". The
@@ -993,9 +1051,11 @@ def render_lines(d: dict) -> list[str]:
         )
 
     if d.get("warehouse_stale"):
+        # Named per table: the two advance independently, so "the warehouse is
+        # behind" was as likely to point at the wrong one as the right one.
         out.append(
-            f"warehouse {fmt(d.get('days_behind'), missing='?')}d behind the last "
-            f"complete UTC day — the ingester has missed a run"
+            f"warehouse behind the last complete UTC day ({_behind_phrase(d)}) "
+            f"— the ingester has missed a run"
         )
     return out
 
@@ -1049,9 +1109,12 @@ def context_lines(d: dict) -> list[str]:
                if w.get("percentile_recent") is not None else "")
             for w in covered
         )
+        day = _close_day(d)
         out.append(
             f"BTC realised volatility, annualised on a "
-            f"{fmt(vol.get('annualisation_days'))}-day year: {levels}."
+            f"{fmt(vol.get('annualisation_days'))}-day year"
+            + (f", through {day}" if day else "")
+            + f": {levels}."
         )
         out.append(
             f"Prefer the {years}-year percentile. Bitcoin's volatility has "
@@ -1083,10 +1146,13 @@ def context_lines(d: dict) -> list[str]:
             f"already correct for that, the raw daily figures do not."
         )
     if d.get("warehouse_stale"):
+        # Which table, because the answer changes what is not current: the
+        # on-chain readings, the price series and everything derived from it,
+        # or both. Saying "the warehouse" left the model to guess.
         out.append(
-            f"WARNING: the warehouse is missing "
-            f"{fmt(d.get('days_behind'), missing='an unknown number of')} complete "
-            f"UTC day(s); the on-chain figures are not current."
+            f"WARNING: the warehouse is behind the last complete UTC day "
+            f"({_behind_phrase(d)}). Figures drawn from a table named there are "
+            f"not current, and the ingester has missed a run."
         )
     return out
 
@@ -1176,8 +1242,12 @@ def html_panels(d: dict) -> list[Panel]:
         # level is not comparable to anyone else's without it.
         # Second on the page, beside price: a distance from a moving average
         # only means something in volatility units, so the two are read together.
+        # The day rides in the title, like the annualisation, so every row
+        # inherits it rather than repeating it five times.
+        vol_day = _close_day(d).replace("UTC ", "")
         panels.append(Panel(
-            f"VOLATILITY (REALISED, ann √{fmt(vol.get('annualisation_days'))})",
+            f"VOLATILITY (REALISED, ann √{fmt(vol.get('annualisation_days'))}"
+            + (f" · THROUGH {vol_day}" if vol_day else "") + ")",
             vols, priority=20))
     return panels
 

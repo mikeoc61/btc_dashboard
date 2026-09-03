@@ -603,3 +603,89 @@ class TestFreshnessIsMeasuredAgainstTheLastCompleteDay:
         line = next(l for l in warehouse.render_lines(data) if "behind" in l)
         assert "last complete UTC day" in line
         assert "missed a run" in line
+
+
+class TestOneTableCannotSpeakForTheOther:
+    """`days_behind` measures the on-chain table, because that is the day the
+    block is dated by. It therefore said nothing about the price table: with
+    `onchain` current and `btc` three days short, the panel reported a healthy
+    warehouse and showed a three-day-old close beside it.
+    """
+
+    def _lagging_price(self, tmp_path, days_short=4):
+        path = _build_db(tmp_path / "m.duckdb", days=400)
+        con = duckdb.connect(str(path))
+        con.execute("DELETE FROM btc WHERE date > ?",
+                    [_utc_today() - datetime.timedelta(days=days_short)])
+        con.close()
+        return warehouse.collect(Config.from_env(db_path=path)).data
+
+    def test_a_lagging_price_table_is_reported(self, tmp_path):
+        d = self._lagging_price(tmp_path)
+        assert d["stale_tables"] == {"btc": 3}
+        assert d["warehouse_stale"] is True
+
+    def test_the_on_chain_measure_is_unchanged_by_it(self, tmp_path):
+        """`days_behind` is still the on-chain figure. Widening it would have
+        silently moved a number consumers already read."""
+        assert self._lagging_price(tmp_path)["days_behind"] == 0
+
+    def test_the_lagging_table_is_named(self, tmp_path):
+        """"The warehouse is behind" was as likely to point at the wrong table
+        as the right one."""
+        d = self._lagging_price(tmp_path)
+        line = next(l for l in warehouse.render_lines(d) if l.startswith("warehouse"))
+        warn = next(l for l in warehouse.context_lines(d) if l.startswith("WARNING"))
+        assert "price 3d" in line and "price 3d" in warn
+
+    def test_a_healthy_warehouse_says_nothing(self, tmp_path):
+        d = warehouse.collect(Config.from_env(
+            db_path=_build_db(tmp_path / "ok.duckdb", days=400))).data
+        assert d["stale_tables"] == {} and d["warehouse_stale"] is False
+        assert not any(l.startswith("warehouse") for l in warehouse.render_lines(d))
+
+    def test_a_payload_without_coverage_falls_back(self):
+        """`refresh_derived` runs on cached payloads, including ones written
+        before `coverage` existed. No per-table view must not read as health."""
+        old = (_utc_today() - datetime.timedelta(days=8)).isoformat()
+        data = warehouse.refresh_derived(
+            {"date": old, "onchain": {}, "signals": {}})
+        assert data["days_behind"] == 7
+        assert data["warehouse_stale"] is True and data["stale_tables"] == {}
+
+
+class TestTheVolatilityBlockNamesItsLastDay:
+    """The windows run over `btc` closes and end on the same row the daily
+    close comes from — a 30-day window through Monday is not the one through
+    Thursday. The block is headed by the on-chain day, which is not it."""
+
+    def _diverged(self, tmp_path):
+        path = _build_db(tmp_path / "m.duckdb", days=400)
+        con = duckdb.connect(str(path))
+        con.execute("DELETE FROM btc WHERE date > ?",
+                    [_utc_today() - datetime.timedelta(days=3)])
+        con.close()
+        return warehouse.collect(Config.from_env(db_path=path)).data
+
+    def test_the_terminal_line_carries_the_close_date(self, tmp_path):
+        d = self._diverged(tmp_path)
+        line = next(l for l in warehouse.render_lines(d) if l.startswith("vol ("))
+        assert d["close_date"] in line and d["date"] not in line
+
+    def test_the_card_title_carries_it(self, tmp_path):
+        d = self._diverged(tmp_path)
+        title = next(p.title for p in warehouse.html_panels(d)
+                     if p.title.startswith("VOLATILITY"))
+        assert d["close_date"] in title
+
+    def test_the_prompt_carries_it(self, tmp_path):
+        d = self._diverged(tmp_path)
+        line = next(l for l in warehouse.context_lines(d)
+                    if l.startswith("BTC realised volatility"))
+        assert d["close_date"] in line
+
+    def test_an_older_payload_claims_no_day(self, tmp_path):
+        d = self._diverged(tmp_path)
+        d.pop("close_date")
+        line = next(l for l in warehouse.render_lines(d) if l.startswith("vol ("))
+        assert d["date"] not in line, "no date beats the wrong date"
