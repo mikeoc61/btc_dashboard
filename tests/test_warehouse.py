@@ -951,3 +951,92 @@ class TestExchangeActivity:
         line = next(l for l in warehouse.render_lines(d) if l.startswith("activity"))
         assert d["close_date"] in line
         assert d["date"] not in line, "it must not inherit the on-chain day"
+
+
+class TestTheAnalystSeesTodaysOnChainFacts:
+    """Every other source states today's values; this one stated only
+    derivations of numbers the analyst never saw, so it could call fee/subsidy
+    apathetic without being able to say what the fee was."""
+
+    def _data(self, tmp_path, **kw):
+        path = _build_db(tmp_path / "ctx.duckdb", days=400, **kw)
+        return warehouse.collect(
+            Config.from_env(db_path=path, cache_dir=tmp_path / "cc")).data
+
+    def test_the_days_figures_reach_the_context(self, tmp_path):
+        ctx = " ".join(warehouse.context_lines(self._data(tmp_path)))
+        assert "144 blocks against the 144 target" in ctx
+        assert "95% full" in ctx
+        assert "median fee 2.0 sat/vB" in ctx
+        assert "miner revenue 450.0 BTC" in ctx
+        assert "6.5 tx/s" in ctx
+
+    def test_each_figure_carries_its_qualifier(self, tmp_path):
+        """The reason these were worth adding is also the reason they are
+        misreadable bare: a settled daily median fee is not a live estimate,
+        and a one-day block count is not a difficulty projection."""
+        ctx = " ".join(warehouse.context_lines(self._data(tmp_path)))
+        assert "settled daily figures for a finished day, not live" in ctx
+        assert "integer from getblockstats" in ctx
+        assert "one day only" in ctx and "noise" in ctx
+        assert "cumulative projection is the number to trust" in ctx
+        assert "NOT the 28-day getchaintxstats rate" in ctx
+
+    def test_the_block_count_is_not_offered_as_a_second_projection(self, tmp_path):
+        """`day_pace_retarget` is far noisier than the node's cumulative
+        estimate. Offered under the same name it invites reading the unreliable
+        one as the trend, so it appears only as this day's pace."""
+        ctx = " ".join(warehouse.context_lines(self._data(tmp_path)))
+        assert "retarget projection" not in ctx
+
+    def test_it_reaches_the_prompt_not_just_the_line_list(self, tmp_path):
+        """`build_context` is the only path to the model, and it takes nothing
+        from a source but `context_lines`."""
+        from btc_dashboard import analyst
+
+        r = warehouse.collect(Config.from_env(
+            db_path=_build_db(tmp_path / "p.duckdb", days=400),
+            cache_dir=tmp_path / "cc"))
+        prompt = analyst.build_context({
+            "schema_version": 1, "generated_at": "2026-09-03T00:00:00+00:00",
+            "asset": "btc", "sources": {"warehouse": r.to_json()}})
+        assert "miner revenue 450.0 BTC" in prompt and "6.5 tx/s" in prompt
+
+    def test_one_absent_column_does_not_cost_the_line(self, tmp_path):
+        """A partially-populated warehouse is normal, so each figure is guarded
+        on its own rather than the line being all-or-nothing."""
+        path = _build_db(tmp_path / "gap.duckdb", days=400)
+        con = duckdb.connect(str(path))
+        con.execute("UPDATE onchain SET miner_rev = NULL, tx_rate = NULL")
+        con.close()
+        d = warehouse.collect(
+            Config.from_env(db_path=path, cache_dir=tmp_path / "cc2")).data
+        ctx = " ".join(warehouse.context_lines(d))
+        assert "144 blocks" in ctx and "95% full" in ctx
+        assert "miner revenue" not in ctx and "tx/s" not in ctx
+
+    def test_a_percentile_ending_in_one_two_or_three_is_not_said_th(self, tmp_path):
+        """It read "23th percentile". Every other percentile in this function
+        already went through `_ordinal`, including the volatility line beside
+        it, so the one hand-built ordinal was the odd one out."""
+        assert warehouse._ordinal(23.0) == "23rd"
+        assert warehouse._ordinal(21.0) == "21st"
+        assert warehouse._ordinal(2.0) == "2nd"
+        assert warehouse._ordinal(13.0) == "13th", "the teens keep -th"
+
+        d = {"signals": {"fee_pctile": 23.0}, "onchain": {}, "smas": [],
+             "volatility": {}}
+        line = next(l for l in warehouse.context_lines(d)
+                    if l.startswith("BTC fee/subsidy vs history"))
+        assert "23rd percentile" in line and "23th" not in line
+
+    def test_a_hostile_percentile_costs_one_line_not_the_block(self):
+        """`_ordinal` rounds, so it raises on the string an ingested snapshot
+        can put in a numeric field. `build_context` catches that and drops the
+        whole source, so one bad field would suppress every other line."""
+        d = {"signals": {"fee_pctile": "pwn"}, "date": "2026-09-02",
+             "onchain": {"blocks_day": 144}, "smas": [], "volatility": {}}
+        lines = warehouse.context_lines(d)          # must not raise
+        assert any("144 blocks" in l for l in lines), "the rest survives"
+        assert not any("fee/subsidy vs history" in l for l in lines)
+        assert not any("pwn" in l for l in lines)

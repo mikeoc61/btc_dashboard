@@ -1197,17 +1197,77 @@ def render_lines(d: dict) -> list[str]:
 
 
 def context_lines(d: dict) -> list[str]:
-    """History the analyst cannot otherwise see.
+    """The history behind today's readings, and the day's own on-chain facts.
 
-    Without these it has only today's numbers and no way to tell an ordinary
-    reading from an extreme one, which is exactly when it starts inventing
-    thresholds.
+    The history is the point: without it the analyst has no way to tell an
+    ordinary reading from an extreme one, which is exactly when it starts
+    inventing thresholds.
+
+    The raw daily figures are here because every other source states today's
+    values -- price its spot, node its mempool, flows its latest total -- and
+    this one stated only derivations of numbers the analyst never saw. It could
+    describe fee/subsidy as apathetic without being able to say what the fee
+    actually was.
     """
     sig = d.get("signals") or {}
+    oc = d.get("onchain") or {}
     out: list[str] = []
-    if sig.get("fee_pctile") is not None:
+
+    # The day's own figures, before anything derived from them. Each is guarded
+    # independently: a partially-populated warehouse is normal, and one absent
+    # column must not cost the whole line.
+    facts = []
+    blocks, pace = oc.get("blocks_day"), d.get("day_pace_retarget")
+    if blocks is not None:
+        # The count and its noise band, never a second retarget projection.
+        # The node block carries a cumulative one computed over the whole
+        # difficulty period; a far noisier daily number offered under the same
+        # name invites reading the unreliable one as the trend.
+        facts.append(
+            f"{fmt(blocks)} blocks against the {BLOCKS_PER_DAY} target"
+            + (f" ({fmt(pace, '+.1f', suffix='%')}, one day only, "
+               f"+/-{PACE_NOISE_PCT:.0f}% noise — the node block's cumulative "
+               f"projection is the number to trust for difficulty direction)"
+               if pace is not None else "")
+        )
+    if oc.get("block_fullness") is not None:
+        facts.append(f"blocks {fmt(oc.get('block_fullness'), '.0f')}% full")
+    if oc.get("p50_fee") is not None:
+        facts.append(
+            f"median fee {fmt(oc.get('p50_fee'), '.1f')} sat/vB (integer from "
+            f"getblockstats, so 0 means under 1 rather than no fees)"
+        )
+    if oc.get("fee_subsidy") is not None:
+        facts.append(f"fee/subsidy {fmt(oc.get('fee_subsidy'), '.2f')}%")
+    if oc.get("miner_rev") is not None:
+        facts.append(
+            f"miner revenue {fmt(oc.get('miner_rev'), ',.1f')} BTC "
+            f"(subsidy plus fees)"
+        )
+    if facts:
         out.append(
-            f"BTC fee/subsidy vs history: {fmt(sig.get('fee_pctile'), '.0f')}th "
+            f"BTC on-chain for {_day_label(d.get('date'))} (settled daily "
+            f"figures for a finished day, not live): " + ", ".join(facts) + "."
+        )
+    if oc.get("tx_rate") is not None:
+        # Its own line: the caveat is the whole reason the number is
+        # misreadable, and it is too long to ride inside the list above.
+        out.append(
+            f"BTC transaction rate: {fmt(oc.get('tx_rate'), '.1f')} tx/s — this "
+            f"day's transaction count over 86400, NOT the 28-day "
+            f"getchaintxstats rate most sites publish. The two are different "
+            f"measures; do not compare this against one."
+        )
+
+    # isinstance, not `is not None`: `_ordinal` rounds, so it raises on the
+    # string an ingested snapshot can put in a numeric field, where the `fmt`
+    # this replaced returned "n/a". Raising here costs the whole block --
+    # `build_context` catches it and says the source could not be summarized --
+    # so one hostile field would suppress every other line.
+    fee = sig.get("fee_pctile")
+    if isinstance(fee, (int, float)):
+        out.append(
+            f"BTC fee/subsidy vs history: {_ordinal(fee)} "
             f"percentile of 2y (7d mean, weekend-corrected; low = blockspace "
             f"demand apathy)"
         )
