@@ -232,7 +232,7 @@ class TestCollect:
         assert r.data["warehouse_stale"] is False
         assert r.data["onchain"]["fee_subsidy"] == 2.0
 
-    def test_stale_when_behind(self, tmp_path):
+    def test_behind_is_recorded_without_claiming_a_stale_cache(self, tmp_path):
         con = duckdb.connect(str(tmp_path / "old.duckdb"))
         con.execute(
             "CREATE TABLE onchain (date DATE PRIMARY KEY, hash_rate_ehs DOUBLE, "
@@ -248,8 +248,13 @@ class TestCollect:
         con.close()
 
         r = warehouse.collect(Config.from_env(db_path=tmp_path / "old.duckdb"))
-        assert r.available and r.stale
+        assert r.available
         assert r.data["days_behind"] == 9   # 10 days before today, 9 days missing
+        assert r.data["warehouse_stale"] is True
+        # Not `r.stale`: that flag means this payload came from a cache after a
+        # live refresh failed, and this one is a live read of a behind table.
+        # Asserting it here is what kept the two conflated.
+        assert r.stale is False
 
 
 class TestIdentGuard:
@@ -689,3 +694,63 @@ class TestTheVolatilityBlockNamesItsLastDay:
         d.pop("close_date")
         line = next(l for l in warehouse.render_lines(d) if l.startswith("vol ("))
         assert d["date"] not in line, "no date beats the wrong date"
+
+
+class TestBeingBehindIsNotBeingACache:
+    """`SourceResult.stale` is about provenance — "served from disk after the
+    live path failed", which is why its own docstring says stale implies
+    cached. `collect` passed the data-behind flag into it to get a badge, on a
+    collection that had just succeeded.
+
+    The cost was not the badge. The analyst's context announced "the live
+    refresh failed, so these figures come from a cache written an unknown time
+    ago" — invented provenance, printed immediately above the true warning, so
+    the model got two contradictory claims about one block.
+    """
+
+    def _behind(self, tmp_path):
+        return warehouse.collect(Config.from_env(db_path=_build_db(
+            tmp_path / "m.duckdb", days=400,
+            end_date=_utc_today() - datetime.timedelta(days=4))))
+
+    @staticmethod
+    def _snap(result):
+        return {"schema_version": 1, "generated_at": "2026-09-03T00:00:00+00:00",
+                "asset": "btc", "sources": {"warehouse": result.to_json()}}
+
+    def test_a_live_collection_is_never_marked_stale(self, tmp_path):
+        r = self._behind(tmp_path)
+        assert r.data["warehouse_stale"] is True, "the data really is behind"
+        assert r.stale is False and r.cached is False, "but it came from a live read"
+
+    def test_the_prompt_does_not_invent_a_failed_refresh(self, tmp_path):
+        from btc_dashboard import analyst
+
+        ctx = analyst.build_context(self._snap(self._behind(tmp_path)))
+        assert "live refresh failed" not in ctx
+        assert "the warehouse is behind" in ctx, "the true warning still stands"
+
+    def test_the_panel_does_not_badge_it_as_a_cache(self, tmp_path):
+        from btc_dashboard import render
+
+        out = render.render(self._snap(self._behind(tmp_path)), color=False)
+        heading = next(l for l in out.splitlines() if l.startswith("ON-CHAIN"))
+        assert "STALE" not in heading
+        assert "warehouse behind" in out, "the block still says so in its own words"
+
+    def test_the_strip_carries_it_instead(self, tmp_path):
+        """The page had no staleness of its own — the badge was carrying it —
+        so the fact moves to the mechanism meant for it."""
+        assert warehouse.notable(self._behind(tmp_path).data) == [
+            "warehouse behind (price 3d, on-chain 3d)"
+        ]
+
+    def test_a_real_cache_stale_block_is_untouched(self, tmp_path):
+        """The path that flag is for. `cache.as_stale` sets it when a live
+        refresh genuinely fails and an expired copy is served."""
+        from btc_dashboard import analyst
+
+        served = self._behind(tmp_path).as_stale(7200, "CoinGecko timed out")
+        assert served.stale is True and served.cached is True
+        ctx = analyst.build_context(self._snap(served))
+        assert "live refresh failed" in ctx and "2h" in ctx

@@ -101,6 +101,13 @@ $ btc-dashboard --only flows --refresh   # forced re-collect
 | `[cached 15m]` | Served from disk within its TTL — as good as when fetched |
 | `[STALE 3d]` | TTL expired *and* the live refresh failed; serving the old copy anyway, with the failure reason shown |
 
+Both describe **where the payload came from**, never whether its contents are
+current. A warehouse whose ingester has fallen behind is freshly read and
+perfectly provenanced; it says so in its own block text and in the `NOTABLE`
+strip, and it does not borrow this marker. It used to, which made the analyst's
+context announce a failed refresh and a cache age for a scrape that had just
+succeeded.
+
 The stale path is why the cache is worth having beyond speed: when Farside is
 unreachable, yesterday's finalized flows still render rather than the block
 disappearing. The analyst is told which state applies, so it can't describe an

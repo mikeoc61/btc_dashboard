@@ -44,6 +44,14 @@ class SourceResult:
       already expired. Available, but older than it looks.
 
     Stale implies cached; cached does not imply stale.
+
+    Both are about *provenance* — where this payload came from — and never
+    about whether its contents are current. A source whose upstream data has
+    fallen behind is not a stale cache, and must not borrow this flag to say
+    so: `warehouse` did, to earn a badge, and the analyst was consequently told
+    "the live refresh failed, so these figures come from a cache" about a read
+    that had just succeeded. Content facts travel in `data`, and a source that
+    wants one on the page says so through `notable()`.
     """
 
     name: str

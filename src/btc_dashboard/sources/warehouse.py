@@ -784,7 +784,17 @@ def collect(cfg) -> SourceResult:
 
         return SourceResult(
             name=NAME, available=True, data=data,
-            as_of=date.isoformat(), stale=data["warehouse_stale"],
+            # Deliberately not `stale=data["warehouse_stale"]`. That flag is
+            # about *provenance* — "served from disk after the live path
+            # failed", which is why its own docstring says stale implies
+            # cached — and this collection is live. Setting it made the
+            # analyst's context announce "the live refresh failed, so these
+            # figures come from a cache written an unknown time ago" about a
+            # scrape that had just succeeded, immediately above the true
+            # warning. The cache layer sets it when it applies, via
+            # `as_stale`; the data being behind is a reading, and travels as
+            # one in `warehouse_stale` / `stale_tables`.
+            as_of=date.isoformat(),
         )
     finally:
         con.close()
@@ -1304,4 +1314,10 @@ def notable(d: dict) -> list[str]:
     v = sig.get("vol_pctile")
     if isinstance(v, (int, float)) and v >= NOTABLE_PCTILE_HIGH:
         out.append(f"exchange volume {_pctile(v)} pctile of {years}y")
+
+    # The page's only sign that the ingester has fallen behind, now that this
+    # block no longer claims to be a stale *cache* in order to get a badge.
+    # Stated as a reading, like everything else here: which table, how far.
+    if d.get("warehouse_stale"):
+        out.append(f"warehouse behind ({_behind_phrase(d)})")
     return out
