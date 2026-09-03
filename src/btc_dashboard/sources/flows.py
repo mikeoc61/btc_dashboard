@@ -152,7 +152,13 @@ def parse_table(html: str) -> list[dict]:
     for table in soup.find_all("table"):
         rows = [
             [c.get_text(strip=True) for c in tr.find_all(["th", "td"])]
-            for tr in table.find_all("tr")
+            # Farside opens the body with a stray `<tr>` that never closes, so
+            # html.parser nests every real row inside it. That wrapper has no
+            # cells of its own, but `find_all` descends, so it collects the
+            # nested rows' cells and its leading ones alias the first data
+            # row — emitting the launch day twice. Skip any row containing a
+            # row: a cell of a table is never another table's row.
+            for tr in table.find_all("tr") if tr.find("tr") is None
         ]
         first = next((i for i, c in enumerate(rows) if c and DATE_RE.match(c[0])), None)
         if first is None:
@@ -265,40 +271,44 @@ def classify(total: float | None, lead: float | None) -> str | None:
     return f"broad {direction}"
 
 
-def _market_closed(row: dict) -> bool:
-    """Whether this row is a session that never happened.
+def _carries_flows(row: dict) -> bool:
+    """Whether this row is a day of data at all.
 
-    Farside lists U.S. market closures as rows: no tracked fund posts anything
-    and the site prints `0.0` in the `Total` column. Over 680 BTC rows spanning
-    Jan 2024 to Sep 2026 there are 16 — MLK, Presidents' Day, Good Friday,
-    Memorial Day, Juneteenth, Independence Day, Labor Day, Thanksgiving,
-    Christmas, New Year, and the Jan 2025 day of mourning. A shut market is not
-    a day that reported no flow, so they are dropped rather than averaged in.
-    (None appears after 19 Jun 2025, so the site may have stopped emitting them.
-    The history still has to be handled.)
+    Two shapes are not. One is a date with nothing published against it. The
+    other is a date where no tracked fund has posted and the site has printed
+    `0.0` in the `Total` column — which happens for a U.S. market holiday, and
+    equally for an ordinary day whose flows have not been published yet. The
+    row cannot tell you which, and it does not matter: neither is a day that
+    reported no flow, and averaging either in drags every figure toward zero.
 
-    The test is *no fund posted*, not *everything is zero*. That distinction is
-    the whole point, and testing the looser thing is a live bug on any asset
-    whose flows are small: Farside rounds to 0.1M, so a quiet session prints
-    `0.0` in every column while being a perfectly real trading day. Across 542
-    ETH rows there are 12 such sessions — 5 Nov 2024, US election day, among
-    them. BTC has none, which is a fact about the size of its flows and not
-    about the data, and is exactly the sort of thing that stops being true when
-    someone adds an asset.
+    Of the 17 rows carrying that shape in the BTC history on 3 Sep 2026, 16 are
+    market holidays — MLK, Presidents' Day, Good Friday, Memorial Day,
+    Juneteenth, Independence Day, Labor Day, Thanksgiving, Christmas, New Year,
+    and the Jan 2025 day of mourning — and the 17th is that day's own row,
+    still unpublished at the time of reading. No holiday row appears after
+    19 Jun 2025 despite the holidays since, so the site seems to have stopped
+    listing them; the shape itself recurs daily regardless.
+
+    The test is *no fund posted*, never *everything is zero*. That distinction
+    is the whole point, and the looser version is a live bug on any asset whose
+    flows are small: Farside rounds to 0.1M, so a quiet session prints `0.0` in
+    every column while being a perfectly real trading day. Across 542 ETH rows
+    there are 12 such sessions, 5 Nov 2024 — US election day — among them. BTC
+    has none, which is a fact about the size of its flows rather than about the
+    data, and is exactly the sort of thing that stops being true when someone
+    adds an asset.
     """
-    return all(row.get(f) is None for f in FUNDS) and row.get("Total") == 0.0
+    want = (*FUNDS, "Total")
+    if not any(row.get(k) is not None for k in want):
+        return False
+    return not (all(row.get(f) is None for f in FUNDS) and row.get("Total") == 0.0)
 
 
 def summarize(rows: list[dict]) -> dict:
-    want = (*FUNDS, "Total")
-    # Two different kinds of row get dropped here and they are not the same
-    # thing: one where the site has published nothing at all, and one where it
-    # published a closure. A fund column holding an explicit `0.0` is neither —
-    # it is a day that reported no flow, and docstring point 1 says so.
-    reported = [
-        r for r in rows
-        if any(r.get(k) is not None for k in want) and not _market_closed(r)
-    ]
+    # A fund column holding an explicit `0.0` is a day that reported no flow,
+    # and docstring point 1 says it survives. See `_carries_flows` for the two
+    # shapes that do not.
+    reported = [r for r in rows if _carries_flows(r)]
     # Both halves are load-bearing. Without the funds, a day read mid-session
     # enters the windows with a Total whose sign can still flip. Without the
     # Total, it enters them contributing nothing — a five-day window summing

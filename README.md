@@ -497,15 +497,20 @@ something. Each is enforced in code and covered by a test.
 as `-` and a genuine zero flow as `0.0`. Collapsing them turns "hasn't reported"
 into "reported no flow" and drags every average toward zero.
 
-**A closed market is a third thing again.** Farside lists U.S. holidays as rows
-with no fund posting and `0.0` in the `Total` column — a session that never
-happened, dropped rather than averaged in (16 of them in the BTC history). The
-test is *no fund posted*, not *everything is zero*: the site rounds to 0.1M, so
-on an asset with smaller flows a quiet but perfectly real session prints `0.0`
-in every column. There are 12 such days in Farside's ETH history and none in
-BTC's, which is a fact about the size of BTC's flows rather than about the
-data — the looser test was correct here only by accident, and is now not
-relied on.
+**A row with no fund posted is a third thing again.** Farside prints such a
+day as blank funds with `0.0` in the `Total` column. That is a U.S. market
+holiday, or an ordinary day whose flows have not been published yet — the row
+cannot tell you which, and it does not matter, since neither is a day that
+reported no flow. Both are dropped rather than averaged in. The shape appears
+live every day before publication, so it is not named for closures even though
+16 of its 17 occurrences in the BTC history are holidays.
+
+The test is *no fund posted*, not *everything is zero*: the site rounds to
+0.1M, so on an asset with smaller flows a quiet but perfectly real session
+prints `0.0` in every column. There are 12 such days in Farside's ETH history
+and none in BTC's, which is a fact about the size of BTC's flows rather than
+about the data — the looser test was correct here only by accident, and is now
+not relied on.
 
 **A flow day counts only once every tracked fund has reported and Farside has
 published a `Total` for it.** Funds post progressively through the afternoon,

@@ -194,6 +194,40 @@ class TestParseTable:
             flows.parse_table("<html><body><p>nothing here</p></body></html>")
 
 
+class TestTheTbodyWrapperDoesNotDuplicateARow:
+    """Farside opens the body with a stray `<tr>` that never closes, so
+    html.parser nests every real row inside it. The wrapper has no cells of its
+    own, but `find_all` descends and its leading cells alias the first data
+    row — which emitted the launch day twice, inflating `days_complete` by one.
+
+    Harmless for the windows only because the phantom lands oldest and
+    `complete[-days:]` takes the newest. That is a property of the site's
+    markup, not a guarantee.
+    """
+
+    HTML = """
+    <table>
+      <tr><th>Date</th><th>IBIT</th><th>FBTC</th><th>ARKB</th>
+          <th>GBTC</th><th>Total</th></tr>
+      <tr>
+        <tr><td>11 Jan 2024</td><td>111.7</td><td>227.0</td><td>65.3</td>
+            <td>(95.1)</td><td>655.3</td></tr>
+        <tr><td>12 Jan 2024</td><td>10.0</td><td>1.0</td><td>1.0</td>
+            <td>(2.0)</td><td>12.0</td></tr>
+      </tr>
+    </table>
+    """
+
+    def test_the_first_row_is_emitted_once(self):
+        rows = flows.parse_table(self.HTML)
+        assert [r["date"] for r in rows] == ["11 Jan 2024", "12 Jan 2024"]
+
+    def test_the_values_still_parse(self):
+        first = flows.parse_table(self.HTML)[0]
+        assert first["IBIT"] == 111.7 and first["GBTC"] == -95.1
+        assert first["Total"] == 655.3
+
+
 class TestAgeUsesTheMarketCalendar:
     """Flow dates are U.S. trading days, so age is measured in New York.
 
@@ -424,24 +458,35 @@ class TestADayWithNoPublishedTotalIsNotComplete:
         assert s["days_complete"] == 5 and s["partial"]["date"] == "6 Jan 2026"
 
 
-class TestAClosedMarketIsNotAZeroFlowDay:
+class TestARowWithNoFundPostedIsNotAZeroFlowDay:
     """Two rows look alike and mean opposite things.
 
-    Farside prints a U.S. market closure as no fund posting and `0.0` in the
-    `Total` column — a session that never happened. It prints a quiet session
-    as an explicit `0.0` in every column, because it rounds to 0.1M — a real
-    day that reported no flow, which docstring point 1 says must survive.
+    Farside prints a day no tracked fund has posted for as blank funds with
+    `0.0` in the `Total` column — a market holiday, or simply a day whose
+    flows are not out yet. It prints a quiet but real session as an explicit
+    `0.0` in every column, because it rounds to 0.1M, and docstring point 1
+    says that one must survive.
 
     The old test was "is everything None or 0.0", which cannot tell them apart.
     On BTC that was harmless: flows are large enough that no all-zero session
-    exists in 680 rows. On ETH there are 12 in 542 — 5 Nov 2024, US election
-    day, among them — so the looser test was correct here only by an accident
-    of magnitude that nothing in the code recorded.
+    exists in the whole history. On ETH there are 12 in 542 — 5 Nov 2024, US
+    election day, among them — so the looser test was correct here only by an
+    accident of magnitude that nothing in the code recorded.
     """
 
     @staticmethod
     def _closure(date):
         return _day(date, None, None, None, None, 0.0)
+
+    def test_an_unpublished_day_is_dropped_for_the_same_reason(self):
+        """The shape has two causes and the row cannot say which. A holiday
+        and a day whose flows are not out yet are identical here — and the
+        second one appears every day before publication, which is why this
+        predicate must not claim to detect closures."""
+        today = _day("6 Jan 2026", None, None, None, None, 0.0)
+        assert flows._carries_flows(today) is False
+        s = flows.summarize(_complete_days(5) + [today])
+        assert s["as_of"] == "5 Jan 2026" and s["partial"] is None
 
     def test_a_closure_is_dropped(self):
         rows = _complete_days(5) + [self._closure("6 Jan 2026")]
@@ -470,7 +515,8 @@ class TestAClosedMarketIsNotAZeroFlowDay:
         assert flows.summarize(rows)["as_of"] == "5 Jan 2026"
 
     def test_the_predicate_reads_the_funds_not_the_total(self):
-        assert flows._market_closed(_day("x", None, None, None, None, 0.0)) is True
-        assert flows._market_closed(_day("x", 0.0, 0.0, 0.0, 0.0, 0.0)) is False
-        assert flows._market_closed(_day("x", None, None, None, 0.0, 0.0)) is False
-        assert flows._market_closed(_day("x", None, None, None, None, -5.0)) is False
+        assert flows._carries_flows(_day("x", None, None, None, None, 0.0)) is False
+        assert flows._carries_flows(_day("x", 0.0, 0.0, 0.0, 0.0, 0.0)) is True
+        assert flows._carries_flows(_day("x", None, None, None, 0.0, 0.0)) is True
+        assert flows._carries_flows(_day("x", None, None, None, None, -5.0)) is True
+        assert flows._carries_flows(_day("x", None, None, None, None, None)) is False
