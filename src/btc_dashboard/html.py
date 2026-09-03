@@ -196,8 +196,15 @@ h1 { font-size:1.05rem; margin:0; letter-spacing:.06em; color:var(--accent); }
 .tick.ok .mark { color:var(--up); }
 .tick.no .mark { color:var(--down); }
 .tick.no { color:var(--muted); }
+/* A breakpoint, not a card width. auto-fit stretches tracks to fill the row, so
+   a rendered card is always wider than this number and never equal to it: at
+   1920, the width this is tuned for, four columns come out at 461px. The value
+   therefore does not scale a card. Raising it drops a column, and the width
+   jumps in steps -- going 310 to 372 widened cards 26% at 1920 but 52% at 1164,
+   where it falls to two columns. Retune against a real viewport, never by
+   arithmetic on this number. */
 .grid { display:grid; gap:.85rem;
-        grid-template-columns:repeat(auto-fit,minmax(310px,1fr)); }
+        grid-template-columns:repeat(auto-fit,minmax(372px,1fr)); }
 .card { background:var(--card); border:1px solid var(--line); border-radius:8px;
         padding:.85rem 1rem; }
 .card h2 { font-size:.85rem; margin:0 0 .7rem; letter-spacing:.05em;
