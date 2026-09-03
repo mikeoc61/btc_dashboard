@@ -278,6 +278,73 @@ class TestPriceComesFromTheBtcTable:
         r = warehouse.collect(Config.from_env(db_path=path))
         assert any("daily close" in line for line in warehouse.render_lines(r.data))
 
+    def test_the_close_carries_its_own_date(self, tmp_path):
+        """The block's `date` is the on-chain frontier. The close comes from
+        `btc`, which advances independently — so it needs its own."""
+        path = _build_db(tmp_path / "m.duckdb", days=400)
+        con = duckdb.connect(str(path))
+        con.execute("DELETE FROM btc WHERE date > ?",
+                    [_utc_today() - datetime.timedelta(days=3)])
+        con.close()
+
+        r = warehouse.collect(Config.from_env(db_path=path))
+        assert r.data["date"] == _utc_today().isoformat(), "on-chain is current"
+        assert r.data["close_date"] == (
+            _utc_today() - datetime.timedelta(days=3)).isoformat()
+
+    def test_the_close_is_labelled_with_its_own_day_not_the_on_chain_day(
+            self, tmp_path):
+        """The defect: the card is dated from `onchain` and the note said the
+        close was that day's bar. On a day the tables disagree that is a
+        statement about a day the number is not from."""
+        path = _build_db(tmp_path / "m.duckdb", days=400)
+        con = duckdb.connect(str(path))
+        con.execute("DELETE FROM btc WHERE date > ?",
+                    [_utc_today() - datetime.timedelta(days=3)])
+        con.close()
+
+        d = warehouse.collect(Config.from_env(db_path=path)).data
+        theirs = d["close_date"]
+        ours = d["date"]
+
+        note = next(m.note for p in warehouse.html_panels(d) for m in p.metrics
+                    if m.label == "Daily Close")
+        assert theirs in note and ours not in note
+
+        line = next(ln for ln in warehouse.render_lines(d) if "daily close" in ln)
+        assert theirs in line and ours not in line
+
+    def test_the_sma_line_names_the_day_it_runs_through(self, tmp_path):
+        """The averages are over the same column ending at that same close, and
+        the percentages beside them are that close against each average."""
+        path = _build_db(tmp_path / "m.duckdb", days=400)
+        d = warehouse.collect(Config.from_env(db_path=path)).data
+        line = next(ln for ln in warehouse.render_lines(d) if ln.startswith("SMA"))
+        assert d["close_date"] in line
+
+    def test_a_payload_without_a_close_date_claims_no_day(self, tmp_path):
+        """A snapshot ingested from a build predating the field. Saying nothing
+        is right; falling back to the block's `date` would be the old bug."""
+        path = _build_db(tmp_path / "m.duckdb", days=400)
+        d = warehouse.collect(Config.from_env(db_path=path)).data
+        d.pop("close_date", None)
+
+        note = next(m.note for p in warehouse.html_panels(d) for m in p.metrics
+                    if m.label == "Daily Close")
+        line = next(ln for ln in warehouse.render_lines(d) if "daily close" in ln)
+        sma = next(ln for ln in warehouse.render_lines(d) if ln.startswith("SMA"))
+        for text in (note, line, sma):
+            assert d["date"] not in text, "no date beats the wrong date"
+
+    def test_an_empty_price_table_leaves_the_date_unset(self, tmp_path):
+        path = _build_db(tmp_path / "m.duckdb", days=400)
+        con = duckdb.connect(str(path))
+        con.execute("DELETE FROM btc")
+        con.close()
+
+        d = warehouse.collect(Config.from_env(db_path=path)).data
+        assert d["close"] is None and d["close_date"] is None
+
     def test_renders_when_the_price_table_is_empty(self, tmp_path):
         """On-chain and price advance independently; one empty must not cost
         the block."""

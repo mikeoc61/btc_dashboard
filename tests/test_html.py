@@ -403,13 +403,17 @@ class TestTheReferenceCloseIsDated:
         assert "15 Aug close $63,031" in page.render_html(snap)
 
     def test_the_warehouse_card_names_its_day(self):
+        """Its *own* day. The card is dated from `onchain` and the close comes
+        from `btc`; those advance independently, so inheriting the heading's
+        date states a day the number may not be from."""
         from btc_dashboard.sources import warehouse
         rows = warehouse.html_panels({
-            "date": "2026-08-14", "onchain": {}, "signals": {},
-            "close": 62979.0,
+            "date": "2026-08-14", "close_date": "2026-08-13", "onchain": {},
+            "signals": {}, "close": 62979.0,
         })[0].metrics
         close = next(m for m in rows if m.label == "Daily Close")
-        assert "2026-08-14" in close.note
+        assert "2026-08-13" in close.note
+        assert "2026-08-14" not in close.note
 
     def test_an_undated_close_still_renders(self):
         snap = _snap()

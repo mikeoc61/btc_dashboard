@@ -347,16 +347,28 @@ def realized_vol(con, days: int) -> dict:
     return out
 
 
-def latest_close(con) -> float | None:
-    """Most recent daily close from the `btc` table.
+def latest_close(con) -> tuple[datetime.date | None, float | None]:
+    """Most recent daily close from the `btc` table, and the day it belongs to.
 
     Deliberately a separate query from the `onchain` row: price and on-chain
     facts live in different tables and advance independently, so reading price
     off the on-chain row silently yields None.
+
+    Which is also why the date comes back with it. The block's `date` is the
+    on-chain frontier, and labelling this close with that date is a claim about
+    a day it may not be from — the two tables are allowed to diverge, and this
+    module says so three lines up. The date of the *close* is what makes the
+    number comparable, so it travels with the number.
+
+    Not `coverage["btc"]["last"]`, which is `max(date)` over the whole table:
+    if the newest btc row carries a null close, that names a day whose close is
+    not the one shown here.
     """
-    return _scalar(
-        con, "SELECT close FROM btc WHERE close IS NOT NULL ORDER BY date DESC LIMIT 1"
-    )
+    row = con.execute(
+        "SELECT date, close FROM btc WHERE close IS NOT NULL "
+        "ORDER BY date DESC LIMIT 1"
+    ).fetchone()
+    return (row[0], row[1]) if row else (None, None)
 
 
 def day_pace_retarget(con) -> float | None:
@@ -712,6 +724,10 @@ def collect(cfg) -> SourceResult:
         primary = next(s for s in smas if s["days"] == SMA_WINDOW)
         sma, sma_pct = primary["value"], primary["pct"]
 
+        # One query for both, because the SMAs are averages of the same column
+        # ending at this same row — so the close's date dates them too.
+        close_date, close = _try(latest_close, con) or (None, None)
+
         vol = {
             "annualisation_days": VOL_ANNUALISATION,
             "windows": [
@@ -749,7 +765,11 @@ def collect(cfg) -> SourceResult:
                     window_days=VOL_WINDOW_DAYS, detrend_dow=True,
                 ),
             },
-            "close": _try(latest_close, con),
+            "close": close,
+            # The close's own day, which is not necessarily the on-chain day
+            # above it. Consumers label the close with this and never with
+            # `date`.
+            "close_date": close_date.isoformat() if close_date else None,
             "smas": smas,
             "volatility": vol,
             # Flat aliases for the primary window, kept for schema continuity.
@@ -847,6 +867,18 @@ def _day_label(raw) -> str:
         return f"UTC {safe_text(raw or 'unknown date')}"
 
 
+def _close_day(d: dict) -> str:
+    """The day the daily close belongs to, or "" when the payload won't say.
+
+    Never falls back to the block's `date`. That is the on-chain frontier, and
+    naming it here is the claim this field exists to stop — the two tables
+    advance independently. A snapshot from a build predating `close_date`
+    therefore says nothing about the day, which is correct: it does not know.
+    """
+    raw = d.get("close_date")
+    return _day_label(raw) if raw else ""
+
+
 def render_lines(d: dict) -> list[str]:
     oc = d.get("onchain") or {}
     sig = d.get("signals") or {}
@@ -889,8 +921,14 @@ def render_lines(d: dict) -> list[str]:
     close = d.get("close")
     if close is not None:
         # Labelled as the daily bar to keep it distinct from the live spot in
-        # the PRICE block, which comes from a different source and time.
-        out.append(f"daily close {fmt(close, ',.0f', prefix='$')} (warehouse)")
+        # the PRICE block, which comes from a different source and time — and
+        # dated, because which day a close belongs to is what makes it
+        # comparable. That day is the btc table's, not the on-chain day above.
+        day = _close_day(d)
+        out.append(
+            f"daily close {fmt(close, ',.0f', prefix='$')} "
+            f"({day + ', ' if day else ''}warehouse)"
+        )
 
     parts = []
     for s in d.get("smas") or []:
@@ -904,7 +942,13 @@ def render_lines(d: dict) -> list[str]:
         else:
             parts.append(f"{fmt(s.get('days'))}d n/a")
     if parts:
-        out.append("SMA " + " | ".join(parts))
+        # A moving average's endpoint is its qualifier — the 200-day average
+        # through Monday is not the one through Thursday — and the percentages
+        # beside it are that same close measured against each average. So the
+        # whole line is as of the close's day, and says so.
+        day = _close_day(d)
+        out.append((f"SMA (through {day}): " if day else "SMA ")
+                   + " | ".join(parts))
 
     vol = d.get("volatility") or {}
     vparts = []
@@ -1066,9 +1110,13 @@ def html_panels(d: dict) -> list[Panel]:
                note="integer sat/vB from getblockstats — 0 means under 1"),
         Metric("Fee / Subsidy", f"{fmt(oc.get('fee_subsidy'), '.2f')}%"),
         Metric("Miner Revenue", f"{fmt(oc.get('miner_rev'), ',.1f')} BTC"),
+        # The one row on this card that is not from the on-chain table, so it
+        # is the one row that has to name its own day rather than inherit the
+        # heading's. Dated with `date` it claimed a day it may not be from.
         Metric("Daily Close", fmt(d.get("close"), ",.0f", prefix="$"),
-               note=f"settled bar for {_day_label(d.get('date')).replace('UTC ', '')}"
-                    f", not live spot"),
+               note=(f"settled bar for {_close_day(d).replace('UTC ', '')}"
+                     f", not live spot") if _close_day(d)
+                    else "settled daily bar, not live spot"),
     ]
 
     signals = []
@@ -1106,10 +1154,14 @@ def html_panels(d: dict) -> list[Panel]:
                  f"{_pctile(w.get('percentile_all'))} all history"))
 
     # The day goes in the heading, not in a row. As a row it reads as one
-    # metric among many, and every other figure on the card is *for* that day —
-    # so a reader comparing it against a live price has no cue that they are
-    # looking at different days. The weekday stays: fee/subsidy runs materially
-    # lower at weekends, so an unlabelled Saturday reads as deterioration.
+    # metric among many, and every on-chain figure on the card is *for* that
+    # day — so a reader comparing it against a live price has no cue that they
+    # are looking at different days. The weekday stays: fee/subsidy runs
+    # materially lower at weekends, so an unlabelled Saturday reads as
+    # deterioration.
+    #
+    # Daily Close is the exception and carries its own date in its note: it
+    # comes from the btc table, which advances independently of this one.
     try:
         day = datetime.date.fromisoformat(d["date"])
         heading = f"ON-CHAIN \u00b7 {day:%-d %b %a} UTC".upper()

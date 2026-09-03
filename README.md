@@ -185,7 +185,11 @@ holds. Whenever the ingester hasn't run yet those are different days, and two
 undated "previous closes" a day apart look like the sources disagreeing about
 the price rather than an ordinary one-day lag. The price card names its
 reference date, and the on-chain day moved into that card's heading — as a row
-it read as one metric among many rather than as the date of everything below it.
+it read as one metric among many rather than as the date of the on-chain
+figures below it. The daily close is the exception on that card and names its
+own day in its note: it is read from the `btc` table, which advances
+independently of `onchain`, so inheriting the heading's date would state a day
+the number may not be from.
 
 The two providers date a daily bar by opposite conventions, which is handled
 explicitly: CoinGecko's points are instants stamped 00:00 UTC, so the one
