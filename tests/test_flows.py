@@ -422,3 +422,55 @@ class TestADayWithNoPublishedTotalIsNotComplete:
         rows.append(_day("6 Jan 2026", 100.0, 5.0, None, None, 120.0))
         s = flows.summarize(rows)
         assert s["days_complete"] == 5 and s["partial"]["date"] == "6 Jan 2026"
+
+
+class TestAClosedMarketIsNotAZeroFlowDay:
+    """Two rows look alike and mean opposite things.
+
+    Farside prints a U.S. market closure as no fund posting and `0.0` in the
+    `Total` column — a session that never happened. It prints a quiet session
+    as an explicit `0.0` in every column, because it rounds to 0.1M — a real
+    day that reported no flow, which docstring point 1 says must survive.
+
+    The old test was "is everything None or 0.0", which cannot tell them apart.
+    On BTC that was harmless: flows are large enough that no all-zero session
+    exists in 680 rows. On ETH there are 12 in 542 — 5 Nov 2024, US election
+    day, among them — so the looser test was correct here only by an accident
+    of magnitude that nothing in the code recorded.
+    """
+
+    @staticmethod
+    def _closure(date):
+        return _day(date, None, None, None, None, 0.0)
+
+    def test_a_closure_is_dropped(self):
+        rows = _complete_days(5) + [self._closure("6 Jan 2026")]
+        s = flows.summarize(rows)
+        assert s["as_of"] == "5 Jan 2026", "a shut market is not the latest day"
+        assert s["days_complete"] == 5
+
+    def test_a_closure_does_not_become_a_partial_day(self):
+        """It would otherwise be the newest reported row with every fund
+        blank, and the panel would announce four funds still to report on a
+        day nothing traded."""
+        rows = _complete_days(5) + [self._closure("6 Jan 2026")]
+        assert flows.summarize(rows)["partial"] is None
+
+    def test_a_session_that_reported_zero_is_kept(self):
+        """The case the old proxy ate. Every column an explicit 0.0, which is
+        a published figure, not a blank."""
+        rows = _complete_days(4) + [_day("5 Jan 2026", 0.0, 0.0, 0.0, 0.0, 0.0)]
+        s = flows.summarize(rows)
+        assert s["days_complete"] == 5
+        assert s["as_of"] == "5 Jan 2026" and s["latest_total"] == 0.0
+        assert s["windows"][0]["covered"] and s["windows"][0]["total"] == -40.0
+
+    def test_a_row_with_nothing_published_is_dropped(self):
+        rows = _complete_days(5) + [_day("6 Jan 2026", None, None, None, None, None)]
+        assert flows.summarize(rows)["as_of"] == "5 Jan 2026"
+
+    def test_the_predicate_reads_the_funds_not_the_total(self):
+        assert flows._market_closed(_day("x", None, None, None, None, 0.0)) is True
+        assert flows._market_closed(_day("x", 0.0, 0.0, 0.0, 0.0, 0.0)) is False
+        assert flows._market_closed(_day("x", None, None, None, 0.0, 0.0)) is False
+        assert flows._market_closed(_day("x", None, None, None, None, -5.0)) is False

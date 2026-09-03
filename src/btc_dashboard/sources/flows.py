@@ -265,31 +265,40 @@ def classify(total: float | None, lead: float | None) -> str | None:
     return f"broad {direction}"
 
 
+def _market_closed(row: dict) -> bool:
+    """Whether this row is a session that never happened.
+
+    Farside lists U.S. market closures as rows: no tracked fund posts anything
+    and the site prints `0.0` in the `Total` column. Over 680 BTC rows spanning
+    Jan 2024 to Sep 2026 there are 16 — MLK, Presidents' Day, Good Friday,
+    Memorial Day, Juneteenth, Independence Day, Labor Day, Thanksgiving,
+    Christmas, New Year, and the Jan 2025 day of mourning. A shut market is not
+    a day that reported no flow, so they are dropped rather than averaged in.
+    (None appears after 19 Jun 2025, so the site may have stopped emitting them.
+    The history still has to be handled.)
+
+    The test is *no fund posted*, not *everything is zero*. That distinction is
+    the whole point, and testing the looser thing is a live bug on any asset
+    whose flows are small: Farside rounds to 0.1M, so a quiet session prints
+    `0.0` in every column while being a perfectly real trading day. Across 542
+    ETH rows there are 12 such sessions — 5 Nov 2024, US election day, among
+    them. BTC has none, which is a fact about the size of its flows and not
+    about the data, and is exactly the sort of thing that stops being true when
+    someone adds an asset.
+    """
+    return all(row.get(f) is None for f in FUNDS) and row.get("Total") == 0.0
+
+
 def summarize(rows: list[dict]) -> dict:
     want = (*FUNDS, "Total")
-    # The `0.0` looks like it contradicts point 1 of this module's docstring.
-    # It does not, and removing it is a regression, so: Farside lists U.S.
-    # market closures as rows — every tracked fund blank, `Total` rendered
-    # `0.0`. Over the 680 rows spanning Jan 2024 to Sep 2026 this filter drops
-    # exactly 16, and all 16 are closures: MLK, Presidents' Day, Good Friday,
-    # Memorial Day, Juneteenth, Independence Day, Labor Day, Thanksgiving,
-    # Christmas, New Year, and the Jan 2025 day of mourning. A shut market is
-    # not a day that reported no flow.
-    #
-    # Drop the `0.0` and those rows enter `reported`. They cannot reach
-    # `complete` — their funds are None — but on any holiday the closure row
-    # becomes `reported[-1]`, and `partial` then announces an in-progress day
-    # with all four funds still "pending" on a day nothing traded.
-    #
-    # What this proxy costs: a genuine all-zero *trading* day — every tracked
-    # fund and the Total exactly 0.0 — would be dropped too. It has not
-    # occurred in those 680 rows, and `Total` sums the untracked funds as well,
-    # so it would take every listed ETF flat on the same session. Worth knowing
-    # rather than worth guarding.
-    #
-    # (No closure row appears after 19 Jun 2025, so the site may have stopped
-    # emitting them. The filter still has to handle the history.)
-    reported = [r for r in rows if any(r.get(k) not in (None, 0.0) for k in want)]
+    # Two different kinds of row get dropped here and they are not the same
+    # thing: one where the site has published nothing at all, and one where it
+    # published a closure. A fund column holding an explicit `0.0` is neither —
+    # it is a day that reported no flow, and docstring point 1 says so.
+    reported = [
+        r for r in rows
+        if any(r.get(k) is not None for k in want) and not _market_closed(r)
+    ]
     # Both halves are load-bearing. Without the funds, a day read mid-session
     # enters the windows with a Total whose sign can still flip. Without the
     # Total, it enters them contributing nothing — a five-day window summing

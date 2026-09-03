@@ -100,8 +100,14 @@ Breaking one of these is a regression even when the number is right.
   glyph, and flex `gap` supplying the only spacing.
 - **An unfillable window reports `n/a`.** Never a shorter mean or sum wearing a
   longer label. Applies to flow windows, SMAs and volatility alike.
-- **A reported zero is not a missing value.** Farside renders unpublished as
-  `-`; only an explicit `0` is `0.0`.
+- **A reported zero is not a missing value, and a closed market is neither.**
+  Farside renders unpublished as `-`; only an explicit `0` is `0.0`. A U.S.
+  holiday is a row with no fund posted and `0.0` in `Total`, dropped by
+  `_market_closed`. That predicate tests *no fund posted*, never *everything is
+  zero*: the site rounds to 0.1M, so on a thinner asset a real but quiet
+  session prints `0.0` everywhere — 12 such days in Farside's ETH history, none
+  in BTC's. BTC-only is why the looser test used to work, not a reason it was
+  right.
 - **Every ETF figure is on Farside's `Total` basis — every listed fund, not the
   four itemized ones.** `latest`, the windows and the streak always were; the
   in-progress row was not, and summed tracked funds only. On 27 Aug 2026 that
