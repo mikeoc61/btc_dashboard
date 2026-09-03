@@ -117,12 +117,44 @@ def validate(payload) -> dict:
             f"v{SCHEMA_VERSION} — upgrade the client"
         )
 
+    # Checked because `render` indexes it directly — a payload without it
+    # validated cleanly and then took out the whole panel with a KeyError.
+    # Presence and type only, never a parsed timestamp: consumers slice this
+    # for display, and demanding ISO-8601 would refuse a producer whose format
+    # is merely different rather than wrong.
+    generated = payload.get("generated_at")
+    if not isinstance(generated, str):
+        raise SnapshotError(
+            "payload has no string 'generated_at' — every consumer stamps the "
+            f"panel with it (got {type(generated).__name__})"
+        )
+
     sources = payload.get("sources")
     if not isinstance(sources, dict):
         raise SnapshotError("payload has no 'sources' object")
     for name, block in sources.items():
         if not isinstance(block, dict) or "available" not in block:
             raise SnapshotError(f"source {name!r} is malformed")
+        # `available` decides which of two entirely different paths a consumer
+        # takes, and every one of them tests it for truth. A string "false" is
+        # truthy, so a dead source reported that way is read as healthy: its
+        # `error` — the stated reason, the thing the analyst is supposed to
+        # reason about — is never reached, and `missing()` reports nothing
+        # missing. Being *told* what is unavailable is a contract of this
+        # tool, so the flag carrying it has to be a flag.
+        if not isinstance(block["available"], bool):
+            raise SnapshotError(
+                f"source {name!r} has a non-boolean 'available' "
+                f"({block['available']!r}) — a dead source would read as healthy"
+            )
+        # Renderers are handed this and call `.get` on it. A non-mapping is
+        # caught downstream and reported as "render failed", which blames this
+        # build for the peer's payload; refused here it names the real cause.
+        if block["available"] and not isinstance(block.get("data"), dict):
+            raise SnapshotError(
+                f"source {name!r} is available but its 'data' is not an object "
+                f"(got {type(block.get('data')).__name__})"
+            )
 
     return payload
 

@@ -121,6 +121,9 @@ class TestPriceClassify:
         assert price.classify(-5.0) == "below"
 
 
+_GEN = "2026-07-29T12:00:00+00:00"
+
+
 class TestIngest:
     """The client half of the service split: read a snapshot rather than build one."""
 
@@ -153,15 +156,49 @@ class TestIngest:
         with pytest.raises(snapshot.SnapshotError, match="upgrade the client"):
             snapshot.load(str(p))
 
+    # `generated_at` is supplied wherever it is not the thing under test, so
+    # each case is still rejected for the reason it was written to check.
     @pytest.mark.parametrize("payload,match", [
         ({"sources": {}}, "no schema_version"),
-        ({"schema_version": 1}, "no 'sources'"),
-        ({"schema_version": 1, "sources": {"x": {}}}, "malformed"),
+        ({"schema_version": 1, "generated_at": _GEN}, "no 'sources'"),
+        ({"schema_version": 1, "generated_at": _GEN, "sources": {"x": {}}},
+         "malformed"),
         ([], "expected a JSON object"),
+        # Indexed directly by `render`, which used to die on a KeyError over a
+        # payload that had just validated cleanly.
+        ({"schema_version": 1, "sources": {}}, "no string 'generated_at'"),
+        ({"schema_version": 1, "generated_at": 5, "sources": {}},
+         "no string 'generated_at'"),
+        # A string "false" is truthy, so a source that is down reads as
+        # healthy: its `error` is never reached and `missing()` reports
+        # nothing missing.
+        ({"schema_version": 1, "generated_at": _GEN,
+          "sources": {"price": {"available": "false", "error": "dead",
+                                "data": None}}}, "non-boolean 'available'"),
+        # Renderers call `.get` on this. Refused here it names the payload;
+        # allowed through it surfaces as "render failed" and blames us.
+        ({"schema_version": 1, "generated_at": _GEN,
+          "sources": {"price": {"available": True, "data": "not an object"}}},
+         "'data' is not an object"),
     ])
     def test_rejects_malformed_payloads(self, payload, match):
         with pytest.raises(snapshot.SnapshotError, match=match):
             snapshot.validate(payload)
+
+    def test_an_unavailable_source_needs_no_data(self):
+        """The other half: `data` is only meaningful when `available` is true,
+        and a dead source legitimately carries None."""
+        payload = self._valid()
+        payload["sources"]["node"] = {
+            "available": False, "stale": False, "as_of": None,
+            "error": "bitcoin-cli not found", "data": None,
+        }
+        assert snapshot.validate(payload) is payload
+
+    def test_a_validated_payload_renders(self):
+        """The point of the checks: what passes here cannot take out a
+        consumer that trusted it."""
+        assert "BTC DASHBOARD" in render.render(self._valid(), color=False)
 
     def test_refuses_non_http_schemes(self):
         with pytest.raises(snapshot.SnapshotError, match="unsupported scheme"):

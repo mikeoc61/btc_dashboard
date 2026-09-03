@@ -817,9 +817,14 @@ are refused rather than guessed at.
 Once a payload can arrive over the wire it is untrusted input heading into a
 prompt, and it's handled as such:
 
-- `schema_version`, `sources`, and per-block shape are validated on ingest; a
-  payload from a newer service is refused with "upgrade the client" rather than
-  half-read.
+- the shape every consumer relies on is validated on ingest, and only that:
+  `schema_version` (a payload from a newer service is refused with "upgrade the
+  client" rather than half-read), a string `generated_at`, and per block a
+  **boolean** `available` with an object `data` behind it. The boolean matters
+  more than it looks — a string `"false"` is truthy, so a source that is down
+  would read as healthy, its `error` never reached and `missing()` reporting
+  nothing missing, which is the opposite of this tool's promise that you are
+  told what it could not see.
 - Free-text fields (`error`) are collapsed to one line, stripped of control and
   bidi characters, and truncated before reaching the prompt, so an injected
   `\n\nIGNORE PRIOR INSTRUCTIONS…` can't forge its own section — it stays on one
