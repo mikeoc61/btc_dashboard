@@ -10,10 +10,14 @@ that means something and one that doesn't:
    turns "hasn't reported" into "reported no flow", which silently drags every
    average toward zero. Blank parses to None; only an explicit 0 is 0.0.
 
-2. **A day counts only once every tracked fund has reported.** Funds post
-   progressively through the afternoon, so a day read mid-session has a real
-   but incomplete Total whose *sign* can still flip. Partial days are excluded
-   from every latest/streak/window figure and surfaced separately.
+2. **A day counts only once every tracked fund has reported and Farside has
+   published a Total for it.** Funds post progressively through the afternoon,
+   so a day read mid-session has a real but incomplete Total whose *sign* can
+   still flip. Partial days are excluded from every latest/streak/window figure
+   and surfaced separately. The Total is required for the same reason it is the
+   basis of every figure here: a day without one cannot contribute to a sum
+   taken over every listed fund, and counting it as complete puts a day into a
+   window that adds nothing to its total.
 
 3. **An unfillable window reports n/a, never a shorter sum.** A 60-day net
    computed over 40 available days is a 40-day net wearing a 60-day label —
@@ -191,26 +195,35 @@ def _other(row: dict) -> float | None:
 def _window(complete: list[dict], days: int) -> dict:
     recent = complete[-days:] if days > 0 else []
     covered = len(recent) == days
+    # Summed unguarded on purpose. `summarize` admits a row into `complete`
+    # only once its Total and all four funds are present, so there is nothing
+    # here to skip — and a guard that skips one silently turns a broken
+    # invariant into a window that is short by a day and says it is covered.
+    # If that invariant ever breaks, `collect` catches the TypeError and the
+    # block reports why it is missing, which beats a quietly wrong figure.
     return {
         "days": days,
         "days_available": len(recent),
         "covered": covered,
-        "total": round(sum(r["Total"] for r in recent if r["Total"] is not None), 1)
-        if covered
-        else None,
-        "lead": round(sum(r[LEAD] for r in recent if r[LEAD] is not None), 1)
-        if covered
-        else None,
+        "total": round(sum(r["Total"] for r in recent), 1) if covered else None,
+        "lead": round(sum(r[LEAD] for r in recent), 1) if covered else None,
     }
 
 
 def _streak(complete: list[dict]) -> tuple[int, str]:
+    """Consecutive same-sign days, walking back through the usable ones.
+
+    Walks `complete`, so it counts *across* the days excluded from it — a
+    market closure, a day still reporting, a day with no published Total. That
+    is the same rule the windows use, and the alternative reads worse: a
+    fourteen-day outflow run interrupted by one unmeasurable day is a
+    fourteen-day run, not a three-day one.
+    """
     sign = None
     n = 0
     for r in reversed(complete):
+        # Unguarded: `complete` has no missing Total. See `_window`.
         v = r["Total"]
-        if v is None:
-            break
         s = 1 if v > 0 else (-1 if v < 0 else 0)
         if sign is None:
             sign, n = s, 1
@@ -255,7 +268,15 @@ def classify(total: float | None, lead: float | None) -> str | None:
 def summarize(rows: list[dict]) -> dict:
     want = (*FUNDS, "Total")
     reported = [r for r in rows if any(r.get(k) not in (None, 0.0) for k in want)]
-    complete = [r for r in reported if all(r.get(f) is not None for f in FUNDS)]
+    # Both halves are load-bearing. Without the funds, a day read mid-session
+    # enters the windows with a Total whose sign can still flip. Without the
+    # Total, it enters them contributing nothing — a five-day window summing
+    # four days, reported as covered, which is the short-sum-wearing-a-longer-
+    # label defect this module exists to avoid.
+    complete = [
+        r for r in reported
+        if r.get("Total") is not None and all(r.get(f) is not None for f in FUNDS)
+    ]
 
     partial = None
     if reported and any(reported[-1].get(f) is None for f in FUNDS):

@@ -497,10 +497,14 @@ something. Each is enforced in code and covered by a test.
 as `-` and a genuine zero flow as `0.0`. Collapsing them turns "hasn't reported"
 into "reported no flow" and drags every average toward zero.
 
-**A flow day counts only once every tracked fund has reported.** Funds post
-progressively through the afternoon, and a day read mid-session has a real but
-incomplete total whose *sign* can still flip. Partial days are excluded from
-every figure and surfaced separately.
+**A flow day counts only once every tracked fund has reported and Farside has
+published a `Total` for it.** Funds post progressively through the afternoon,
+and a day read mid-session has a real but incomplete total whose *sign* can
+still flip. Partial days are excluded from every figure and surfaced
+separately. The `Total` is required because it is the basis of every figure
+here: a day without one contributes nothing to a sum taken over every listed
+fund, so admitting it puts a day into a window that adds zero — a five-day net
+over four days, reported as covered.
 
 **An unfillable window reports `n/a`, never a shorter sum.** A 60-day net over
 40 available days is a 40-day net wearing a 60-day label — worse than no answer,

@@ -366,3 +366,59 @@ class TestThePartialDayIsOnTheSameBasisAsEverythingAboveIt:
         context = next(l for l in flows.context_lines(d) if "IN PROGRESS" in l)
         assert "same basis as the figures above" in context
         assert "not only the itemized ones" in context
+
+
+class TestADayWithNoPublishedTotalIsNotComplete:
+    """Every figure here is on Farside's `Total` basis, so a day without one
+    cannot contribute to any of them.
+
+    It used to count as complete on the strength of its four funds alone. The
+    window then summed it as nothing and still reported itself covered — one
+    bad row four days back understated a 5-day net by 20% with `covered: True`
+    and `days_available: 5` beside it, which is the short-sum-wearing-a-longer-
+    label defect this module exists to avoid, reached from the other side.
+    """
+
+    @staticmethod
+    def _rows(gap_at, n=14):
+        """`n` outflow days, all four funds always in, one with no Total."""
+        return [
+            _day(f"{i} Jan 2026", -10.0, 0.0, 0.0, 0.0,
+                 None if i == gap_at else -20.0)
+            for i in range(1, n + 1)
+        ]
+
+    def test_the_window_sums_only_usable_days(self):
+        s = flows.summarize(self._rows(gap_at=11))
+        w5 = s["windows"][0]
+        assert w5["covered"] and w5["total"] == -100.0, (
+            "five usable days at -20.0 each, not four of them summed as five"
+        )
+
+    def test_it_does_not_count_as_a_complete_day(self):
+        assert flows.summarize(self._rows(gap_at=11))["days_complete"] == 13
+
+    def test_the_streak_walks_past_it_as_it_walks_past_a_holiday(self):
+        """`complete` already excludes market closures and in-progress days,
+        and the streak counts across those. A thirteen-day outflow run broken
+        by one unmeasurable day is a thirteen-day run, not a three-day one —
+        which is what the old `None` guard in `_streak` reported."""
+        s = flows.summarize(self._rows(gap_at=11))
+        assert (s["streak_days"], s["streak_sign"]) == (13, "outflow")
+
+    def test_as_the_newest_row_it_does_not_become_the_latest_day(self):
+        """It reported `as_of` that date with `latest_total: None`, and the
+        context line then read "fully reported: n/a total"."""
+        s = flows.summarize(self._rows(gap_at=11, n=11))
+        assert s["as_of"] == "10 Jan 2026"
+        assert s["latest_total"] == -20.0
+
+        line = next(ln for ln in flows.context_lines(s) if "fully reported" in ln)
+        assert "n/a total" not in line, "a day claimed as fully reported has a total"
+
+    def test_a_day_still_reporting_is_unaffected(self):
+        """The other half of the predicate still does its own job."""
+        rows = _complete_days(5)
+        rows.append(_day("6 Jan 2026", 100.0, 5.0, None, None, 120.0))
+        s = flows.summarize(rows)
+        assert s["days_complete"] == 5 and s["partial"]["date"] == "6 Jan 2026"
