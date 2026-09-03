@@ -267,6 +267,28 @@ def classify(total: float | None, lead: float | None) -> str | None:
 
 def summarize(rows: list[dict]) -> dict:
     want = (*FUNDS, "Total")
+    # The `0.0` looks like it contradicts point 1 of this module's docstring.
+    # It does not, and removing it is a regression, so: Farside lists U.S.
+    # market closures as rows — every tracked fund blank, `Total` rendered
+    # `0.0`. Over the 680 rows spanning Jan 2024 to Sep 2026 this filter drops
+    # exactly 16, and all 16 are closures: MLK, Presidents' Day, Good Friday,
+    # Memorial Day, Juneteenth, Independence Day, Labor Day, Thanksgiving,
+    # Christmas, New Year, and the Jan 2025 day of mourning. A shut market is
+    # not a day that reported no flow.
+    #
+    # Drop the `0.0` and those rows enter `reported`. They cannot reach
+    # `complete` — their funds are None — but on any holiday the closure row
+    # becomes `reported[-1]`, and `partial` then announces an in-progress day
+    # with all four funds still "pending" on a day nothing traded.
+    #
+    # What this proxy costs: a genuine all-zero *trading* day — every tracked
+    # fund and the Total exactly 0.0 — would be dropped too. It has not
+    # occurred in those 680 rows, and `Total` sums the untracked funds as well,
+    # so it would take every listed ETF flat on the same session. Worth knowing
+    # rather than worth guarding.
+    #
+    # (No closure row appears after 19 Jun 2025, so the site may have stopped
+    # emitting them. The filter still has to handle the history.)
     reported = [r for r in rows if any(r.get(k) not in (None, 0.0) for k in want)]
     # Both halves are load-bearing. Without the funds, a day read mid-session
     # enters the windows with a Total whose sign can still flip. Without the
