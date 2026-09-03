@@ -141,6 +141,13 @@ class Panel:
 
     title: str
     metrics: list[Metric]
+    # A qualifier that belongs to several rows rather than to one. Use it only
+    # when repeating it per row would say the same thing three times — a shared
+    # venue, a shared as-of day. A qualifier that applies to one reading stays
+    # in that reading's own `note`, where it cannot be separated from it, and a
+    # qualifier the whole card shares belongs in the title. Like `Metric.note`,
+    # it must read correctly with all styling removed.
+    note: str | None = None
     # Where this card sits on the page, lowest first. A source declares its
     # own placement because the useful order is not source order: volatility
     # belongs beside price, since a distance from a moving average only means

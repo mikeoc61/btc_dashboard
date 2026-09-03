@@ -217,6 +217,10 @@ h1 { font-size:1.05rem; margin:0; letter-spacing:.06em; color:var(--accent); }
 .value.warn { color:var(--warn); }
 .note { color:var(--muted); font-size:.8rem; line-height:1.45;
         padding:0 0 .3rem; margin-top:-.1rem; }
+/* Sits between the heading and the first row, so it carries the gap the
+   heading's margin would otherwise leave. */
+.cardnote { color:var(--muted); font-size:.8rem; line-height:1.45;
+            margin:-.4rem 0 .55rem; }
 /* Muted so a coloured note stays secondary to the value it sits under. */
 .note.up { color:color-mix(in srgb, var(--up) 78%, var(--muted)); }
 .note.down { color:color-mix(in srgb, var(--down) 78%, var(--muted)); }
@@ -498,9 +502,15 @@ def _live_parts(snapshot: dict) -> dict[str, str]:
         # error three times reads as three problems.
         err = (f'<div class="err">refresh failed: {_esc(block["error"])}</div>'
                if i == 0 and block.get("stale") and block.get("error") else "")
+        # A card-level qualifier sits under the heading, above the rows it
+        # applies to. Its own class rather than `note`: `.note + .row` draws a
+        # separator, which above the first row would read as a rule under the
+        # heading rather than as a divider between readings.
+        cardnote = (f'<div class="cardnote">{_esc(panel.note)}</div>'
+                    if panel.note else "")
         cards.append(
             f'<section class="card"><h2>{_esc(panel.title)}{badge}</h2>'
-            f'{_rows(panel.metrics)}{err}</section>'
+            f'{cardnote}{_rows(panel.metrics)}{err}</section>'
         )
 
     notable = _notable(snapshot)

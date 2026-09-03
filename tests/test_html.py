@@ -856,3 +856,57 @@ class TestTheAskBoxSaysWhatItCanReach:
         """No ask box, so nothing to scope."""
         out = page.render_html(_snap())
         assert page.NO_SCOPE_NOTE not in out
+
+
+class TestACardLevelNote:
+    """A qualifier several rows share is said once, on the card.
+
+    It has to survive the same way a row note does: strip the stylesheet and
+    the page must still say which venue the exchange rows came from and which
+    day they are through.
+    """
+
+    def _snap(self):
+        base = {"available": True, "stale": False, "cached": False,
+                "cache_age_seconds": None, "as_of": None, "error": None}
+        return {"schema_version": 1, "generated_at": "2026-09-03T02:00:00+00:00",
+                "asset": "btc", "sources": {"warehouse": {**base, "data": {
+                    "date": "2026-09-02", "close_date": "2026-08-31",
+                    "onchain": {}, "volatility": {},
+                    "signals": {"vol_pctile": 58.4, "trades_pctile": 97.2,
+                                "trade_size_pctile": 3.9}}}}}
+
+    def test_it_reaches_the_page(self):
+        out = page.render_html(self._snap())
+        assert "kraken only" in out and "through 31 Aug Mon" in out
+
+    def test_it_survives_the_stylesheet_being_stripped(self):
+        """`cardnote` is a class. Strip the CSS and the sentence must remain —
+        the venue and the day are meaning, not decoration."""
+        import re
+        out = page.render_html(self._snap())
+        stripped = re.sub(r"<style>.*?</style>", "", out, flags=re.S)
+        assert "kraken only" in stripped and "through 31 Aug Mon" in stripped
+
+    def test_it_is_escaped(self, monkeypatch):
+        """The note is built from constants and a date that `fromisoformat`
+        already refuses to let be anything else, so this is defence rather than
+        a live hole — but it renders into the document like any other string."""
+        from btc_dashboard.sources import warehouse
+
+        monkeypatch.setattr(warehouse, "html_panels", lambda d: [
+            Panel("SIGNALS", [], note="<img src=x onerror=alert(1)>")])
+        out = page.render_html(self._snap())
+        assert "<img src=x" not in out
+        assert "&lt;img src=x" in out
+
+    def test_the_live_patch_carries_it_too(self):
+        """`cards` is in LIVE_IDS, so a tick replaces the whole region. Both
+        the full page and the patch are built by one function today; if that
+        ever splits, the note would silently stop surviving a refresh."""
+        live = page.render_live(self._snap())
+        assert "kraken only" in live and "through 31 Aug Mon" in live
+
+    def test_a_card_without_one_renders_no_empty_node(self):
+        out = page.render_html(_snap())
+        assert 'class="cardnote"' not in out

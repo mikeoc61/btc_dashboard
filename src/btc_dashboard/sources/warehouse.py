@@ -1091,7 +1091,18 @@ def render_lines(d: dict) -> list[str]:
         for _, label, value, window in _activity_items(sig)
     ]
     if activity:
-        out.append("activity (kraken, weekday-adj): " + " | ".join(activity))
+        # Dated, and by the `btc` table rather than the `day (...)` heading
+        # above. These read a table that advances independently of `onchain`,
+        # and sitting between a line dated from `onchain` and a self-dating
+        # daily close, an undated line inherits the wrong day by proximity —
+        # which on a +5.3% session reads as today's participation when it is
+        # the previous close's. `through` matches the volatility line's form.
+        through = _close_day(d)
+        out.append(
+            "activity (kraken, weekday-adj"
+            + (f", through {through}" if through else "") + "): "
+            + " | ".join(activity)
+        )
     # Every value below is guarded independently. A partially-populated
     # warehouse is normal — the price and on-chain tables advance separately,
     # and one lagging must not cost the whole block.
@@ -1349,12 +1360,12 @@ def html_panels(d: dict) -> list[Panel]:
     # Unconditional. Gated at the 95th percentile these reached the page about
     # 19 days a year, so an ordinary reading looked identical to a missing one.
     # The threshold still selects for the NOTABLE strip.
-    for key, _, v, window in _activity_items(sig):
+    activity = _activity_items(sig)
+    for key, _, v, window in activity:
         name, why = ACTIVITY_PANEL[key]
-        signals.append(Metric(
-            name, f"{_pctile(v)} pctile",
-            note=f"{window} · kraken only, ~{VENUE_SHARE_PCT}% of cross-venue "
-                 f"volume · {why}"))
+        # Window and caveat only. The venue is shared by all three and is said
+        # once, in the card's note.
+        signals.append(Metric(name, f"{_pctile(v)} pctile", note=f"{window} · {why}"))
 
     vols = []
     for w in vol.get("windows") or []:
@@ -1382,15 +1393,42 @@ def html_panels(d: dict) -> list[Panel]:
         day = datetime.date.fromisoformat(d["date"])
         heading = f"ON-CHAIN \u00b7 {day:%-d %b %a} UTC".upper()
     except (KeyError, TypeError, ValueError):
-        heading = "ON-CHAIN (DAILY)"
+        # `day` is bound in both branches: the SIGNALS card below reads it, and
+        # an unusable date must leave that card undated rather than unbuilt.
+        day, heading = None, "ON-CHAIN (DAILY)"
 
     panels = [Panel(heading, facts, priority=40)]
     if signals:
+        # Dated like the ON-CHAIN card, and from the same table: fee/subsidy,
+        # the apathy streak and the hashrate drawdown all read `onchain`, so
+        # the heading's day covers them exactly as it covers the card above.
+        #
         # No window in the heading. It used to claim `vs 2y` for every row,
         # which trade size (90d) makes false — and each row already opens its
         # note with its own window, so the heading was asserting a qualifier
         # the rows were better placed to carry.
-        panels.append(Panel("SIGNALS", signals, priority=50))
+        title = f"SIGNALS · {day:%-d %b %a} UTC".upper() if day else "SIGNALS"
+        # The exchange rows are the exception, and the card note is where they
+        # say so. They read `btc`, which advances independently of `onchain` —
+        # the frontier this heading names — so inheriting that day would date
+        # them by a table they did not come from. Stated whether or not the two
+        # currently agree: a date that appears only when the tables diverge is
+        # a date the reader cannot rely on being there.
+        note = None
+        if activity:
+            note = (f"exchange rows are kraken only, ~{VENUE_SHARE_PCT}% of "
+                    f"cross-venue volume")
+            # Formatted like the heading, not like `Daily Close`'s ISO note on
+            # the card above. The two dates on THIS card exist to be compared —
+            # the reader's question is whether the exchange rows are from the
+            # day the heading names — and a comparison the reader has to
+            # translate between formats first is one they will skip.
+            try:
+                through = datetime.date.fromisoformat(d["close_date"])
+                note += f", through {through:%-d %b %a} UTC"
+            except (KeyError, TypeError, ValueError):
+                pass
+        panels.append(Panel(title, signals, priority=50, note=note))
     if vols:
         # The annualisation lives in the title so every row inherits it — the
         # level is not comparable to anyone else's without it.

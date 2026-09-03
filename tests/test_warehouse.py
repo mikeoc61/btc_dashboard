@@ -843,9 +843,13 @@ class TestExchangeActivity:
         d = self._collect(tmp_path)
         line = next(l for l in warehouse.render_lines(d) if l.startswith("activity"))
         assert "kraken" in line
-        note = next(m.note for p in warehouse.html_panels(d) for m in p.metrics
-                    if m.label == "Exchange Volume")
-        assert "kraken only" in note
+        # On the page it is said once, on the card, rather than on each of the
+        # three rows that share it.
+        panel = next(p for p in warehouse.html_panels(d)
+                     if p.title.startswith("SIGNALS"))
+        assert "kraken only" in panel.note
+        assert not any("kraken" in (m.note or "") for m in panel.metrics), \
+            "the shared qualifier belongs to the card, not repeated per row"
         ctx = " ".join(warehouse.context_lines(d))
         assert "Kraken only" in ctx and "NOT a market-wide volume figure" in ctx
 
@@ -872,11 +876,11 @@ class TestExchangeActivity:
     def test_the_signals_heading_claims_no_window_of_its_own(self, tmp_path):
         """It read `SIGNALS (vs 2y)`, which was true until a 90-day reading sat
         under it. A heading cannot carry a qualifier its rows disagree about,
-        so each row carries its own and the heading claims nothing."""
+        so each row carries its own window and the heading claims none."""
         d = self._collect(tmp_path)
         panel = next(p for p in warehouse.html_panels(d)
                      if p.title.startswith("SIGNALS"))
-        assert panel.title == "SIGNALS"
+        assert "2y" not in panel.title and "90d" not in panel.title
         windows = {m.label: m.note.split(" ")[0] for m in panel.metrics
                    if m.label in ("Exchange Volume", "Avg Trade Size")}
         assert windows == {"Exchange Volume": "2y", "Avg Trade Size": "90d"}
@@ -895,3 +899,55 @@ class TestExchangeActivity:
         names = [m.label for p in warehouse.html_panels(old) for m in p.metrics]
         assert "Exchange Volume" in names
         assert "Trade Count" not in names and "Avg Trade Size" not in names
+
+    def _btc_lagging(self, tmp_path, short_days=3):
+        """`btc` behind `onchain`, which is the case the two dates exist for.
+
+        The ingester writes both tables and they are allowed to advance
+        independently — CLAUDE.md records `onchain` current with `btc` three
+        days short, which is exactly this.
+        """
+        path = _build_db(tmp_path / "lag.duckdb", days=800)
+        con = duckdb.connect(str(path))
+        con.execute(
+            "DELETE FROM btc WHERE date > "
+            f"(SELECT max(date) FROM onchain) - INTERVAL '{short_days}' DAY")
+        con.close()
+        return warehouse.collect(
+            Config.from_env(db_path=path, cache_dir=tmp_path / "lagcc")).data
+
+    def test_the_card_is_dated_by_the_table_its_heading_covers(self, tmp_path):
+        """Three rows read `onchain` and three read `btc`. The heading is the
+        on-chain day, because that is what the rows it covers came from —
+        dating all six by one frontier is the mistake e71be88 and ae000eb each
+        fixed once, and it only shows up on the day the tables disagree."""
+        d = self._btc_lagging(tmp_path)
+        onchain_day, btc_day = d["date"], d["close_date"]
+        assert onchain_day != btc_day, "the fixture must actually diverge"
+
+        panel = next(p for p in warehouse.html_panels(d)
+                     if p.title.startswith("SIGNALS"))
+        stamp = datetime.date.fromisoformat(onchain_day).strftime("%-d %b %a").upper()
+        assert stamp in panel.title
+
+        # And the exchange rows say they are from the other one.
+        assert datetime.date.fromisoformat(btc_day).strftime("%-d %b %a") in panel.note
+        assert stamp.title() not in panel.note, "the note must not repeat the heading's day"
+
+    def test_the_exchange_rows_are_dated_even_when_the_tables_agree(self, tmp_path):
+        """A date that appears only on the day the tables diverge is a date the
+        reader cannot rely on being there — and cannot distinguish from a card
+        that simply never dates its rows."""
+        d = self._collect(tmp_path)
+        assert d["date"] == d["close_date"], "the ordinary case: they agree"
+        panel = next(p for p in warehouse.html_panels(d)
+                     if p.title.startswith("SIGNALS"))
+        assert "through" in panel.note
+
+    def test_the_terminal_activity_line_dates_itself_too(self, tmp_path):
+        """It sits between a line dated from `onchain` and a self-dating daily
+        close, so undated it inherits the wrong day by proximity."""
+        d = self._btc_lagging(tmp_path)
+        line = next(l for l in warehouse.render_lines(d) if l.startswith("activity"))
+        assert d["close_date"] in line
+        assert d["date"] not in line, "it must not inherit the on-chain day"

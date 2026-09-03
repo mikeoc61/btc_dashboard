@@ -616,6 +616,27 @@ market-wide volume figure, so the venue travels with it in the terminal, on the
 page and in the analyst's context. "Single venue" without the share understates
 how narrow the sample is.
 
+**A card is dated by the table its heading covers, not by the card.** The
+`SIGNALS` card mixes two frontiers: fee/subsidy, the apathy streak and the
+hashrate drawdown read `onchain`, while volume, trade count and average trade
+size read `btc`. Those tables are written by one ingester and are allowed to
+advance independently — `onchain` current with `btc` three days short is a shape
+this project has already shipped once. So the heading carries the on-chain day,
+covering the three rows that came from it, and the exchange rows say which day
+they are through in the card's note. One heading over all six would read as true
+every day the tables happen to agree and go quietly false on the day they do
+not.
+
+The date is stated whether or not the two currently agree. A qualifier that
+appears only on the day the tables diverge is one the reader cannot rely on
+being there, and cannot tell apart from a card that never dates its rows.
+
+The terminal line does the same, for the same reason and less obviously: it sits
+between a line dated from `onchain` and a self-dating daily close, so undated it
+inherits the wrong day purely by proximity. On a session where spot has moved
+5% against the last close, that reads as today's participation when it is the
+previous day's.
+
 **An ordinary reading still reaches the reader.** These percentiles were
 rendered only at or above the 95th, which by construction reaches a reader about
 19 days a year — so a quiet tape was indistinguishable from a dead source, and
