@@ -135,3 +135,57 @@ class TestTheNotableGateIsInSigmaNotPercent:
         out = node.notable(_data(blocks_elapsed=1700, blocks_left=316,
                                  projection_sigma_pct=None, projection_pct=-5.72))
         assert len(out) == 1 and "-5.7%" in out[0]
+
+
+class TestColourAssertsASignThatIsReal:
+    """Green and red are claims about direction, so they need a direction the
+    number actually carries. `price.change_tone` makes the same claim against
+    a fixed percentage; this one cannot, because the projection's error moves
+    by a factor of four across a period."""
+
+    def test_no_projection_is_not_a_projected_fall(self):
+        """`n/a` used to fall to the `else` of a sign test and render red,
+        which reads as a projected drop rather than as no projection."""
+        d = _data(projection_pct=None, projection_sigma_pct=None)
+        page = next(m for m in node.html_panels(d)[0].metrics
+                    if m.label == "Next Retarget")
+        assert page.value == "n/a" and page.tone is None
+
+    def test_a_sub_sigma_reading_is_left_uncoloured(self):
+        assert node.retarget_tone(_rt(projection_pct=0.5)) is None
+        assert node.retarget_tone(_rt(projection_pct=-0.5)) is None
+
+    def test_a_reading_past_one_sigma_keeps_its_colour(self):
+        assert node.retarget_tone(_rt(projection_pct=8.0)) == "up"
+        assert node.retarget_tone(_rt(projection_pct=-8.0)) == "down"
+
+    def test_the_dead_band_widens_early_in_the_period(self):
+        """The same level, coloured late and neutral early — which is the
+        whole reason a fixed percentage could not do this job."""
+        late = _rt(projection_pct=4.0, blocks_elapsed=2016,
+                   projection_sigma_pct=None)
+        early = _rt(projection_pct=4.0, blocks_elapsed=323,
+                    projection_sigma_pct=None)
+        assert node.retarget_tone(late) == "up"
+        assert node.retarget_tone(early) is None
+
+    def test_colour_is_a_lower_bar_than_the_strip(self):
+        """Between 1σ and 2σ the card commits to a direction and the strip
+        stays quiet. At 2σ the colour would say nothing the strip had not."""
+        rt = _rt(projection_pct=6.09, blocks_elapsed=327,
+                 projection_sigma_pct=None)
+        assert node.retarget_tone(rt) == "up"
+        assert node.notable(_data(**{k: v for k, v in rt.items()
+                                     if k != "blocks_left"})) == []
+
+    def test_no_band_means_no_colour(self):
+        """Consistent with the strip: without the band there is nothing to
+        establish the sign against."""
+        assert node.retarget_tone(_rt(projection_sigma_pct=None,
+                                      blocks_elapsed=None)) is None
+
+    def test_the_colour_reaches_the_markup(self):
+        from btc_dashboard import html as page
+        panel = node.html_panels(_data(projection_pct=8.0))[0]
+        rows = page._rows(panel.metrics)
+        assert 'class="value up"' in rows

@@ -247,6 +247,34 @@ def context_lines(d: dict) -> list[str]:
     return out
 
 
+# Colour asserts a sign, so the sign has to be real. One standard error, not
+# the strip's two: the bar for "this direction is probably not noise" is lower
+# than for "lead the page with it", and at 2σ the colour would say nothing the
+# NOTABLE strip had not already said.
+NEUTRAL_BAND_SIGMA = 1.0
+
+
+def retarget_tone(rt: dict) -> str | None:
+    """up / down / None, with a dead band that widens early in a period.
+
+    `price.change_tone` does this job against a fixed percentage, which works
+    there because daily volatility is roughly stable. It cannot work here: the
+    projection's own error runs from ±8.3% to ±2.2% across a period, so one
+    percentage would be a different test at each end — strict enough to silence
+    a real move late, loose enough to paint noise green early.
+
+    The `None` also covers the value being absent, which is the other half of
+    what this replaces. `n/a` fell to the `else` of a sign test and rendered
+    red, reading as a projected *fall* rather than as no projection at all.
+    """
+    proj, sigma = rt.get("projection_pct"), _sigma(rt)
+    if not isinstance(proj, (int, float)) or sigma is None:
+        return None
+    if abs(proj) < NEUTRAL_BAND_SIGMA * sigma:
+        return None
+    return "up" if proj > 0 else "down"
+
+
 def html_panels(d: dict) -> list[Panel]:
     rt = d.get("retarget") or {}
     mp = d.get("mempool") or {}
@@ -280,7 +308,7 @@ def html_panels(d: dict) -> list[Panel]:
         Metric("Next Retarget",
                fmt(proj, "+.2f", suffix="%") if proj is not None else "n/a",
                note=retarget_note,
-               tone="up" if isinstance(proj, (int, float)) and proj >= 0 else "down"),
+               tone=retarget_tone(rt)),
         Metric("Mempool", f"{fmt(mp.get('vmb'), '.1f')} vMB",
                note=f"{fmt(mp.get('tx'), ',')} tx"),
         Metric("Fee Estimates",

@@ -248,11 +248,19 @@ class TestToneLandsOnTheSignedThing:
         assert hr.tone is None and hr.note_tone == "down"
 
     def test_a_signed_value_still_colours_the_value(self):
-        """Where the value *is* the signed quantity, it keeps the colour."""
+        """Where the value *is* the signed quantity, it keeps the colour —
+        once it clears its own noise band.
+
+        The -2.09% that used to stand here cannot serve any more, and adding
+        the block count it now needs would not rescue it: -2.09% is under one
+        standard error at *every* point in a difficulty period, reaching only
+        0.94σ on the last block. So the value changed, not just the fixture.
+        """
         from btc_dashboard.sources import node
         rows = node.html_panels({
             "height": 1, "hash_rate_ehs": 1.0, "difficulty_t": 1.0,
-            "retarget": {"projection_pct": -2.09, "blocks_left": 100},
+            "retarget": {"projection_pct": -5.14, "blocks_left": 1464,
+                         "blocks_elapsed": 552},
             "mempool": {}, "fees_sat_vb": {},
         })[0].metrics
         rt = next(m for m in rows if m.label == "Next Retarget")

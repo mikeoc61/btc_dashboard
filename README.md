@@ -229,7 +229,16 @@ negative is the *relationship*, which lives in the note. `Metric` therefore
 carries `tone` and `note_tone`, and a row uses whichever one describes a signed
 quantity. Same for hashrate: the level is not negative, its 7-day change is.
 Where the value *is* the signed thing (a retarget projection, a flow total) the
-value keeps the colour.
+value keeps the colour — provided the sign is real. The retarget projection
+gets the same dead band spot does, but measured in its own standard errors
+rather than in percent, since its noise floor moves across a period where daily
+volatility roughly does not: under **1σ** it is left uncoloured, and `n/a` is
+uncoloured too. That last one was a bug — an absent projection fell to the
+`else` of a sign test and rendered red, reading as a projected *fall* rather
+than as no projection at all. The bar for colour is deliberately lower than the
+2σ that puts the reading on the `NOTABLE` strip: committing to a direction is a
+smaller claim than leading the page, and at 2σ the colour would say nothing the
+strip had not already said.
 
 **Every card of a source carries its freshness badge**, not just the first. One
 source can produce several cards — the warehouse yields on-chain, signals and
