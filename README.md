@@ -29,7 +29,7 @@ ON-CHAIN (daily) [cached 37m]
   block pace 145/144 (+0.7%, ±8% day-to-day noise)
 
 ETF FLOWS (US SPOT) [cached 37m]
-  latest -56.2M total | -55.5M IBIT (14 Aug 2026, 2d ago)
+  latest -56.2M total | -55.5M IBIT (Fri 14 Aug 2026, 2d ago)
   5d net -385.2M total | -78.9M IBIT (20% IBIT — broad distribution)
   20d net +452.5M total | +606.0M IBIT
   60d net -5.55B total | -3.91B IBIT
@@ -528,6 +528,20 @@ prints `0.0` in every column. There are 12 such days in Farside's ETH history
 and none in BTC's, which is a fact about the size of BTC's flows rather than
 about the data — the looser test was correct here only by accident, and is now
 not relied on.
+
+**The flow date is rendered with its weekday, because the age beside it is in
+calendar days.** `age_days` is measured on the market's own clock
+(`America/New_York`) but counts calendar days, and a U.S. trading calendar has
+gaps that count cannot see: every weekend, plus the holidays Farside stopped
+printing rows for after 19 Jun 2025. So the most recent session there is can
+read `3d ago` — on Labor Day, 7 Sep 2026, the Friday close did exactly that,
+beside three cards badged fresh, and looked like a scrape falling behind.
+Measuring in *sessions* instead would need a holiday calendar this module does
+not have, for the same reason the row above cannot tell a closure from an
+unpublished day. So the count stays honest about what it counts and the date
+names its day — `Fri 04 Sep 2026 · 3d ago` — which is the one fact that
+explains the gap. The in-progress day is formatted the same way: the two sit on
+one card and exist to be compared.
 
 **A flow day counts only once every tracked fund has reported and Farside has
 published a `Total` for it.** Funds post progressively through the afternoon,

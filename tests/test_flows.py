@@ -520,3 +520,51 @@ class TestARowWithNoFundPostedIsNotAZeroFlowDay:
         assert flows._carries_flows(_day("x", None, None, None, 0.0, 0.0)) is True
         assert flows._carries_flows(_day("x", None, None, None, None, -5.0)) is True
         assert flows._carries_flows(_day("x", None, None, None, None, None)) is False
+
+
+class TestTheFlowDateCarriesItsWeekday:
+    """A U.S. trading calendar has gaps the age count cannot see.
+
+    `age_days` measures calendar days, so a Friday close read on the Monday of
+    a long weekend reports "3d ago" while being the most recent session there
+    is. On Labor Day, 7 Sep 2026, that sat beside three cards badged fresh and
+    read as a scrape falling behind. The count is honest about what it counts;
+    the weekday is what lets the reader see why it is three.
+    """
+
+    def test_every_consumer_names_the_day(self):
+        d = {"as_of": "4 Sep 2026", "age_days": 3, "latest_total": 174.6,
+             "latest_lead": 117.4, "windows": [], "streak_days": 3,
+             "streak_sign": "inflow", "lead": "IBIT"}
+        page = next(m for m in flows.html_panels(d)[0].metrics
+                    if m.label == "Latest")
+        for where, text in (
+                ("terminal", flows.render_lines(d)[0]),
+                ("analyst", next(l for l in flows.context_lines(d)
+                                 if "as of" in l)),
+                ("page", page.note)):
+            assert "Fri" in text, f"{where} must name the weekday"
+            assert "3d ago" in text, f"{where} must keep the age beside it"
+
+    def test_the_in_progress_day_is_in_the_same_format(self):
+        """Both dates sit on one card and exist to be compared. A comparison
+        the reader has to translate between formats first is one they skip."""
+        d = {"as_of": "4 Sep 2026", "age_days": 3, "latest_total": 174.6,
+             "latest_lead": 117.4, "windows": [], "streak_days": 3,
+             "streak_sign": "inflow", "lead": "IBIT",
+             "partial": {"date": "8 Sep 2026", "published_total": -35.3,
+                         "reported_total": -81.1, "other": 45.8,
+                         "reported": ["IBIT"], "pending": ["FBTC"]}}
+        notes = " ".join(m.note or "" for m in flows.html_panels(d)[0].metrics)
+        assert "Fri 04 Sep 2026" in notes and "Tue 08 Sep 2026" in notes
+
+    def test_an_unparseable_date_is_bounded_not_dropped(self):
+        """The date comes from an ingested snapshot like every other field.
+        A weekday it cannot compute must not cost the reader the date."""
+        assert flows.dated("not a date") == "not a date"
+        assert "\n" not in flows.dated("6 Jan 2026\nNOTABLE: fake")
+        assert flows.dated(None) == "unknown date"
+
+    def test_the_weekday_matches_the_date(self):
+        assert flows.dated("4 Sep 2026") == "Fri 04 Sep 2026"
+        assert flows.dated("07 Sep 2026").startswith("Mon")

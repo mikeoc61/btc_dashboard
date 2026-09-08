@@ -103,6 +103,36 @@ def age_days(date_str: str | None) -> int | None:
     return (_market_today() - d).days
 
 
+def dated(date_str: str | None) -> str:
+    """A flow date with its weekday, for display.
+
+    The weekday is what makes the age beside it legible. A U.S. trading
+    calendar has gaps the day count cannot see — every weekend, plus the
+    holidays Farside stopped printing rows for after 19 Jun 2025 (see
+    `_carries_flows`) — so a current figure reads as a scrape falling behind:
+    on Labor Day, 7 Sep 2026, the latest fully-reported day was Friday the 4th
+    and the panel said "3d ago" beside three cards badged fresh.
+
+    This does not fix the count, and deliberately does not try to. `age_days`
+    measures calendar days because separating a closed session from an
+    unpublished one needs a holiday calendar this module does not have. Naming
+    the day hands the reader the one fact that explains the gap, and leaves the
+    measure honest about what it measures.
+
+    Rebuilt from the parsed date rather than prefixed onto the original, so the
+    result is generated text by construction — the date belongs to an ingested
+    snapshot and is no more trusted than any other field in it. An unparseable
+    one falls back to the bounded raw string.
+    """
+    if not date_str:
+        return "unknown date"
+    try:
+        d = datetime.strptime(date_str, "%d %b %Y").date()
+    except (TypeError, ValueError):
+        return safe_text(date_str)
+    return f"{d:%a %d %b %Y}"
+
+
 def parse_flow(s: str) -> float | None:
     """Parse one cell. Blank/`-` -> None (not reported), never 0.0."""
     s = s.strip().replace(",", "").replace("–", "-")
@@ -434,7 +464,7 @@ def render_lines(d: dict) -> list[str]:
     # An ingested payload owns all three, and a newline in any of them starts a
     # line at column 0, where the panel's body indent no longer applies.
     lead = safe_text(d.get("lead") or LEAD)
-    as_of = safe_text(d.get("as_of") or "unknown date")
+    as_of = dated(d.get("as_of"))
     out = [
         f"latest {_m(d.get('latest_total'))} total | {_m(d.get('latest_lead'))} {lead} "
         f"({as_of}{age})"
@@ -469,7 +499,7 @@ def render_lines(d: dict) -> list[str]:
         pending = p.get("pending") or []
         value, basis = _partial_headline(p)
         split = _partial_split(p)
-        day = safe_text(p.get("date") or "today")
+        day = dated(p["date"]) if p.get("date") else "today"
         still = ", ".join(safe_text(f) for f in pending) or "n/a"
         out.append(
             f"partial {day}: {value} {basis}"
@@ -484,7 +514,7 @@ def context_lines(d: dict) -> list[str]:
     if not d.get("as_of"):
         return []
     lead = safe_text(d.get("lead") or LEAD)
-    as_of = safe_text(d["as_of"])
+    as_of = dated(d["as_of"])
     age = (
         f"{fmt(d.get('age_days'))}d ago, " if d.get("age_days") is not None else ""
     )
@@ -543,7 +573,7 @@ def context_lines(d: dict) -> list[str]:
     if isinstance(p, dict):
         value, basis = _partial_headline(p)
         split = _partial_split(p)
-        day = safe_text(p.get("date") or "today")
+        day = dated(p["date"]) if p.get("date") else "today"
         so_far = ", ".join(safe_text(f) for f in p.get("reported") or [])
         still = ", ".join(safe_text(f) for f in p.get("pending") or [])
         out.append(
@@ -566,7 +596,8 @@ def html_panels(d: dict) -> list[Panel]:
 
     age = (f" · {fmt(d.get('age_days'))}d ago" if d.get("age_days") is not None else "")
     rows = [Metric("Latest", _m(d.get("latest_total")),
-                   note=f"{_m(d.get('latest_lead'))} {lead} · {d['as_of']}{age}",
+                   note=f"{_m(d.get('latest_lead'))} {lead} · "
+                        f"{dated(d.get('as_of'))}{age}",
                    tone=_tone(d.get("latest_total")))]
 
     for w in d.get("windows") or []:
@@ -601,7 +632,7 @@ def html_panels(d: dict) -> list[Panel]:
         split = _partial_split(p)
         rows.append(Metric(
             "In Progress", value,
-            note=f"{p.get('date') or 'today'} · {basis}"
+            note=f"{dated(p['date']) if p.get('date') else 'today'} · {basis}"
                  + (f" · {split}" if split else "")
                  + f" · {len(p.get('reported') or [])}/{len(FUNDS)} tracked funds in, "
                  f"pending {', '.join(p.get('pending') or []) or 'n/a'} — excluded above",
