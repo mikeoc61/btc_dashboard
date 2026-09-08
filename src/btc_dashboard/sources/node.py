@@ -13,6 +13,7 @@ snapshot is absent, and both the reader and the analyst are told so.
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 
 from . import Metric, Panel, SourceResult, fmt, unavailable
@@ -26,6 +27,41 @@ RETARGET_INTERVAL = 2016
 # Below this many blocks into a difficulty period the cumulative projection is
 # single-block noise: early on, one fast block can imply an absurd adjustment.
 MIN_BLOCKS_FOR_PROJ = 144
+
+
+def projection_sigma(blocks_elapsed) -> float | None:
+    """One standard error on the retarget projection, as a percentage.
+
+    Block discovery is Poisson, so the time to find n blocks has relative
+    standard deviation 1/sqrt(n); the projection is a function of that elapsed
+    time, so it inherits the same relative error. Nothing about the difficulty
+    algorithm enters — this is the precision of the *estimate*, not a claim
+    about where the adjustment will land.
+
+    That error shrinks from ±8.3% at the `MIN_BLOCKS_FOR_PROJ` floor to
+    ±2.2% at a full period, which is the whole reason it has to be carried
+    beside the level. +5.7% at 323 blocks in is one standard error and means
+    nothing; the same +5.7% at 1,700 is four and means hashrate has genuinely
+    moved. A reader shown only the level cannot tell those apart, and neither
+    can a model.
+    """
+    if not isinstance(blocks_elapsed, int) or blocks_elapsed <= 0:
+        return None
+    return round(100 / math.sqrt(blocks_elapsed), 2)
+
+
+def _sigma(rt: dict) -> float | None:
+    """The carried band, or one recovered from the block count behind it.
+
+    Recovered rather than dropped because `blocks_elapsed` predates the band
+    in the schema: an ingested snapshot written before this existed still holds
+    everything the qualifier is computed from, and a qualifier that can be
+    reconstructed should never be silently absent.
+    """
+    s = rt.get("projection_sigma_pct")
+    if isinstance(s, (int, float)) and s > 0:
+        return s
+    return projection_sigma(rt.get("blocks_elapsed"))
 
 
 class NodeError(RuntimeError):
@@ -78,12 +114,13 @@ def collect(cfg) -> SourceResult:
 
         elapsed = tip - period_start
         blocks_left = RETARGET_INTERVAL - tip % RETARGET_INTERVAL
-        proj = eta_days = None
+        proj = eta_days = sigma = None
         if elapsed > 0 and tip_hdr["time"] > start_hdr["time"]:
             pace = (tip_hdr["time"] - start_hdr["time"]) / elapsed
             eta_days = round(blocks_left * pace / 86400, 1)
             if elapsed >= MIN_BLOCKS_FOR_PROJ:
                 proj = round((600 / pace - 1) * 100, 2)
+                sigma = projection_sigma(elapsed)
 
         fees = {
             "fast": _satvb(_cli(cfg, "estimatesmartfee", "2")),
@@ -108,6 +145,11 @@ def collect(cfg) -> SourceResult:
                     # None when too early in the period to be meaningful — the
                     # warehouse's day-pace figure is the fallback in that case.
                     "projection_pct": proj,
+                    # Collected, not derived per consumer. Every presentation
+                    # needs it and the threshold that selects for the NOTABLE
+                    # strip is stated in multiples of it, so a qualifier each
+                    # renderer had to recompute is one a renderer can forget.
+                    "projection_sigma_pct": sigma,
                 },
                 "mempool": {
                     "tx": mempool.get("size"),
@@ -142,6 +184,13 @@ def render_lines(d: dict) -> list[str]:
     rt = d.get("retarget") or {}
     if rt.get("projection_pct") is not None:
         proj = f"proj {fmt(rt.get('projection_pct'), '+.2f', suffix='%')}"
+        sigma = _sigma(rt)
+        if sigma is not None:
+            # The block count rides with the band, because the band is only
+            # interpretable against it — and because the n/a branch below has
+            # always shown the count for exactly the same reason.
+            proj += (f" ±{fmt(sigma, '.1f')}% "
+                     f"({fmt(rt.get('blocks_elapsed'), missing='?')} blks in)")
     else:
         proj = f"proj n/a ({fmt(rt.get('blocks_elapsed'), missing='?')} blks into period)"
     eta = f", ~{fmt(rt.get('eta_days'))}d" if rt.get("eta_days") is not None else ""
@@ -168,12 +217,27 @@ def context_lines(d: dict) -> list[str]:
             f"BTC hash rate 7d change: {fmt(d.get('hash_rate_7d_pct'), '+.2f', suffix='%')}"
         )
     rt = d.get("retarget") or {}
-    if rt.get("projection_pct") is not None:
-        out.append(
+    proj = rt.get("projection_pct")
+    if proj is not None:
+        line = (
             f"BTC difficulty retarget projection: "
-            f"{fmt(rt.get('projection_pct'), '+.2f', suffix='%')} in "
+            f"{fmt(proj, '+.2f', suffix='%')} in "
             f"{fmt(rt.get('blocks_left'), ',')} blocks — a miner-pressure signal"
         )
+        sigma = _sigma(rt)
+        if sigma is not None and isinstance(proj, (int, float)):
+            # Spelled out, and the ratio computed here rather than left for the
+            # model to work out. The projection is a pace estimate over the
+            # blocks found so far, and a model handed the level alone reads an
+            # early-period wobble as a hashrate story — it has no way to know
+            # the reading is inside its own error unless it is told in the
+            # units that answer the question.
+            line += (
+                f", estimated from {fmt(rt.get('blocks_elapsed'), ',')} blocks so "
+                f"far and therefore ±{fmt(sigma, '.1f')}% at one standard "
+                f"error; this reading is {abs(proj) / sigma:.1f} s.e. from flat"
+            )
+        out.append(line)
     mp = d.get("mempool") or {}
     if mp.get("tx") is not None or mp.get("vmb") is not None:
         out.append(
@@ -190,6 +254,21 @@ def html_panels(d: dict) -> list[Panel]:
     hr7 = d.get("hash_rate_7d_pct")
 
     proj = rt.get("projection_pct")
+    sigma = _sigma(rt)
+    # Blocks left and the ETA describe the *period*; the band describes the
+    # *projection*. Both belong in the note, but only the band makes the value
+    # above it comparable — and the block count has to travel with the band,
+    # since the card otherwise reports blocks left and the reader would have to
+    # subtract from 2016 to see how far in the estimate is.
+    retarget_note = (
+        f"{fmt(rt.get('blocks_left'), ',')} blks"
+        + (f", ~{fmt(rt.get('eta_days'))}d" if rt.get("eta_days") is not None else "")
+    )
+    if proj is None:
+        retarget_note += " — too early to project"
+    elif sigma is not None:
+        retarget_note += (f" · ±{fmt(sigma, '.1f')}% at "
+                          f"{fmt(rt.get('blocks_elapsed'), ',')} blks in")
     return [Panel("NETWORK (LIVE)", priority=30, metrics=[
         Metric("Block Height", fmt(d.get("height"), ",")),
         # Tone on the note: the 7-day change is signed, the hashrate is not.
@@ -200,9 +279,7 @@ def html_panels(d: dict) -> list[Panel]:
         Metric("Difficulty", f"{fmt(d.get('difficulty_t'), ',.2f')} T"),
         Metric("Next Retarget",
                fmt(proj, "+.2f", suffix="%") if proj is not None else "n/a",
-               note=(f"{fmt(rt.get('blocks_left'), ',')} blks"
-                     + (f", ~{fmt(rt.get('eta_days'))}d" if rt.get("eta_days") is not None else "")
-                     + ("" if proj is not None else " — too early to project")),
+               note=retarget_note,
                tone="up" if isinstance(proj, (int, float)) and proj >= 0 else "down"),
         Metric("Mempool", f"{fmt(mp.get('vmb'), '.1f')} vMB",
                note=f"{fmt(mp.get('tx'), ',')} tx"),
@@ -212,13 +289,34 @@ def html_panels(d: dict) -> list[Panel]:
     ])]
 
 
-# A difficulty adjustment this large means hashrate has moved materially since
-# the period began; smaller ones are the routine drift of every period.
-NOTABLE_RETARGET_PCT = 5.0
+# How many standard errors a projection must clear to lead the page.
+#
+# Stated in multiples of its own error rather than as a fixed percentage,
+# because that error moves by a factor of four across a period: ±8.3% at the
+# `MIN_BLOCKS_FOR_PROJ` floor, ±2.2% at a full 2016 blocks. The 5% constant
+# this replaces was inside the noise for the first third of every period — on
+# 7 Sep 2026 it put "+5.7%" at the top of the page off 323 blocks, where one
+# standard error is 5.6%, so the strip led with a reading indistinguishable
+# from on-pace — and over-conservative for the last third, where a 5% move is
+# better than two standard errors and unambiguously real.
+#
+# Two, not three: this selects a reading worth looking at, not one worth
+# acting on, and at three the strip would have almost nothing to say until a
+# period was nearly over.
+NOTABLE_RETARGET_SIGMA = 2.0
 
 
 def notable(d: dict) -> list[str]:
-    proj = (d.get("retarget") or {}).get("projection_pct")
-    if isinstance(proj, (int, float)) and abs(proj) >= NOTABLE_RETARGET_PCT:
-        return [f"difficulty retarget projected {fmt(proj, '+.1f', suffix='%')}"]
-    return []
+    rt = d.get("retarget") or {}
+    proj, sigma = rt.get("projection_pct"), _sigma(rt)
+    if not isinstance(proj, (int, float)) or sigma is None:
+        return []
+    if abs(proj) < NOTABLE_RETARGET_SIGMA * sigma:
+        return []
+    # The band travels onto the strip with the level. Every other entry there
+    # carries the window it was ranked against; this one carries the precision
+    # it was estimated at, which is the same job — it is what stops "+7.5%"
+    # being read as a number someone measured rather than one they projected.
+    return [f"difficulty retarget projected {fmt(proj, '+.1f', suffix='%')} "
+            f"— ±{fmt(sigma, '.1f')}% at "
+            f"{fmt(rt.get('blocks_elapsed'), ',')} blks in"]

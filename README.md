@@ -16,7 +16,7 @@ PRICE
 
 NETWORK (live)
   height 962,780 | hashrate 911.41 EH/s (+1.37% 7d) | difficulty 127.48T
-  retarget 868 blks, ~6.1d | proj -0.91%
+  retarget 868 blks, ~6.1d | proj -0.91% ±3.0% (1,148 blks in)
   mempool 13,447 tx / 2.3 vMB
   fees 1.2/1.0/0.6 sat/vB (fast/1hr/1d)
 
@@ -652,8 +652,27 @@ deviation of 12 blocks — about 8%. A day at -12% is only 1.4sd low, which
 happens roughly one day in twelve by chance. It is therefore rendered as
 `block pace 127/144 (-11.8%, ±8% day-to-day noise)` rather than as a second
 "retarget projection" competing with the node's cumulative estimate, which is
-computed over the whole difficulty period and is the number to trust for
-direction.
+computed over the whole difficulty period and is the better of the two for
+direction — though not an unqualified one, for the reason immediately below.
+
+**The retarget projection carries the same kind of band, and it shrinks.** The
+node's cumulative estimate is a pace measurement over the blocks found so far
+in the period, so by the same Poisson argument its relative standard error is
+1/√n: **±8.3%** at the 144-block floor below which it isn't computed at all,
+**±5.6%** a sixth of the way in, **±2.2%** at a full 2016 blocks. A bare
+`+5.7%` is therefore not one reading but two — nothing at 323 blocks in, and a
+four-standard-error move in hashrate at 1,700 — so the level is rendered as
+`proj +5.72% ±5.6% (323 blks in)` everywhere it appears, and the analyst is
+additionally told how many standard errors from flat the reading is, because a
+model handed the level alone narrates an early-period wobble as a miner story.
+
+For the same reason the `NOTABLE` gate is stated in **multiples of that error
+rather than as a fixed percentage**. It was a flat 5%, which is inside the
+noise for the first third of every period and over-conservative for the last:
+on 7 Sep 2026 it put `+5.7%` at the top of the page off 323 blocks, where one
+standard error is 5.6% — the strip led with a reading indistinguishable from
+on-pace. The bound is now 2σ, and the band travels onto the strip with the
+level.
 
 **Volatility is reported as a level *and two* percentiles, with the
 annualisation named.** The level is not portable: the same series on a 252-day year reads
