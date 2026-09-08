@@ -300,6 +300,42 @@ patching. A failed fetch is swallowed and the last good render stays up; the
 timestamp then visibly stops advancing, which is the signal that updates have
 stopped. With scripting off, a `<noscript>` meta refresh reloads as before.
 
+**`copy PNG` and `save PNG` draw the page to an image**, in the browser, with
+no server involved: the data regions are cloned into an SVG `foreignObject`,
+that SVG is decoded as an image, and the image is drawn to a canvas at 2×
+device scale. It fits in one small script only because the page is already
+self-contained — nothing external has to be fetched and inlined first, and so
+nothing can taint the canvas. The file is named from the timestamp the image
+itself carries, read at click time, so the two can't disagree.
+
+`html.CAPTURE_IDS` names what the image contains, the way `LIVE_IDS` names what
+a tick overwrites. Two choices there are deliberate:
+
+- **The footer is in it.** A PNG is the copy most likely to be read away from
+  this page, so it is the copy that can least afford to lose the provenance and
+  the compare-the-stated-windows line. Dropping a qualifier from exactly the
+  copy that travels is the regression this project keeps having.
+- **The ask box is the one region left out** — which is why the buttons sit
+  inside it. A control in the ask box keeps itself out of its own image, where
+  one in the header would have to be stripped from the clone and would
+  reappear the first time that was got wrong. The list is an allow-list for the
+  same reason: it fails by omitting a card, which is visible to anyone looking
+  at the image, rather than by leaking a half-typed question into a picture
+  someone is about to share.
+
+A capture that fails says so under the heading rather than handing over a blank
+image — unlike a failed tick, which is swallowed because the last good render
+stays on screen. Three details are load-bearing, each found by building the
+tidier version first: the SVG goes in as a `data:` URL (from a `blob:` URL it
+decodes identically and taints the canvas), `body`'s declarations are copied
+onto the clone's wrapper (a `foreignObject` holds a bare `<div>`, so `body {}`
+matches nothing inside the image and that text falls back to black serif), and
+the CSS custom properties are pinned to their computed values (the SVG sandbox
+doesn't inherit `prefers-color-scheme`, so a light-mode reader would otherwise
+get a dark PNG). Copying to the clipboard additionally needs a secure context,
+which `http://localhost` is, and a focused document; if either is missing the
+button says so and `save PNG` still works.
+
 **This process holds your provider key**, which is a deliberate departure from
 the boundary that holds everywhere else — see
 [Credential boundary](#credential-boundary-the-llm-is-client-side-only). An ask
