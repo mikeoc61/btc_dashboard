@@ -165,7 +165,9 @@ for that).
 `--html` renders the snapshot as a self-contained page — inline CSS, no
 external assets, scripts or fonts — so it works from `file://`, from a static
 server, or over an SSH tunnel with no internet access. Light and dark follow
-`prefers-color-scheme`. The tab icon is inline in two formats — an SVG and a
+`prefers-color-scheme`. The PNG capture buttons are *not* in this output: they
+render inside the ask box, so they belong to the [local web
+view](#local-web-view). The tab icon is inline in two formats — an SVG and a
 32×32 PNG rasterised from the same rectangles — so it costs no request and the
 page's "references nothing external" property stays literally checkable. Both
 are offered because Safari has never read an SVG favicon from a data URI and
