@@ -196,7 +196,7 @@ def create_app(cfg: Config | None = None, *,
     def render(refresh: int | None = PAGE_REFRESH) -> str:
         return page.render_html(
             cache.get(), ask=True, answer=state["answer"], refresh=refresh,
-            live_endpoint=LIVE_PATH,
+            live_endpoint=LIVE_PATH, capture=True,
         )
 
     @app.get("/", response_class=HTMLResponse)

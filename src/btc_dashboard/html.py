@@ -33,6 +33,23 @@ REFRESH_SECONDS = 60
 # drift the first time a region moved.
 LIVE_IDS = ("ticks", "stamp", "notable", "cards")
 
+# The regions the PNG capture draws, named for the same reason `LIVE_IDS` is:
+# what the image contains has to be agreed on by the markup that ids the
+# regions and the script that clones them.
+#
+# An allow-list, and deliberately so. Its failure mode is a region added to the
+# page later being absent from the image, which anyone looking at the image can
+# see. The alternative — clone `<main>` and strip the ask box out — fails the
+# other way, silently *including* the ask box the first time that class is
+# renamed, and a leaked half-typed question is only noticed after the image has
+# been shared.
+#
+# The footer is in it on purpose. It carries the provenance and the "compare
+# the stated windows, not bare levels" line, and a PNG is the copy most likely
+# to be read away from this page — so dropping the qualifier from exactly the
+# copy that travels is the regression this project keeps having.
+CAPTURE_IDS = ("pagehead", "notable", "cards", "pagefoot")
+
 # Patch those regions on a timer instead of reloading the document.
 #
 # A meta refresh replaces the page, and with it whatever is half-typed in the
@@ -63,6 +80,188 @@ _UPDATER_JS = """<script>
       .catch(function () {});
   }
   setInterval(tick, EVERY_MS);
+})();
+</script>"""
+
+# Device pixels per CSS pixel in the capture. 2 is retina-crisp and costs about
+# 290KB for a page of six cards; 1 is legibly soft on any modern display.
+CAPTURE_SCALE = 2
+
+# Draw the data regions to a PNG, in the browser, with no server involved.
+#
+# The page is cloned into an `<svg><foreignObject>`, that SVG is decoded as an
+# image, and the image is drawn to a canvas. The whole reason this is possible
+# in ~80 lines is that the page is already self-contained: the stylesheet is
+# inline and there are no external fonts or assets, so nothing has to be
+# fetched and inlined first, and nothing can taint the canvas.
+#
+# Three things here look like they could be simplified and cannot. Each was
+# established by trying the tidier version and watching it fail:
+#
+# 1. The SVG is delivered as a `data:` URL, never a `blob:`. Both decode, but
+#    an SVG from a blob: URL taints the canvas and every export then throws
+#    SecurityError. The blob form is the shorter code and it is the broken one.
+# 2. `body`'s own declarations are copied onto the clone's wrapper. A
+#    foreignObject holds a bare `<div>`, so `body { color; font-family;
+#    font-size; padding }` matches nothing inside the image and that text falls
+#    back to the initial values \u2014 black, serif, 16px. The failure is partial
+#    and plausible: rows carrying their own colour still look right while
+#    everything inheriting from body goes dark, which reads as a contrast bug
+#    rather than as a missing rule.
+# 3. The clone is serialised with XMLSerializer, not read off innerHTML. A
+#    foreignObject's contents are parsed as XML, where `&nbsp;` is an undefined
+#    entity \u2014 the separator in the NOTABLE strip would stop the parse dead.
+#    Serialising the live DOM emits the character itself.
+#
+# Failure is reported in the page rather than swallowed. Unlike the updater
+# above, where silence leaves the last good render on screen, a capture that
+# fails quietly hands over a blank or half-drawn PNG that looks like the
+# dashboard until someone reads it.
+_CAPTURE_JS = """<script>
+(function () {
+  var IDS = IDS_JSON, SCALE = SCALE_N;
+  var note = document.getElementById("capnote");
+  function say(m) { if (note) note.textContent = m || ""; }
+
+  // Names read from the stylesheet's own `:root` rule rather than listed here,
+  // so a token added to the CSS cannot leave the image resolving it to
+  // nothing. Values are read computed, which is what settles light against
+  // dark: an SVG image renders in its own sandbox, and inheriting the reader's
+  // prefers-color-scheme through it is not something to rely on.
+  function pinnedTokens() {
+    var root = getComputedStyle(document.documentElement), out = "";
+    var sheets = document.styleSheets;
+    for (var s = 0; s < sheets.length; s++) {
+      var rules = sheets[s].cssRules;
+      for (var i = 0; i < rules.length; i++) {
+        if (rules[i].selectorText !== ":root") continue;
+        for (var j = 0; j < rules[i].style.length; j++) {
+          var name = rules[i].style[j];
+          if (name.slice(0, 2) === "--")
+            out += name + ":" + root.getPropertyValue(name).trim() + ";";
+        }
+      }
+    }
+    return ":root{" + out + "}";
+  }
+
+  var CARRY = ["color", "font-family", "font-size", "line-height", "padding",
+               "-webkit-font-smoothing"];
+
+  function scene() {
+    var body = getComputedStyle(document.body), carried = "";
+    for (var i = 0; i < CARRY.length; i++)
+      carried += CARRY[i] + ":" + body.getPropertyValue(CARRY[i]) + ";";
+
+    var width = document.body.clientWidth;
+    var stage = document.createElement("div");
+    // Laid out off-screen rather than hidden: the height has to be measured
+    // from a real layout, and `display:none` has no height to measure.
+    stage.setAttribute("style", "position:absolute;left:-99999px;top:0;" +
+      "box-sizing:border-box;width:" + width + "px;background:" +
+      body.backgroundColor + ";" + carried);
+    IDS.forEach(function (id) {
+      var n = document.getElementById(id);
+      if (n) stage.appendChild(n.cloneNode(true));
+    });
+
+    document.body.appendChild(stage);
+    var height = Math.ceil(stage.getBoundingClientRect().height);
+    var markup = new XMLSerializer().serializeToString(stage)
+                   .replace("position:absolute;left:-99999px;top:0;", "");
+    document.body.removeChild(stage);
+
+    // Every stylesheet, not the first: the image has to carry whatever the
+    // page is actually wearing, and a second block added later would otherwise
+    // be silently missing from it.
+    var sheets = document.querySelectorAll("style"), style = "";
+    for (var s = 0; s < sheets.length; s++) style += sheets[s].textContent;
+    style += pinnedTokens();
+    return {
+      width: width, height: height, background: body.backgroundColor,
+      svg: '<svg xmlns="http://www.w3.org/2000/svg" width="' + width +
+           '" height="' + height + '"><foreignObject x="0" y="0" width="' +
+           width + '" height="' + height + '">' +
+           '<div xmlns="http://www.w3.org/1999/xhtml"><style>' + style +
+           "</style>" + markup + "</div></foreignObject></svg>"
+    };
+  }
+
+  function png(view) {
+    return new Promise(function (resolve, reject) {
+      var img = new Image();
+      img.onload = function () {
+        try {
+          var c = document.createElement("canvas");
+          c.width = Math.round(view.width * SCALE);
+          c.height = Math.round(view.height * SCALE);
+          var ctx = c.getContext("2d");
+          // The canvas starts transparent and the page's background lives on
+          // `body`, which is not in the capture. Without this the PNG is
+          // transparent behind the cards and unreadable on a dark backdrop.
+          ctx.fillStyle = view.background;
+          ctx.fillRect(0, 0, c.width, c.height);
+          ctx.drawImage(img, 0, 0, c.width, c.height);
+          c.toBlob(function (blob) {
+            blob ? resolve(blob) : reject(new Error("the canvas produced no image"));
+          }, "image/png");
+        } catch (e) { reject(e); }
+      };
+      img.onerror = function () {
+        reject(new Error("this browser would not render the page as an image"));
+      };
+      img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(view.svg);
+    });
+  }
+
+  // Named from the stamp the image itself carries, so the file and the figures
+  // in it cannot disagree. Read at click time, not at page load: the stamp
+  // advances on every tick.
+  function filename() {
+    var stamp = document.getElementById("stamp");
+    var digits = (stamp ? stamp.textContent : "").replace(/[^0-9]/g, "");
+    return "btc-dashboard-" + (digits.slice(0, 14) || "snapshot") + ".png";
+  }
+
+  function fail(e) { say("capture failed: " + e.message); }
+
+  function save() {
+    say("rendering\\u2026");
+    png(scene()).then(function (blob) {
+      var a = document.createElement("a");
+      var url = URL.createObjectURL(blob);
+      a.href = url;
+      a.download = filename();
+      a.click();
+      // Not revoked immediately: taking the URL back before the browser has
+      // finished with it cancels the download.
+      setTimeout(function () { URL.revokeObjectURL(url); }, 60000);
+      say("saved " + a.download);
+    }).catch(fail);
+  }
+
+  function copy() {
+    if (!navigator.clipboard || !window.ClipboardItem) {
+      say("clipboard needs a secure context \\u2014 use save instead");
+      return;
+    }
+    say("rendering\\u2026");
+    // The ClipboardItem is handed the *promise*, not an awaited blob. The
+    // rendering is asynchronous, and a write issued after the click has been
+    // dispatched is no longer inside the user gesture the browser requires.
+    var item = new ClipboardItem({"image/png": png(scene())});
+    navigator.clipboard.write([item])
+      .then(function () { say("copied to the clipboard"); })
+      .catch(fail);
+  }
+
+  var actions = {copy: copy, save: save};
+  var buttons = document.querySelectorAll("[data-capture]");
+  for (var i = 0; i < buttons.length; i++) {
+    buttons[i].addEventListener("click", function (e) {
+      actions[e.currentTarget.getAttribute("data-capture")]();
+    });
+  }
 })();
 </script>"""
 TICK_OK = "\u2713"   # CHECK MARK
@@ -274,6 +473,10 @@ h1 { font-size:1.05rem; margin:0; letter-spacing:.06em; color:var(--accent); }
                  font:inherit; font-size:.95rem; font-weight:600; cursor:pointer; }
 .linkish { padding:.15rem .55rem; background:none; color:var(--muted);
            font-weight:400; font-size:.8rem; }
+/* The card-level controls, kept together at the right of the heading. Spacing
+   only: each control says what it is in its own text, so losing the stylesheet
+   costs the arrangement and nothing else. */
+.capbar { display:flex; align-items:baseline; gap:.35rem; }
 .answer { white-space:pre-wrap; margin:.5rem 0; line-height:1.6;
           font-size:.98rem; }
 .queries { margin:.5rem 0 0; font-size:.85rem; }
@@ -601,10 +804,20 @@ def _updater_script(url: str, seconds: int) -> str:
     )
 
 
+def _capture_script() -> str:
+    """The PNG capture, pointed at the regions it is allowed to draw."""
+    return (
+        _CAPTURE_JS
+        .replace("IDS_JSON", json.dumps(list(CAPTURE_IDS)))
+        .replace("SCALE_N", str(CAPTURE_SCALE))
+    )
+
+
 def render_html(snapshot: dict, *, title: str = "BTC DASHBOARD",
                 refresh: int | None = REFRESH_SECONDS,
                 ask: bool = False, answer: dict | None = None,
-                live_endpoint: str | None = None) -> str:
+                live_endpoint: str | None = None,
+                capture: bool = False) -> str:
     """The page. `ask` adds the analyst box, which needs a server behind it.
 
     `live_endpoint` is the URL of something serving `render_live()`. Given one,
@@ -612,6 +825,11 @@ def render_html(snapshot: dict, *, title: str = "BTC DASHBOARD",
     the document — which is what lets someone type a question while the numbers
     keep moving. Without one (a file, a static server) the whole document
     reloads on a meta refresh, as before.
+
+    `capture` adds the PNG buttons. They sit in the ask box's heading beside
+    the refresh control, so it needs `ask` too — and that placement is the
+    reason the buttons keep themselves out of their own image, the ask box
+    being the one region `CAPTURE_IDS` leaves out.
     """
     parts = _live_parts(snapshot)
 
@@ -625,12 +843,29 @@ def render_html(snapshot: dict, *, title: str = "BTC DASHBOARD",
         # Its own grid, deliberately outside the live region: an update
         # replaces the data cards wholesale, and this must survive it. It
         # changes when an answer arrives, never on a tick.
+        # A button, not a link: nothing is fetched, the image is drawn here.
+        # `type="button"` because these sit beside a form and a default submit
+        # would post the question instead of drawing anything.
+        capture_html = (
+            '<button class="linkish" type="button" data-capture="copy">'
+            'copy PNG</button>'
+            '<button class="linkish" type="button" data-capture="save">'
+            'save PNG</button>'
+        ) if capture else ""
+        # Outside the heading's control bar: the result of a capture is a
+        # sentence, and a sentence in a flex row of buttons reflows them every
+        # time it changes.
+        capture_note = '<div class="note" id="capnote"></div>' if capture else ""
+
         ask_html = (
             '<section class="grid askgrid">'
             '<section class="card wide"><h2>ASK'
+            '<span class="capbar">'
+            + capture_html +
             '<form method="post" action="/refresh" style="margin:0">'
             '<button class="linkish" type="submit">refresh data</button>'
-            '</form></h2>'
+            '</form></span></h2>'
+            + capture_note +
             '<form method="post" action="/ask" class="askform">'
             '<input name="q" autofocus autocomplete="off" '
             'placeholder="ask a question about this snapshot">'
@@ -665,7 +900,7 @@ def render_html(snapshot: dict, *, title: str = "BTC DASHBOARD",
 <link rel="icon" type="image/svg+xml" href="{_favicon_data_uri()}">
 <style>{CSS}</style></head>
 <body>
-<header>
+<header id="pagehead">
   <h1>{_esc(title)}</h1>
   {parts['ticks']}
   {parts['stamp']}
@@ -674,9 +909,9 @@ def render_html(snapshot: dict, *, title: str = "BTC DASHBOARD",
 {parts['notable']}
 {parts['cards']}{ask_html}
 </main>
-<footer>Data: local node + DuckDB · price: CoinGecko · ETF: Farside.
+<footer id="pagefoot">Data: local node + DuckDB · price: CoinGecko · ETF: Farside.
 Percentile windows and volatility annualisation are stated on each figure —
 compare those, not bare levels, against any external source.</footer>
-{updater}
+{updater}{_capture_script() if capture else ""}
 </body></html>
 """

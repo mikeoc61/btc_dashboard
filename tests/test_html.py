@@ -918,3 +918,124 @@ class TestACardLevelNote:
     def test_a_card_without_one_renders_no_empty_node(self):
         out = page.render_html(_snap())
         assert 'class="cardnote"' not in out
+
+
+class TestPngCapture:
+    """Drawing the page to a PNG in the browser.
+
+    The rasterisation itself cannot be reached from here — it needs a real
+    layout engine, a canvas and an SVG decoder. What these guard is everything
+    around it that *is* decidable from the markup: which regions the image is
+    allowed to contain, and that the ask box is not one of them.
+    """
+
+    def _ancestry(self, markup: str) -> list[tuple[dict, list[str]]]:
+        """Every element, with the ids of the elements enclosing it."""
+        from html.parser import HTMLParser
+
+        VOID = {"input", "br", "img", "meta", "link", "hr"}
+
+        class Walk(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.open, self.seen = [], []
+
+            def handle_starttag(self, tag, attrs):
+                attrs = dict(attrs)
+                self.seen.append((attrs, [i for i in self.open if i]))
+                if tag not in VOID:
+                    self.open.append(attrs.get("id"))
+
+            def handle_startendtag(self, tag, attrs):
+                self.handle_starttag(tag, attrs)
+                if tag not in VOID and self.open:
+                    self.open.pop()
+
+            def handle_endtag(self, tag):
+                if tag not in VOID and self.open:
+                    self.open.pop()
+
+        w = Walk()
+        w.feed(markup)
+        return w.seen
+
+    def _drawn(self, attrs: dict, ancestors: list[str]) -> bool:
+        """Whether this element ends up inside the image."""
+        return bool(({attrs.get("id")} | set(ancestors)) & set(page.CAPTURE_IDS))
+
+    def test_the_controls_are_absent_unless_asked_for(self):
+        """A file on disk has no reason to carry them, and `--html` output is
+        read by things that are not browsers."""
+        out = page.render_html(_snap(), ask=True)
+        assert "data-capture" not in out
+        assert "ClipboardItem" not in out
+
+    def test_the_controls_and_the_script_arrive_together(self):
+        out = page.render_html(_snap(), ask=True, capture=True)
+        assert 'data-capture="copy"' in out
+        assert 'data-capture="save"' in out
+        assert "ClipboardItem" in out
+        assert 'id="capnote"' in out
+
+    def test_every_live_region_is_inside_a_captured_one(self):
+        """`CAPTURE_IDS` is an allow-list, so a data region added to the page
+        and wired into `LIVE_IDS` alone would tick on screen and be missing
+        from the image — with nothing to say it had gone."""
+        out = page.render_html(_snap(), ask=True, capture=True,
+                               live_endpoint="/live")
+        placed = {a.get("id"): anc for a, anc in self._ancestry(out) if a.get("id")}
+        for ident in page.LIVE_IDS:
+            assert ident in placed, f"{ident} is not in the page at all"
+            assert self._drawn({"id": ident}, placed[ident]), (
+                f"{ident} updates on a tick but no capture region contains it"
+            )
+
+    def test_the_ask_box_is_in_no_region_the_image_draws(self):
+        """The reason the buttons can sit beside it: whatever is half-typed in
+        that field never reaches an image the reader is about to share."""
+        out = page.render_html(_snap(), ask=True, capture=True)
+        leaked = [a for a, anc in self._ancestry(out)
+                  if "askgrid" in (a.get("class") or "") and self._drawn(a, anc)]
+        assert not leaked, "the ask box would be drawn into the PNG"
+
+    def test_the_capture_controls_draw_neither_themselves_nor_a_tick(self):
+        out = page.render_html(_snap(), ask=True, capture=True,
+                               live_endpoint="/live")
+        for attrs, ancestors in self._ancestry(out):
+            if not attrs.get("data-capture"):
+                continue
+            assert not self._drawn(attrs, ancestors), "a button is in its own image"
+            assert not set(ancestors) & set(page.LIVE_IDS), (
+                "a tick would replace the capture buttons"
+            )
+
+    def test_the_footer_is_drawn(self):
+        """It carries the provenance and the compare-the-stated-windows line.
+        A PNG is the copy most likely to be read away from this page, so it is
+        the copy that can least afford to lose them."""
+        out = page.render_html(_snap(), ask=True, capture=True)
+        assert "pagefoot" in page.CAPTURE_IDS
+        assert 'id="pagefoot"' in out
+        assert "compare those, not bare levels" in out
+
+    def test_every_captured_region_exists_in_the_page(self):
+        out = page.render_html(_snap(), ask=True, capture=True)
+        for ident in page.CAPTURE_IDS:
+            assert f'id="{ident}"' in out, f"{ident} is named but never rendered"
+
+    def test_the_fragment_still_carries_no_capture_controls(self):
+        """`render_live()` is what a tick writes into an open page."""
+        assert "data-capture" not in page.render_live(_snap())
+
+    def test_the_stylesheet_survives_an_xml_parse(self):
+        """The capture copies the stylesheet into a `foreignObject`, whose
+        contents are parsed as XML rather than HTML. A bare `<` or `&` in the
+        CSS would stop that parse dead, and the failure lands in the image
+        instead of in the page — nothing on screen would look wrong."""
+        assert "<" not in page.CSS
+        assert "&" not in page.CSS
+
+    def test_the_script_cannot_close_its_own_tag(self):
+        """A `</script>` inside a JS string literal ends the block early, and
+        the rest of the script becomes text in the document."""
+        assert "</script>" not in page._CAPTURE_JS[:-len("</script>")]
