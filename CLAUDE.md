@@ -214,10 +214,19 @@ needs belongs with the code that knows why.
 
 ## Environment
 
-- Editable install, so **`git pull` alone deploys** — re-run `pip install -e .`
-  only when dependencies, console scripts or packages change. The console
-  script in `~/.local/bin` is a stub whose mtime never changes; it is not a
-  staleness signal.
+- Editable install, so **`git pull` alone deploys the CLI** — re-run
+  `pip install -e .` only when dependencies, console scripts or packages
+  change. The console script in `~/.local/bin` is a stub whose mtime never
+  changes; it is not a staleness signal.
+- **It does not deploy `btc-dashboard-web`.** That is a long-running process
+  and holds the modules it imported at startup, so a pull updates the files on
+  disk while the service keeps serving the old code — silently, because the
+  page still ticks and its timestamp still advances, which is exactly what a
+  reader checks. On 7 Sep 2026 it served a five-day-old build after a clean
+  pull, still leading the page with a NOTABLE entry that the pulled commit had
+  removed, and the CLI on the same host rendered the new one. Finish any deploy
+  that touches what the web view renders:
+  `ssh pibot 'sudo systemctl restart btc-dashboard-web'`.
 - **Mac (dev)**: venv at `.venv/`. Homebrew Python is PEP 668
   externally-managed — never `--break-system-packages` here.
 - **Pi**: `pip install -e . --break-system-packages` (single-purpose
