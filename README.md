@@ -262,6 +262,52 @@ what makes a figure comparable to an external source. Every `Metric` carries a
 `note` and the note is rendered. Free text is HTML-escaped, since an ingested
 snapshot's error strings are controlled by whoever produced it.
 
+### Balance of evidence
+
+A second card leads the page, beside the `NOTABLE` strip: one reading per
+domain — trend, momentum, network, speculation, participation, liquidity —
+each with its own window, gathered from the sources that own them through
+`balance_rows()`. It answers "what does the whole board look like" at a glance,
+where the strip answers "what is unusual today". Both lead, because those are
+different questions: on an ordinary day the strip is absent and this card takes
+the row.
+
+The obvious version of this is a weighted 0–100 with a name on it — "74/100,
+Quiet Accumulation". It is not built that way, and the reasons are not fixable
+by choosing better weights:
+
+- **A score cannot carry a qualifier.** Every figure here states the window it
+  was ranked against or the basis it was summed on, because that is what makes
+  it comparable to someone else's. The honest qualifier on a 74 is "out of a
+  scale invented here, comparable to nothing".
+- **Half the inputs have no direction.** Realised volatility fires at both
+  tails; trade count is participation, not direction; an RSI of 78 is a level,
+  and the price card deliberately leaves it uncoloured for that reason. A
+  weighted sum has to assign all three a sign they do not have. The card says
+  so in its own note, and only the three signed rows are coloured.
+- **The components are not independent.** Trend and momentum are the same close
+  series; exchange volume and trade count correlate 0.90 at this venue. Summing
+  them as though they were independent makes the total swing further than the
+  evidence does.
+
+So the readings sit side by side and the weighing is the reader's. If a score is
+ever wanted, the way in is a study under `tools/` scoring it against the
+unconditional base rate first — the pattern `hashrate_study.py` sets.
+
+**A missing reading is `n/a` and keeps its row.** The same rule as an unfillable
+flow window or SMA, and the reason `balance_rows` has to survive an empty dict:
+a source that is down still occupies its rows, so nothing is renormalised onto
+whatever happened to report. The badge counts what is filled — `4 of 6
+readings` — so an incomplete card reads as incomplete rather than as a weaker
+one. A failure reason is stated once per source, not once per row, since one
+missing warehouse owns two of them.
+
+It is derived, not collected: it is **not a field in the snapshot** and every
+consumer recomputes it, so a score cannot arrive from an ingested payload. It is
+also **not in the analyst's context** — every reading on it is already there,
+phrased by the source it came from, and repeating six of them would imply an
+emphasis the data has not earned.
+
 ### Local web view
 
 ```bash
@@ -383,6 +429,7 @@ def context_lines(data) -> list[str]:   # facts phrased for the LLM
 
 def html_panels(data) -> list[Panel]:   # optional; cards for --html and the web view
 def notable(data) -> list[str]:         # optional; entries for the NOTABLE strip
+def balance_rows(data) -> list[Metric]: # optional; rows on the BALANCE OF EVIDENCE card
 def refresh_derived(data) -> dict:      # optional; only if fields age with the clock
 def analyst_tools(cfg) -> list[Tool]:   # optional; live queries offered to --ask
 def analyst_scope(data) -> str | None:  # optional; what that tool can reach
@@ -391,6 +438,13 @@ def analyst_scope(data) -> str | None:  # optional; what that tool can reach
 Keeping all three presentations next to the collector is deliberate: the caveats
 a number needs ("this window is n/a, not zero") belong with the code that knows
 why, and a page or a prompt assembled elsewhere is where they get dropped.
+
+`balance_rows` carries one extra obligation: **it must survive an empty dict and
+return the same labels**, values reading `n/a`. That is how a source which is
+*down* still occupies its rows on the balance card rather than shrinking it —
+see [Balance of evidence](#balance-of-evidence). Writing the rows the ordinary
+way, through `fmt`, satisfies it without trying; a test holds every source to
+it.
 
 ---
 

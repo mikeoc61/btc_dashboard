@@ -317,6 +317,33 @@ def html_panels(d: dict) -> list[Panel]:
     ])]
 
 
+def balance_rows(d: dict) -> list[Metric]:
+    """This source's one row on the balance card: the network's direction.
+
+    The 7-day hashrate change rather than the retarget projection, though the
+    projection is the livelier number. The projection's precision moves by a
+    factor of four across a period — ±8.3% early, ±2.2% late — so a row showing
+    it would have to carry its own error band to mean anything, and a band in a
+    six-row digest is a footnote on a footnote. The 7-day change is estimated
+    over a fixed `HASHRATE_WINDOW` and means the same thing every day, which is
+    what a row on this card has to do. The projection keeps its place on the
+    NETWORK card and on the strip above, where it is stated with its band.
+
+    Survives an empty dict with its label intact, so a dead node still occupies
+    its row.
+    """
+    hr7 = d.get("hash_rate_7d_pct")
+    if not isinstance(hr7, (int, float)):
+        return [Metric("Network", "n/a", note="no hashrate estimate")]
+    return [Metric(
+        "Network", fmt(hr7, "+.2f", suffix="%"),
+        note=f"hashrate over {HASHRATE_WINDOW} blocks (~7d)",
+        # Same rule as the NETWORK card: the level is not signed, its change
+        # is, and here the change is the value.
+        tone="up" if hr7 >= 0 else "down",
+    )]
+
+
 # How many standard errors a projection must clear to lead the page.
 #
 # Stated in multiples of its own error rather than as a fixed percentage,

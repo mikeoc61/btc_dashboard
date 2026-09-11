@@ -21,7 +21,7 @@ from __future__ import annotations
 import html as _html
 import json
 
-from . import snapshot as snap
+from . import composite, snapshot as snap
 from .render import human_age
 from .sources import Metric, Panel
 
@@ -31,7 +31,7 @@ REFRESH_SECONDS = 60
 # agree on them: the page that lays them out, the fragment that re-renders
 # them, and the script that patches one into the other. Three literals would
 # drift the first time a region moved.
-LIVE_IDS = ("ticks", "stamp", "notable", "cards")
+LIVE_IDS = ("ticks", "stamp", "notable", "composite", "cards")
 
 # The regions the PNG capture draws, named for the same reason `LIVE_IDS` is:
 # what the image contains has to be agreed on by the markup that ids the
@@ -48,7 +48,12 @@ LIVE_IDS = ("ticks", "stamp", "notable", "cards")
 # the stated windows, not bare levels" line, and a PNG is the copy most likely
 # to be read away from this page — so dropping the qualifier from exactly the
 # copy that travels is the regression this project keeps having.
-CAPTURE_IDS = ("pagehead", "notable", "cards", "pagefoot")
+#
+# `lead` rather than its two children: the capture clones each named region
+# into one flat stage, so two flex items cloned separately would stack in the
+# image whatever the stylesheet says. Naming the row that holds them keeps the
+# PNG laid out like the page.
+CAPTURE_IDS = ("pagehead", "lead", "cards", "pagefoot")
 
 # Patch those regions on a timer instead of reloading the document.
 #
@@ -454,12 +459,48 @@ h1 { font-size:1.05rem; margin:0; letter-spacing:.06em; color:var(--accent); }
    so an in-place update can replace every data card without touching it.
    The margin restores the gap the shared grid used to supply. */
 .askgrid { margin-top:.85rem; }
+/* The lead row: the notable strip and the balance card, above the data grid.
+   Flex rather than grid, because the strip is *absent* on an ordinary day and
+   a grid track would hold its column open. `:empty` matches the wrapper the
+   updater patches, so the row rearranges itself on a tick as well as on a
+   first render - the strip coming and going is the normal case here, not an
+   edge one.
+
+   `align-items:flex-start` so a one-line strip stays one line high instead of
+   stretching to the card beside it. The margin sits on the row rather than on
+   the strip, which used to carry it: the strip is now an item inside a flex
+   container, so its own bottom margin would leave with it on the days it is
+   not there, taking the gap above the grid too.
+
+   The basis pair is deliberate. The card is dense and wants a card's width, so
+   it gets one and does not grow; the strip is a line of text and takes the
+   rest. Alone, the card grows into the whole row. What the sibling selector
+   buys is that no markup differs between the two cases, so a tick that empties
+   the strip cannot leave the row in a state the page never renders from
+   scratch.
+
+   Addressed by id rather than by a class, and that is not a preference:
+   `.lead` already belongs to the strip's own label span, where a display:flex
+   rule would turn it into a block and break the label off the items it
+   introduces. A test asserts no bare `.lead` rule exists -- and this file is
+   string-searched for the strip's name, which is why that name is not written
+   out here.
+
+   ASCII only, like every comment in here: this stylesheet is copied verbatim
+   into the PNG capture's SVG, where a stray glyph is a parse error rather than
+   a typo. */
+#lead { display:flex; flex-wrap:wrap; gap:.85rem; align-items:flex-start;
+        margin-bottom:.85rem; }
+#notable { flex:1 1 20rem; min-width:0; }
+#composite { flex:0 1 30rem; min-width:0; }
+#notable:empty, #composite:empty { display:none; }
+#notable:empty + #composite { flex-grow:1; }
 /* A plain block, not flex: whitespace between flex items is discarded, so the
    separating spaces have to be real text and the container has to lay out as
    text for them to survive. */
 .notable { background:var(--card); border:1px solid var(--line);
            border-left:3px solid var(--warn); border-radius:8px;
-           padding:.55rem .9rem; margin-bottom:.85rem; font-size:.9rem;
+           padding:.55rem .9rem; font-size:.9rem;
            line-height:1.6; }
 .notable .lead { color:var(--warn); font-weight:600; font-size:.85rem;
                  letter-spacing:.05em; margin-right:.3rem; }
@@ -765,14 +806,31 @@ def _live_parts(snapshot: dict) -> dict[str, str]:
             f'{items}</section>'
         )
 
+    # The balance card. A card like any other, so it inherits the row layout
+    # and every qualifier renders — but built here rather than in the grid
+    # loop, because it belongs to no source and its badge counts readings
+    # rather than reporting a cache age.
+    balance = composite.rows(snapshot)
+    balance_html = ""
+    if balance:
+        cls = "badge" if composite.complete(balance) else "badge warn"
+        balance_html = (
+            f'<section class="card"><h2>{_esc(composite.TITLE)}'
+            f'<span class="{cls}">{_esc(composite.coverage_label(balance))}</span>'
+            f'</h2><div class="cardnote">{_esc(composite.NOTE)}</div>'
+            f'{_rows(balance)}</section>'
+        )
+
     # Each part is wrapped in the element the updater patches. The wrapper is
     # always present even when its contents are empty — the notable strip comes
     # and goes — so a region can vanish and return without the ones around it
-    # moving.
+    # moving. It is also what `#notable:empty` tests, which is how the balance
+    # card takes the whole row on a day with nothing to lead with.
     return {
         "ticks": f'<div class="ticks" id="ticks">{ticks}</div>',
         "stamp": f'<div class="meta" id="stamp">{_esc(generated)} UTC</div>',
         "notable": f'<div id="notable">{notable_html}</div>',
+        "composite": f'<div id="composite">{balance_html}</div>',
         "cards": f'<div class="grid" id="cards">{"".join(cards)}</div>',
     }
 
@@ -906,7 +964,7 @@ def render_html(snapshot: dict, *, title: str = "BTC DASHBOARD",
   {parts['stamp']}
 </header>
 <main>
-{parts['notable']}
+<div id="lead">{parts['notable']}{parts['composite']}</div>
 {parts['cards']}{ask_html}
 </main>
 <footer id="pagefoot">Data: local node + DuckDB · price: CoinGecko · ETF: Farside.

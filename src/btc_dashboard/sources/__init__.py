@@ -13,6 +13,15 @@ questions the snapshot does not contain (see `Tool`), plus
 rendered where a question is composed, so the reader knows what is answerable
 before asking rather than after.
 
+`balance_rows(data) -> list[Metric]` is optional too: the source's one or two
+rows on the balance card (`composite.py`), phrased by the source for the same
+reason its other presentations are. **It must survive an empty dict and return
+the same labels**, values reading `n/a`. That is not a defensive nicety — it is
+how a source that is *down* still occupies its rows on that card instead of
+silently shrinking it, which would quietly renormalise a digest onto whatever
+did report. Writing the rows the ordinary way, through `fmt`, satisfies it
+without trying; a test holds every source to it.
+
 Colocating the two presentations with the collector means adding a source is a
 single new file plus one entry in `snapshot.SOURCES` — nothing else changes.
 

@@ -40,6 +40,9 @@ tooling arrived unannounced.
   scrape). Collected concurrently, each independently fail-soft.
 - **Consumers**: `render.render()` terminal, `html.render_html()` page,
   `analyst.build_context()` LLM, `--json`. None of them re-fetch anything.
+- **Balance card**: `composite.py` — one reading per domain, gathered from the
+  sources through `balance_rows()` and rendered by the terminal and the page.
+  A shared derivation over the snapshot, not a source and not a snapshot field.
 - **Cache**: 60-minute TTL for `warehouse` and `flows` only. `price` and `node`
   are live tip state and are never cached.
 - **Analyst**: `--ask`, opt-in, client-side. Providers in `providers.py` —
@@ -48,7 +51,7 @@ tooling arrived unannounced.
   the rest. Tool use works on all three; the warehouse lends a read-only SQL
   tool, and `--no-tools` forces the old single-shot behaviour.
 - **Web**: `btc-dashboard-web` — FastAPI on `127.0.0.1:8001`, ask box,
-  `NOTABLE` strip, systemd unit in `deploy/`. Live on the Pi. The page patches
+  `NOTABLE` strip beside the balance card, systemd unit in `deploy/`. Live on the Pi. The page patches
   its data regions from `/live` on a timer; it does not reload. `copy PNG` /
   `save PNG` draw the data regions to an image in the browser, no server
   involved; `html.CAPTURE_IDS` names what the image contains.
@@ -129,6 +132,15 @@ Breaking one of these is a regression even when the number is right.
   headline figures must stay on one basis; the tracked/untracked split belongs
   in the note beside it. `farside/` totals the same way, which is why the two
   repos disagreed and this one was wrong.
+- **The balance card is a digest, never a score.** `composite.py` states one
+  reading per domain with its window attached and totals nothing. Three of the
+  six measures have no direction to weight — volatility fires at both tails,
+  trade count is participation, an RSI level is not a forecast — and the rest
+  are not independent, trend and momentum being the same close series. A
+  missing reading stays on the card as `n/a`, which is why `balance_rows(data)`
+  must survive an empty dict and keep its labels: a row that can vanish
+  renormalises six readings onto whatever reported. Being derived, it is not a
+  snapshot field, so a score can never arrive from an ingested payload.
 - **No imports from sibling projects, no shelling out to their scripts.** The
   only shared thing is the DuckDB *file*.
   - The cost of that rule: the Farside scrape lives in **two** places, here and
@@ -150,6 +162,7 @@ def render_lines(data) -> list[str]:    # terminal
 def context_lines(data) -> list[str]:   # facts phrased for the LLM
 def html_panels(data) -> list[Panel]:   # optional; cards, each with a priority
 def notable(data) -> list[str]:         # optional; NOTABLE strip, threshold-selected
+def balance_rows(data) -> list[Metric]: # optional; balance card — must survive {}
 def refresh_derived(data) -> dict:      # optional; only if fields age with the clock
 def analyst_tools(cfg) -> list[Tool]:   # optional; live queries lent to --ask
 def analyst_scope(data) -> str | None:  # optional; what that tool can reach

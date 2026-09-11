@@ -672,6 +672,48 @@ def _tone(v) -> str | None:
     return "up" if v > 0 else ("down" if v < 0 else None)
 
 
+# The flow window the balance card carries: the primary one, which is also the
+# window the lead-share regime tag describes. A single day is the noisiest
+# reading Farside publishes and the one most often still incomplete, and the
+# long windows answer a different question — a 60d net says what this quarter
+# has been, not what liquidity is doing now.
+BALANCE_WINDOW = WINDOWS[0]
+
+
+def balance_rows(d: dict) -> list[Metric]:
+    """This source's one row on the balance card: the demand channel.
+
+    On Farside's `Total` basis, like every other figure here — every listed
+    fund, not the four this module itemizes. The basis travels in the note
+    rather than being left implied, because the untracked remainder is large
+    enough to flip a sign and this row is read next to five others that were
+    computed from something else entirely.
+
+    Survives an empty dict with its label intact, so a failed scrape still
+    occupies its row.
+    """
+    window = next(
+        (w for w in (d.get("windows") or [])
+         if isinstance(w, dict) and w.get("days") == BALANCE_WINDOW),
+        {},
+    )
+    if not window.get("covered"):
+        return [Metric(
+            "Liquidity", "n/a",
+            # Says "not zero" for the same reason the ETF card does: an absent
+            # flow window is the one n/a a reader is most likely to read as a
+            # quiet market rather than as a window that could not be filled.
+            note=f"only {fmt(window.get('days_available'), missing='?')} "
+                 f"fully-reported days — not zero",
+        )]
+    return [Metric(
+        "Liquidity", _m(window.get("total")),
+        note=f"US spot ETF net, {BALANCE_WINDOW}d · Farside Total basis, "
+             f"every listed fund",
+        tone=_tone(window.get("total")),
+    )]
+
+
 # A run this long is uncommon enough to mention. Deliberately not a size
 # threshold: the streak counts days, and mixing a duration test with a
 # magnitude one would report two different things under one heading.

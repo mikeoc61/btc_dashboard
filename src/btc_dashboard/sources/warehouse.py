@@ -1504,6 +1504,68 @@ def html_panels(d: dict) -> list[Panel]:
     return panels
 
 
+# The realised-volatility window the balance card carries. 30d is the
+# conventional figure and the one an external reading is most likely to be
+# quoted on. 7d moves on a single session, and the long windows move too slowly
+# to say anything about now — a 360d reading is a fact about the year.
+BALANCE_VOL_WINDOW = 30
+# Participation is trade *count*, not volume. The two correlate 0.90 at this
+# venue and are still not the same reading — on 2 Sep 2026 volume ranked 58th
+# and trades 97th — and of the pair it is the count that answers "how many
+# people are trading" rather than "how much money moved", which is the question
+# a row labelled Participation is asking.
+BALANCE_ACTIVITY_KEY = "trades_pctile"
+
+
+def balance_rows(d: dict) -> list[Metric]:
+    """This source's two rows on the balance card: speculation and participation.
+
+    Neither carries a tone, and neither is an accident. Realised volatility
+    fires at both tails — the lowest and highest quintiles each preceded larger
+    moves than mid-range ones — so it has no sign to colour. Trade count is
+    participation, not direction: a 97th-percentile day is a busy one, and busy
+    is not bullish or bearish. Colouring either would put a direction on this
+    card that the measure does not carry, which is the whole failure mode a
+    balance-of-evidence panel invites.
+
+    Survives an empty dict with its labels intact, so a missing warehouse still
+    occupies both rows.
+    """
+    vol = d.get("volatility") or {}
+    window = next(
+        (w for w in (vol.get("windows") or [])
+         if isinstance(w, dict) and w.get("days") == BALANCE_VOL_WINDOW),
+        {},
+    )
+    if window.get("covered"):
+        years = _window_label(
+            window.get("percentile_window_days") or VOL_PERCENTILE_RECENT_DAYS)
+        speculation = Metric(
+            "Speculation", f"{fmt(window.get('value'), '.0f')}%",
+            note=f"{BALANCE_VOL_WINDOW}d realised, ann √"
+                 f"{fmt(vol.get('annualisation_days') or VOL_ANNUALISATION)} · "
+                 f"{_pctile(window.get('percentile_recent'))} pctile of {years} · "
+                 f"marks events, not direction",
+        )
+    else:
+        speculation = Metric(
+            "Speculation", "n/a",
+            note=f"not enough history for a {BALANCE_VOL_WINDOW}d window",
+        )
+
+    trades = (d.get("signals") or {}).get(BALANCE_ACTIVITY_KEY)
+    if isinstance(trades, (int, float)):
+        name, why = ACTIVITY_PANEL[BALANCE_ACTIVITY_KEY]
+        participation = Metric(
+            "Participation", f"{_pctile(trades)} pctile",
+            note=f"{name.lower()}, {_window_label(VOL_WINDOW_DAYS)}, "
+                 f"weekday-adjusted · {why}",
+        )
+    else:
+        participation = Metric("Participation", "n/a", note="no trade count ranked")
+    return [speculation, participation]
+
+
 # Percentile bounds for the notable strip. A reading fires at either extreme:
 # both very low and very high volatility historically preceded larger moves
 # than mid-range readings, so only surfacing lows would report half the story.

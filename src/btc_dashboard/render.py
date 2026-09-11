@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import sys
 
-from . import snapshot as snap
+from . import composite, snapshot as snap
 from .text import safe_text
 
 RULE = "─" * 60
@@ -94,6 +94,22 @@ def render(snapshot: dict, *, show_errors: bool = True, color: bool | None = Non
     generated = safe_text(snapshot["generated_at"])[:19].replace("T", " ")
     lines.append(paint(f"BTC DASHBOARD — {generated} UTC", BOLD))
     lines.append(paint(RULE, DIM))
+
+    # The digest leads, for the same reason it leads the page: it is what a
+    # glance is for, and everything it names is stated again in full below.
+    # The coverage count is painted like a staleness flag rather than a title,
+    # because an incomplete card is the same class of fact as a stale one — and
+    # like every other marker here it only colours text that already reads
+    # correctly without it.
+    balance = composite.rows(snapshot, reasons=show_errors)
+    if balance:
+        lines.append(
+            paint(composite.TITLE, BOLD, CYAN)
+            + paint(f" · {composite.coverage_label(balance)}",
+                    DIM if composite.complete(balance) else YELLOW)
+        )
+        lines.extend(f"  {line}" for line in composite.lines(balance))
+        lines.append("")
 
     for name in snap.ordered_names(snapshot):
         block = snapshot["sources"][name]

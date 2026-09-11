@@ -442,6 +442,69 @@ def html_panels(d: dict) -> list[Panel]:
     return [Panel("PRICE", rows, priority=10)]
 
 
+def balance_rows(d: dict) -> list[Metric]:
+    """This source's two rows on the balance card: trend and momentum.
+
+    Phrased here rather than in `composite` for the same reason every other
+    presentation is: the band the position classifier uses and the RSI variant
+    are this module's facts, and a digest restating them from memory would
+    drift from the PRICE card sitting underneath it.
+
+    Survives an empty dict with its labels intact — that is what lets the card
+    keep both rows, marked `n/a`, when the price source is down.
+    """
+    primary = next(
+        (s for s in _sma_entries(d) if s.get("days") == PRIMARY_SMA), {}
+    )
+    if primary.get("covered"):
+        pct = primary.get("pct")
+        # Tone on the value here, unlike the PRICE card, because here the value
+        # *is* the signed quantity — the distance — rather than the average it
+        # is measured from. Forced to a side outside the dead band, matching
+        # that card so the two cannot disagree about which way today leans.
+        #
+        # Except when there is no number to sign. An ingested payload can carry
+        # `covered: true` with a null `pct`, and a bare sign test sends that to
+        # the `else` branch: the row then prints `n/a` in red, which reads as a
+        # trend that has fallen rather than as a trend nobody measured. That is
+        # the same bug the retarget projection had, and the reason `n/a` is
+        # uncoloured everywhere here.
+        trend = Metric(
+            "Trend", fmt(pct, "+.1f", suffix="%"),
+            note=f"spot vs {PRIMARY_SMA}d SMA · "
+                 f"{safe_text(primary.get('position') or 'n/a')} "
+                 f"(±{NEAR_BAND_PCT:.0f}% band)",
+            tone=(change_tone(pct) or ("up" if pct >= 0 else "down"))
+                 if isinstance(pct, (int, float)) else None,
+        )
+    else:
+        trend = Metric(
+            "Trend", "n/a",
+            note=f"only {fmt(primary.get('days_available') or d.get('days_available'), missing='?')} "
+                 f"closes — a {PRIMARY_SMA}d SMA needs {PRIMARY_SMA}",
+        )
+
+    live, closed = _rsi_entries(d)
+    if live.get("covered"):
+        period = fmt(live.get("period") or RSI_PERIOD)
+        # No tone, deliberately, and the same call the PRICE card makes: a
+        # reading above 70 is a level, not a direction. Colouring it would
+        # assert one — and on a card whose whole point is the balance of
+        # evidence, a green 78 would be read as a vote.
+        momentum = Metric(
+            "Momentum", fmt(live.get("value"), ".1f"),
+            note=f"{period}d RSI, Wilder · settled "
+                 f"{fmt(closed.get('value'), '.1f')} · a level, not a direction",
+        )
+    else:
+        momentum = Metric(
+            "Momentum", "n/a",
+            note=f"only {fmt(live.get('bars_available'), missing='?')} closes, "
+                 f"{RSI_MIN_BARS} needed",
+        )
+    return [trend, momentum]
+
+
 # A day's move worth calling out. Roughly three standard deviations at the
 # volatility of a quiet market and about one at a turbulent one, so it fires
 # rarely now and rarely then — which is what a "notable" list needs.

@@ -7,6 +7,17 @@ from btc_dashboard import html as page
 from btc_dashboard.sources import Metric, Panel
 
 
+def _grid(out: str) -> str:
+    """Just the data grid, from `id="cards"` to the end of <main>.
+
+    The lead row above it holds a card too — the balance digest — and that one
+    is not part of the grid's priority ordering and always carries a card-level
+    note. A test about the grid has to say which region it means, or it starts
+    testing the digest by accident.
+    """
+    return out.split('id="cards"', 1)[1].split("</main>", 1)[0]
+
+
 def _snap(**over):
     block = {
         "available": True, "stale": False, "cached": False,
@@ -491,7 +502,7 @@ class TestCardOrder:
     def _titles(self, snap):
         import re
         return re.findall(r'<h2>([A-Z][^<]{0,40}?)(?:<span|</h2>)',
-                          page.render_html(snap))
+                          _grid(page.render_html(snap)))
 
     def test_volatility_comes_second(self):
         titles = self._titles(self._snap())
@@ -916,8 +927,7 @@ class TestACardLevelNote:
         assert "kraken only" in live and "through 31 Aug Mon" in live
 
     def test_a_card_without_one_renders_no_empty_node(self):
-        out = page.render_html(_snap())
-        assert 'class="cardnote"' not in out
+        assert 'class="cardnote"' not in _grid(page.render_html(_snap()))
 
 
 class TestPngCapture:

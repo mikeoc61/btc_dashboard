@@ -553,7 +553,13 @@ class TestTextThatNeverPassedThroughFmt:
     def test_the_panel_has_one_column_zero_line_per_source(self):
         """The invariant the forgery breaks, asserted over every string leaf at
         once rather than field by field: the only lines starting at column 0
-        are the two chrome lines and one heading per source."""
+        are the two chrome lines, the balance digest's heading, and one heading
+        per source.
+
+        The digest is counted rather than excused. Its rows are built from the
+        same poisoned payloads, and its notes carry a source's own error text
+        on the rows it could not fill — so a newline surviving into one of them
+        forges a heading exactly as a source line would."""
         from btc_dashboard import render
 
         sources = {n: _block(_poison(copy.deepcopy(d)), stale=True,
@@ -563,7 +569,7 @@ class TestTextThatNeverPassedThroughFmt:
         out = render.render(_snapshot(sources, generated_at=HOSTILE), color=False)
 
         headings = [ln for ln in out.splitlines() if ln and not ln.startswith(" ")]
-        assert len(headings) == 2 + len(sources)
+        assert len(headings) == 2 + 1 + len(sources)
         assert "\x1b" not in out and "‮" not in out
 
     def test_every_context_line_stays_behind_its_source_prefix(self):
