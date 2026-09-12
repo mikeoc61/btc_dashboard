@@ -49,11 +49,12 @@ LIVE_IDS = ("ticks", "stamp", "notable", "composite", "cards")
 # to be read away from this page — so dropping the qualifier from exactly the
 # copy that travels is the regression this project keeps having.
 #
-# `lead` rather than its two children: the capture clones each named region
-# into one flat stage, so two flex items cloned separately would stack in the
-# image whatever the stylesheet says. Naming the row that holds them keeps the
-# PNG laid out like the page.
-CAPTURE_IDS = ("pagehead", "lead", "cards", "pagefoot")
+# The balance band is named beside the strip rather than through a wrapper.
+# The capture clones each named region into one flat stage, which reproduces a
+# stack exactly -- it was a wrapper only while the two sat side by side, where
+# cloning them separately would have stacked them in the image whatever the
+# stylesheet said.
+CAPTURE_IDS = ("pagehead", "notable", "composite", "cards", "pagefoot")
 
 # Patch those regions on a timer instead of reloading the document.
 #
@@ -459,48 +460,36 @@ h1 { font-size:1.05rem; margin:0; letter-spacing:.06em; color:var(--accent); }
    so an in-place update can replace every data card without touching it.
    The margin restores the gap the shared grid used to supply. */
 .askgrid { margin-top:.85rem; }
-/* The lead row: the notable strip and the balance card, above the data grid.
-   Flex rather than grid, because the strip is *absent* on an ordinary day and
-   a grid track would hold its column open. `:empty` matches the wrapper the
-   updater patches, so the row rearranges itself on a tick as well as on a
-   first render - the strip coming and going is the normal case here, not an
-   edge one.
+/* The balance card is a band across the top, not a column beside the strip.
+   Side by side, a one-line strip left a 349px hole next to a 392px card, and
+   the page went from 874px to 1223px at 1920 -- past the point where the six
+   cards fit a 1080 screen, which is what the grid's column count was tuned
+   around in the first place. Full width the card is 165px and every note fits
+   on one line.
 
-   `align-items:flex-start` so a one-line strip stays one line high instead of
-   stretching to the card beside it. The margin sits on the row rather than on
-   the strip, which used to carry it: the strip is now an item inside a flex
-   container, so its own bottom margin would leave with it on the days it is
-   not there, taking the gap above the grid too.
+   Three columns, matching the grid below, so a reading lines up with the cards
+   it summarises. Not auto-fit: at 1920 that packs six across, which wraps four
+   of the six notes onto a second line and reads ragged. Six readings divide
+   evenly only by 1, 2, 3 and 6, so a column count chosen by available width
+   leaves a short last row at most widths -- which is the same reason the card
+   grid below is tuned to three by measurement rather than by arithmetic.
 
-   The basis pair is deliberate. The card is dense and wants a card's width, so
-   it gets one and does not grow; the strip is a line of text and takes the
-   rest. Alone, the card grows into the whole row. What the sibling selector
-   buys is that no markup differs between the two cases, so a tick that empties
-   the strip cannot leave the row in a state the page never renders from
-   scratch.
-
-   Addressed by id rather than by a class, and that is not a preference:
-   `.lead` already belongs to the strip's own label span, where a display:flex
-   rule would turn it into a block and break the label off the items it
-   introduces. A test asserts no bare `.lead` rule exists -- and this file is
-   string-searched for the strip's name, which is why that name is not written
-   out here.
-
-   ASCII only, like every comment in here: this stylesheet is copied verbatim
-   into the PNG capture's SVG, where a stray glyph is a parse error rather than
-   a typo. */
-#lead { display:flex; flex-wrap:wrap; gap:.85rem; align-items:flex-start;
-        margin-bottom:.85rem; }
-#notable { flex:1 1 20rem; min-width:0; }
-#composite { flex:0 1 30rem; min-width:0; }
-#notable:empty, #composite:empty { display:none; }
-#notable:empty + #composite { flex-grow:1; }
+   One column below 900px, where three columns would leave a reading about
+   200px to put a label and a value in. */
+#composite { margin-bottom:.85rem; }
+#composite:empty { display:none; }
+.bgrid { display:grid; grid-template-columns:repeat(3,1fr); gap:0 1.6rem; }
+@media (max-width:900px) { .bgrid { grid-template-columns:1fr; } }
+/* One reading. The separators the stacked layout draws between rows are absent
+   here deliberately: the column gaps already group them, and a rule under every
+   cell of a two-row band reads as a table someone forgot to finish. */
+.bcell { min-width:0; }
 /* A plain block, not flex: whitespace between flex items is discarded, so the
    separating spaces have to be real text and the container has to lay out as
    text for them to survive. */
 .notable { background:var(--card); border:1px solid var(--line);
            border-left:3px solid var(--warn); border-radius:8px;
-           padding:.55rem .9rem; font-size:.9rem;
+           padding:.55rem .9rem; margin-bottom:.85rem; font-size:.9rem;
            line-height:1.6; }
 .notable .lead { color:var(--warn); font-weight:600; font-size:.85rem;
                  letter-spacing:.05em; margin-right:.3rem; }
@@ -564,6 +553,17 @@ def _rows(metrics: list[Metric]) -> str:
             ntone = f" {m.note_tone}" if m.note_tone in ("up", "down", "warn") else ""
             out.append(f'<div class="note{ntone}">{_esc(m.note)}</div>')
     return "".join(out)
+
+
+def _band_cells(metrics: list[Metric]) -> str:
+    """The balance readings as grid cells rather than as one stacked list.
+
+    A cell holds one reading — its row and its note — so the band can lay six
+    of them out three across. Built by handing `_rows` a single metric rather
+    than reimplementing its markup: the tone classes and the escaping are the
+    same rules, and a second copy of them would drift from the first.
+    """
+    return "".join(f'<div class="bcell">{_rows([m])}</div>' for m in metrics)
 
 
 def _panels_for(name: str, block: dict) -> list[Panel]:
@@ -818,7 +818,7 @@ def _live_parts(snapshot: dict) -> dict[str, str]:
             f'<section class="card"><h2>{_esc(composite.TITLE)}'
             f'<span class="{cls}">{_esc(composite.coverage_label(balance))}</span>'
             f'</h2><div class="cardnote">{_esc(composite.NOTE)}</div>'
-            f'{_rows(balance)}</section>'
+            f'<div class="bgrid">{_band_cells(balance)}</div></section>'
         )
 
     # Each part is wrapped in the element the updater patches. The wrapper is
@@ -964,7 +964,8 @@ def render_html(snapshot: dict, *, title: str = "BTC DASHBOARD",
   {parts['stamp']}
 </header>
 <main>
-<div id="lead">{parts['notable']}{parts['composite']}</div>
+{parts['notable']}
+{parts['composite']}
 {parts['cards']}{ask_html}
 </main>
 <footer id="pagefoot">Data: local node + DuckDB · price: CoinGecko · ETF: Farside.

@@ -33,7 +33,10 @@ NODE = {
     "difficulty_t": 126.23, "retarget": {}, "mempool": {}, "fees_sat_vb": {},
 }
 WAREHOUSE = {
-    "date": "2026-09-09", "onchain": {},
+    # `close_date` is the `btc` table's own day and is deliberately not `date`,
+    # the on-chain frontier — the two advance independently, and the balance
+    # rows are dated by the close.
+    "date": "2026-09-09", "close_date": "2026-09-10", "onchain": {},
     "signals": {"trades_pctile": 88.0},
     "volatility": {"annualisation_days": 365, "windows": [
         {"days": 30, "covered": True, "value": 24.8, "percentile_recent": 17.0,
@@ -41,7 +44,8 @@ WAREHOUSE = {
          "days_available": 730}]},
 }
 FLOWS = {
-    "as_of": "2026-09-10", "age_days": 1, "lead": "IBIT",
+    # Farside's own format, which is what `dated()` parses.
+    "as_of": "10 Sep 2026", "age_days": 1, "lead": "IBIT",
     "windows": [{"days": 5, "covered": True, "total": -457.4, "lead": -300.1,
                  "days_available": 5}],
     "streak_days": 3, "streak_sign": "outflow",
@@ -58,13 +62,13 @@ def _block(data, **over):
     return block
 
 
-def _lead(out: str) -> str:
-    """Just the lead row — the strip and the balance card, nothing below them.
+def _band(out: str) -> str:
+    """Just the balance band, from its wrapper to the start of the card grid.
 
     Sliced at the grid rather than at `</main>`, which would swallow the cards
     and the ask box and make every containment assertion here vacuous.
     """
-    return out.split('id="lead"', 1)[1].split('<div class="grid"', 1)[0]
+    return out.split('id="composite"', 1)[1].split('<div class="grid"', 1)[0]
 
 
 def _snap(down: tuple[str, ...] = ()) -> dict:
@@ -162,6 +166,31 @@ class TestEveryReadingCarriesItsWindow:
     def test_the_qualifiers_are_on_the_card(self, fragment):
         assert fragment in " ".join(str(m.note) for m in composite.rows(_snap()))
 
+    def test_every_reading_that_is_not_live_names_its_day(self):
+        """Three of the six are not live: the two warehouse rows, which are
+        structurally a day behind, and the flow window, which ends on the last
+        fully-reported day. They sit between rows taken this second, under a
+        page stamp of today, so an undated one inherits today by proximity —
+        and reads as participation that is happening now."""
+        notes = {m.label: str(m.note) for m in composite.rows(_snap())}
+        assert "through 10 Sep" in notes["Speculation"]
+        assert "through 10 Sep" in notes["Participation"]
+        assert "through Thu 10 Sep 2026" in notes["Liquidity"]
+
+    def test_the_live_readings_are_not_dated(self):
+        """The page stamp already dates them, and a date on a live figure
+        invites reading the two undated ones as live too."""
+        notes = {m.label: str(m.note) for m in composite.rows(_snap())}
+        for label in ("Trend", "Momentum", "Network"):
+            assert "through" not in notes[label]
+
+    def test_an_undatable_payload_drops_the_phrase_rather_than_faking_one(self):
+        snap = _snap()
+        snap["sources"]["warehouse"]["data"] = dict(WAREHOUSE, close_date=None)
+        notes = {m.label: str(m.note) for m in composite.rows(snap)}
+        assert "through" not in notes["Speculation"]
+        assert "pctile of 2y" in notes["Speculation"]
+
     def test_the_annualisation_travels_with_the_volatility(self):
         """17% of a reading, and enough to move it across a published
         threshold. A digest is exactly where it gets dropped for tidiness."""
@@ -254,33 +283,43 @@ class TestMeaningSurvivesThePresentation:
 
 
 class TestWhereItLives:
-    def test_the_card_is_inside_the_captured_region(self):
-        """`CAPTURE_IDS` names `lead`, the row holding the strip and the card.
-        Named separately they would clone into the image as a stack, since the
-        capture builds one flat stage out of the regions it is given."""
-        assert "lead" in page.CAPTURE_IDS
-        assert "notable" not in page.CAPTURE_IDS
-        # A day with something to lead with, so both halves of the row are
-        # there to be found in it.
-        snap = _snap()
-        snap["sources"]["flows"]["data"]["streak_days"] = 6
-        lead = _lead(page.render_html(snap))
-        assert "BALANCE OF EVIDENCE" in lead and "NOTABLE" in lead
+    def test_the_band_is_inside_the_captured_region(self):
+        """A PNG is the copy most likely to be read away from the page, so the
+        digest has to be in it. Both regions are named, not a wrapper around
+        them: the capture clones each into one flat stage, which reproduces a
+        stack exactly."""
+        assert "composite" in page.CAPTURE_IDS and "notable" in page.CAPTURE_IDS
+        assert "lead" not in page.CAPTURE_IDS
+        assert "BALANCE OF EVIDENCE" in _band(page.render_html(_snap()))
+
+    def test_the_readings_are_cells_so_the_band_can_lay_them_out(self):
+        """Three across, not six stacked. The markup has to carry that — a
+        stacked list in a grid container puts every row in one column."""
+        band = _band(page.render_html(_snap()))
+        assert band.count('class="bcell"') == 6
+        assert 'class="bgrid"' in band
+
+    def test_a_cell_keeps_its_tone_and_its_note(self):
+        """The cells are built by handing `_rows` one metric at a time, so a
+        second copy of the tone and escaping rules cannot drift from the
+        first."""
+        band = _band(page.render_html(_snap()))
+        assert 'class="value down"' in band          # Trend, negative
+        assert "spot vs 200d SMA" in band            # and its qualifier
 
     def test_a_tick_updates_it(self):
         assert "composite" in page.LIVE_IDS
         assert "BALANCE OF EVIDENCE" in page.render_live(_snap())
 
-    def test_the_ask_box_is_still_outside_every_live_region(self):
-        """The card sits in the lead row, which a tick patches. The box must
-        not have followed it there."""
-        assert "askform" not in _lead(page.render_html(_snap(), ask=True))
+    def test_the_ask_box_is_outside_it(self):
+        """The band is a live region — a tick replaces it wholesale. The box
+        must not be anywhere inside one."""
+        assert "askform" not in _band(page.render_html(_snap(), ask=True))
 
-    def test_an_ordinary_day_leaves_the_strip_empty_and_the_card_alone(self):
-        """The one layout behaviour that has to live in CSS: with nothing to
-        lead with, the strip's wrapper renders empty and the card takes the
-        row. Asserted on both halves — the empty wrapper the page emits, and
-        the rule that reacts to it."""
+    def test_an_ordinary_day_leaves_the_strip_empty(self):
+        """Nothing to lead with renders an empty wrapper, not an empty box.
+        The band below it is unaffected — it is a separate region now, which is
+        the whole reason the strip can come and go without moving anything."""
         quiet = _snap()
         quiet["sources"]["warehouse"]["data"]["signals"] = {"trades_pctile": 48.0}
         quiet["sources"]["flows"]["data"]["streak_days"] = 2
@@ -288,15 +327,15 @@ class TestWhereItLives:
             w["percentile_recent"] = 47.0
         out = page.render_html(quiet)
         assert '<div id="notable"></div>' in out
-        assert "#notable:empty + #composite" in page.CSS
+        assert "BALANCE OF EVIDENCE" in out
 
-    def test_the_lead_row_does_not_steal_the_strips_label_class(self):
-        """`.lead` was already taken: it is the "NOTABLE" label inside the
-        strip, styled inline with a right margin. A row rule on that class
-        makes the label a flex container, which is block-level — the label
-        breaks onto its own line and reads as a heading over the items rather
-        than as the start of them. The row is addressed by id for that reason.
-        """
+    def test_nothing_but_the_strips_label_claims_the_lead_class(self):
+        """`.lead` is a short, generic name already bound to the one-word label
+        inside the strip, styled inline with a right margin. A second rule on
+        it — a "lead section", say — turns that span into whatever the new rule
+        says, and a display rule turns it into a block: the label breaks onto
+        its own line and reads as a heading over the items rather than as the
+        start of them. Cost a rework once already."""
         import re
 
         # Selectors only: the comments talk about `.lead` on purpose.
@@ -304,8 +343,6 @@ class TestWhereItLives:
         selectors = [chunk.split("{", 1)[0].strip()
                      for chunk in stripped.split("}") if "{" in chunk]
         assert [sel for sel in selectors if ".lead" in sel] == [".notable .lead"]
-        assert "#lead" in selectors
-        assert 'id="lead">' in page.render_html(_snap())
 
     def test_the_digest_stays_out_of_the_analyst_prompt(self):
         """Every reading on it is already in that context, phrased by the

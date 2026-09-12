@@ -1517,6 +1517,26 @@ BALANCE_VOL_WINDOW = 30
 BALANCE_ACTIVITY_KEY = "trades_pctile"
 
 
+def _balance_through(d: dict) -> str:
+    """`through 10 Sep` for a reading that is not live, or "" if undatable.
+
+    Both readings on the balance card come from the `btc` table, so they are
+    dated by the close's day and never by the on-chain frontier above it.
+
+    Short form, unlike the SIGNALS card's `through 10 Sep Thu UTC`. The weekday
+    earns its place there because `fee_subsidy` is seasonally lower at weekends
+    and an unlabelled dip reads as deterioration; these two are already
+    weekday-adjusted and annualised, so the weekday adds no reading — what the
+    row needs is its vintage, because it sits between rows that are live to the
+    second and would otherwise inherit today by proximity.
+    """
+    try:
+        day = datetime.date.fromisoformat(d["close_date"])
+    except (KeyError, TypeError, ValueError):
+        return ""
+    return f"through {day:%-d %b}"
+
+
 def balance_rows(d: dict) -> list[Metric]:
     """This source's two rows on the balance card: speculation and participation.
 
@@ -1528,10 +1548,18 @@ def balance_rows(d: dict) -> list[Metric]:
     card that the measure does not carry, which is the whole failure mode a
     balance-of-evidence panel invites.
 
+    Both name the day they run through. The warehouse only stores finished days
+    and is structurally behind, so on the card these two sit between a hashrate
+    reading taken this second and a flow window dated by Farside, under a page
+    stamp of today — and an undated line inherits the wrong day by proximity.
+    That is the same failure `render_lines` guards on the activity line, one
+    step worse here because the neighbours are further apart in vintage.
+
     Survives an empty dict with its labels intact, so a missing warehouse still
     occupies both rows.
     """
     vol = d.get("volatility") or {}
+    through = _balance_through(d)
     window = next(
         (w for w in (vol.get("windows") or [])
          if isinstance(w, dict) and w.get("days") == BALANCE_VOL_WINDOW),
@@ -1545,7 +1573,8 @@ def balance_rows(d: dict) -> list[Metric]:
             note=f"{BALANCE_VOL_WINDOW}d realised, ann √"
                  f"{fmt(vol.get('annualisation_days') or VOL_ANNUALISATION)} · "
                  f"{_pctile(window.get('percentile_recent'))} pctile of {years} · "
-                 f"marks events, not direction",
+                 + (f"{through} · " if through else "")
+                 + "marks events, not direction",
         )
     else:
         speculation = Metric(
@@ -1559,7 +1588,8 @@ def balance_rows(d: dict) -> list[Metric]:
         participation = Metric(
             "Participation", f"{_pctile(trades)} pctile",
             note=f"{name.lower()}, {_window_label(VOL_WINDOW_DAYS)}, "
-                 f"weekday-adjusted · {why}",
+                 f"weekday-adjusted · "
+                 + (f"{through} · " if through else "") + why,
         )
     else:
         participation = Metric("Participation", "n/a", note="no trade count ranked")

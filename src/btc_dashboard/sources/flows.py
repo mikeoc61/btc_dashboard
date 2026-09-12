@@ -706,10 +706,16 @@ def balance_rows(d: dict) -> list[Metric]:
             note=f"only {fmt(window.get('days_available'), missing='?')} "
                  f"fully-reported days — not zero",
         )]
+    # Named, because the window ends on the last *fully-reported* day and there
+    # is normally a partial one after it. Undated beside a hashrate reading
+    # taken this second, a 5d net reads as running through today — which is the
+    # one day it is guaranteed to exclude. The weekday stays here, unlike the
+    # warehouse rows: a U.S. trading calendar has gaps a reader counting back
+    # five days cannot see.
     return [Metric(
         "Liquidity", _m(window.get("total")),
-        note=f"US spot ETF net, {BALANCE_WINDOW}d · Farside Total basis, "
-             f"every listed fund",
+        note=f"US spot ETF net, {BALANCE_WINDOW}d through {dated(d.get('as_of'))}"
+             f" · Farside Total basis, every listed fund",
         tone=_tone(window.get("total")),
     )]
 
