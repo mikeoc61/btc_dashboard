@@ -1577,13 +1577,22 @@ def balance_rows(d: dict) -> list[Metric]:
     if window.get("covered"):
         years = _window_label(
             window.get("percentile_window_days") or VOL_PERCENTILE_RECENT_DAYS)
+        # The mark rides beside the percentile it qualifies, and the phrase is
+        # what carries it: `warn` is a tint, and a tint is gone the moment the
+        # stylesheet is. Amber rather than up/down on purpose — this row has no
+        # direction to colour, and the reader is being told the reading is
+        # extreme, not that it is good or bad.
+        extreme = notable_pctile_phrase(
+            window.get("percentile_recent"), both_tails=True)
         volatility = Metric(
             "Volatility", f"{fmt(window.get('value'), '.0f')}%",
             note=f"{BALANCE_VOL_WINDOW}d realised, ann √"
                  f"{fmt(vol.get('annualisation_days') or VOL_ANNUALISATION)} · "
                  f"{_pctile(window.get('percentile_recent'))} pctile of {years} · "
+                 + (f"{extreme} · " if extreme else "")
                  + (f"{through} · " if through else "")
                  + "marks events, not direction",
+            tone="warn" if extreme else None,
         )
     else:
         volatility = Metric(
@@ -1594,11 +1603,15 @@ def balance_rows(d: dict) -> list[Metric]:
     trades = (d.get("signals") or {}).get(BALANCE_ACTIVITY_KEY)
     if isinstance(trades, (int, float)):
         name, why = ACTIVITY_PANEL[BALANCE_ACTIVITY_KEY]
+        # High end only, the same rule the strip applies to a trade count.
+        extreme = notable_pctile_phrase(trades, both_tails=False)
         participation = Metric(
             "Participation", f"{_pctile(trades)} pctile",
             note=f"{name.lower()}, {_window_label(VOL_WINDOW_DAYS)}, "
                  f"weekday-adjusted · "
+                 + (f"{extreme} · " if extreme else "")
                  + (f"{through} · " if through else "") + why,
+            tone="warn" if extreme else None,
         )
     else:
         participation = Metric("Participation", "n/a", note="no trade count ranked")
@@ -1618,6 +1631,30 @@ NOTABLE_HASHRATE_DD = -20.0
 NOTABLE_APATHY_DAYS = 30
 
 
+def notable_pctile_phrase(value, *, both_tails: bool) -> str:
+    """The bound a percentile has crossed, worded, or `""` if it has not.
+
+    The test and its wording in one place because two things apply it: the
+    strip, which decides what leads the page, and `balance_rows`, which marks
+    the band row whose measure is the one being led with. Stated separately
+    they would drift, and a row marked extreme beside a strip that had not
+    mentioned it is worse than either alone — the reader has no way to tell
+    which of the two is wrong.
+
+    `both_tails` because the rules genuinely differ: volatility is extreme at
+    either end, since the lowest and highest quintiles each preceded larger
+    moves, while a trade count is only ever notable for being high. There is no
+    reading of "unusually few trades" this tool is prepared to lead with.
+    """
+    if not isinstance(value, (int, float)):
+        return ""
+    if value >= NOTABLE_PCTILE_HIGH:
+        return f"at or above the {_ordinal(NOTABLE_PCTILE_HIGH)} pctile"
+    if both_tails and value <= NOTABLE_PCTILE_LOW:
+        return f"at or below the {_ordinal(NOTABLE_PCTILE_LOW)} pctile"
+    return ""
+
+
 def notable(d: dict) -> list[str]:
     """Readings extreme enough to lead with, each carrying its own window.
 
@@ -1634,7 +1671,7 @@ def notable(d: dict) -> list[str]:
         pct = w.get("percentile_recent")
         if not isinstance(pct, (int, float)):
             continue
-        if pct <= NOTABLE_PCTILE_LOW or pct >= NOTABLE_PCTILE_HIGH:
+        if notable_pctile_phrase(pct, both_tails=True):
             out.append(
                 f"{fmt(w.get('days'))}d volatility {fmt(w.get('value'), '.0f')}% "
                 f"— {_pctile(pct)} pctile of {years}y"
@@ -1663,7 +1700,7 @@ def notable(d: dict) -> list[str]:
     for key, _label, v, window in _activity_items(sig):
         if key == "trade_size_pctile":
             continue
-        if v >= NOTABLE_PCTILE_HIGH:
+        if notable_pctile_phrase(v, both_tails=False):
             name, _why = ACTIVITY_PANEL[key]
             out.append(f"{name.lower()} {_pctile(v)} pctile of {window}")
 

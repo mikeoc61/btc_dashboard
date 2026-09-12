@@ -314,6 +314,22 @@ is not a direction, so painting it green would contradict the qualifier printed
 beside it — the same call the retarget projection makes inside its own dead
 band.
 
+**A reading extreme enough to lead the page is marked on its own row.** Two of
+the nine `NOTABLE` kinds have a band row to mark — a 30d volatility percentile
+and a trade count — and before this the strip and the row stated the same number
+with nothing connecting them. The row's value goes amber, and the threshold is
+stated in its note (`at or above the 95th pctile`), because the tint is the
+signal and the text is the meaning: strip the stylesheet and an amber 98 is
+just a 98.
+
+Amber rather than up or down, deliberately. Neither measure has a direction to
+colour, and the reader is being told the reading is unusual, not that it is
+good. The strip and the mark share one predicate, `notable_pctile_phrase`, so
+they cannot come to disagree — a row marked extreme beside a strip that never
+mentioned it leaves the reader no way to tell which of the two is wrong. It
+carries the asymmetry too: volatility is extreme at either tail, a trade count
+only ever for being high.
+
 **A missing reading is `n/a` and keeps its row.** The same rule as an unfillable
 flow window or SMA, and the reason `balance_rows` has to survive an empty dict:
 a source that is down still occupies its rows, so nothing is renormalised onto

@@ -272,10 +272,12 @@ class TestItIsNotAScore:
         # Every value begins in the same column, categorised or not.
         assert len({ln.index(m.value) for ln, m in zip(lines, rows)}) == 1
 
-    def test_the_undirected_readings_carry_no_tone(self):
+    def test_the_undirected_readings_carry_no_directional_tone(self):
         """Volatility fires at both tails and trade count is participation.
-        A colour on either asserts a direction the measure does not have, and
-        on this card a green figure reads as a vote."""
+        Up or down on either asserts a direction the measure does not have,
+        and on this card a green figure reads as a vote. (They can still take
+        `warn` when the reading is extreme — amber says "unusual", not
+        "good"; see TestAnExtremeReadingIsMarked.)"""
         tones = {m.label: (m.tone, m.note_tone) for m in composite.rows(_snap())}
         assert tones["Volatility"] == (None, None)
         assert tones["Participation"] == (None, None)
@@ -305,6 +307,76 @@ class TestNoValueIsColouredWithoutASign:
     def test_no_empty_payload_colours_anything(self, name):
         assert all(m.tone is None and m.note_tone is None
                    for m in MODULES[name].balance_rows({}))
+
+
+class TestAnExtremeReadingIsMarked:
+    """A reading extreme enough to lead the page is marked on its own row.
+
+    Today's strip and the Participation row were stating the same number with
+    nothing connecting them. The mark is the connection — and it has to use the
+    *same* test the strip uses, because a row marked extreme beside a strip
+    that never mentioned it gives the reader no way to tell which is wrong.
+    """
+
+    def _at(self, *, trades=None, vol_pctile=None):
+        snap = _snap()
+        data = snap["sources"]["warehouse"]["data"] = dict(WAREHOUSE)
+        if trades is not None:
+            data["signals"] = dict(data["signals"], trades_pctile=trades)
+        if vol_pctile is not None:
+            data["volatility"] = {"annualisation_days": 365, "windows": [
+                dict(WAREHOUSE["volatility"]["windows"][0],
+                     percentile_recent=vol_pctile)]}
+        return {m.label: m for m in composite.rows(snap)}
+
+    def test_a_high_trade_count_is_marked_amber_and_says_why(self):
+        row = self._at(trades=98.0)["Participation"]
+        assert row.tone == "warn"
+        assert "at or above the 95th pctile" in row.note
+
+    def test_an_ordinary_trade_count_is_not(self):
+        row = self._at(trades=88.0)["Participation"]
+        assert row.tone is None
+        # The reading is still fully stated — it is the threshold phrase that
+        # is absent, not the percentile.
+        assert row.value == "88 pctile" and "at or above" not in row.note
+
+    def test_volatility_is_marked_at_either_tail(self):
+        """Both ends preceded larger moves, so only marking highs would report
+        half the story — the same rule the strip follows."""
+        low = self._at(vol_pctile=3.0)["Volatility"]
+        high = self._at(vol_pctile=97.0)["Volatility"]
+        assert low.tone == "warn" and "at or below the 5th pctile" in low.note
+        assert high.tone == "warn" and "at or above the 95th pctile" in high.note
+
+    def test_a_quiet_trade_count_is_never_marked(self):
+        """Volatility is extreme at either end; a trade count is only ever
+        notable for being high. There is no "unusually few trades" reading
+        this tool leads with, and the mark must not invent one."""
+        assert self._at(trades=1.0)["Participation"].tone is None
+
+    def test_the_mark_and_the_strip_agree(self):
+        """The point of sharing the predicate. Marked on the card means named
+        on the strip, on the same snapshot."""
+        snap = _snap()
+        snap["sources"]["warehouse"]["data"] = dict(
+            WAREHOUSE, signals=dict(WAREHOUSE["signals"], trades_pctile=98.0))
+        marked = [m.label for m in composite.rows(snap) if m.tone == "warn"]
+        out = page.render_html(snap)
+        assert marked == ["Participation"]
+        assert "NOTABLE" in out and "trade count 98 pctile" in out
+
+    def test_the_reason_survives_the_stylesheet_being_stripped(self):
+        """The tint is the signal; the phrase is the meaning. Strip the styles
+        and an amber 98 is just a 98, so the threshold has to be text."""
+        import re
+
+        snap = _snap()
+        snap["sources"]["warehouse"]["data"] = dict(
+            WAREHOUSE, signals=dict(WAREHOUSE["signals"], trades_pctile=98.0))
+        stripped = re.sub(r"<style>.*?</style>", "", page.render_html(snap),
+                          flags=re.S)
+        assert "at or above the 95th pctile" in stripped
 
 
 class TestItNeverCostsThePage:
