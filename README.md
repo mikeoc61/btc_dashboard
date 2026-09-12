@@ -265,7 +265,7 @@ snapshot's error strings are controlled by whoever produced it.
 ### Balance of evidence
 
 A second card leads the page, beside the `NOTABLE` strip: one reading per
-domain — trend, momentum, network, speculation, participation, liquidity —
+domain — trend, momentum, network, volatility, participation, liquidity —
 each with its own window, gathered from the sources that own them through
 `balance_rows()`. It answers "what does the whole board look like" at a glance,
 where the strip answers "what is unusual today". Both lead, because those are

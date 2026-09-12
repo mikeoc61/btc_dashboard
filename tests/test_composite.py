@@ -117,7 +117,7 @@ class TestAMissingReadingKeepsItsRow:
     def test_the_dead_rows_read_n_a(self):
         rows = {m.label: m.value
                 for m in composite.rows(_snap(down=("warehouse",)))}
-        assert rows["Speculation"] == "n/a" and rows["Participation"] == "n/a"
+        assert rows["Volatility"] == "n/a" and rows["Participation"] == "n/a"
         assert rows["Trend"] != "n/a"
 
     def test_the_coverage_count_says_how_many_are_missing(self):
@@ -173,7 +173,7 @@ class TestEveryReadingCarriesItsWindow:
         page stamp of today, so an undated one inherits today by proximity —
         and reads as participation that is happening now."""
         notes = {m.label: str(m.note) for m in composite.rows(_snap())}
-        assert "through 10 Sep" in notes["Speculation"]
+        assert "through 10 Sep" in notes["Volatility"]
         assert "through 10 Sep" in notes["Participation"]
         assert "through Thu 10 Sep 2026" in notes["Liquidity"]
 
@@ -188,8 +188,8 @@ class TestEveryReadingCarriesItsWindow:
         snap = _snap()
         snap["sources"]["warehouse"]["data"] = dict(WAREHOUSE, close_date=None)
         notes = {m.label: str(m.note) for m in composite.rows(snap)}
-        assert "through" not in notes["Speculation"]
-        assert "pctile of 2y" in notes["Speculation"]
+        assert "through" not in notes["Volatility"]
+        assert "pctile of 2y" in notes["Volatility"]
 
     def test_the_annualisation_travels_with_the_volatility(self):
         """17% of a reading, and enough to move it across a published
@@ -211,12 +211,23 @@ class TestItIsNotAScore:
         assert "weighted" in composite.NOTE and "scored" in composite.NOTE
         assert composite.NOTE in page.render_html(_snap()).replace("&#x27;", "'")
 
+    def test_the_labels_name_measures_not_mechanisms(self):
+        """"Speculation" was one of these once, and it was a claim the number
+        cannot support: realised volatility is movement, and a move may be
+        speculative, macro, a squeeze or capitulation — the reading does not
+        say which, and the row's own note already admits that. Naming the
+        mechanism is the same error as scoring the card, made one word at a
+        time. Pinned so a rename has to be deliberate."""
+        assert [m.label for m in composite.rows(_snap())] == [
+            "Trend", "Momentum", "Network", "Volatility", "Participation",
+            "Liquidity"]
+
     def test_the_undirected_readings_carry_no_tone(self):
         """Volatility fires at both tails and trade count is participation.
         A colour on either asserts a direction the measure does not have, and
         on this card a green figure reads as a vote."""
         tones = {m.label: (m.tone, m.note_tone) for m in composite.rows(_snap())}
-        assert tones["Speculation"] == (None, None)
+        assert tones["Volatility"] == (None, None)
         assert tones["Participation"] == (None, None)
         assert tones["Momentum"] == (None, None)
         assert tones["Trend"][0] and tones["Liquidity"][0] and tones["Network"][0]
@@ -248,7 +259,7 @@ class TestItNeverCostsThePage:
                             lambda d: (_ for _ in ()).throw(ValueError("boom")))
         rows = composite.rows(_snap())
         assert [m.label for m in rows] == [
-            "Network", "Speculation", "Participation", "Liquidity"]
+            "Network", "Volatility", "Participation", "Liquidity"]
         assert "BALANCE OF EVIDENCE" in page.render_html(_snap())
 
     def test_a_snapshot_with_no_known_source_renders_no_card(self):

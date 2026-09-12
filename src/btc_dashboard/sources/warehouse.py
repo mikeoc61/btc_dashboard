@@ -1538,7 +1538,16 @@ def _balance_through(d: dict) -> str:
 
 
 def balance_rows(d: dict) -> list[Metric]:
-    """This source's two rows on the balance card: speculation and participation.
+    """This source's two rows on the balance card: volatility and participation.
+
+    Named for what they measure, not for what would explain it. The first row
+    was "Speculation" and that was a claim the number cannot support: realised
+    volatility is movement, and the move may be speculative, macro, a squeeze
+    or capitulation — the reading does not say which, and the row's own note
+    already admits as much with "marks events, not direction". Naming the
+    mechanism is the same error as scoring the card, made one word at a time.
+    "Volatility" also matches the card it summarises, which is what the three
+    columns are aligned for.
 
     Neither carries a tone, and neither is an accident. Realised volatility
     fires at both tails — the lowest and highest quintiles each preceded larger
@@ -1568,8 +1577,8 @@ def balance_rows(d: dict) -> list[Metric]:
     if window.get("covered"):
         years = _window_label(
             window.get("percentile_window_days") or VOL_PERCENTILE_RECENT_DAYS)
-        speculation = Metric(
-            "Speculation", f"{fmt(window.get('value'), '.0f')}%",
+        volatility = Metric(
+            "Volatility", f"{fmt(window.get('value'), '.0f')}%",
             note=f"{BALANCE_VOL_WINDOW}d realised, ann √"
                  f"{fmt(vol.get('annualisation_days') or VOL_ANNUALISATION)} · "
                  f"{_pctile(window.get('percentile_recent'))} pctile of {years} · "
@@ -1577,8 +1586,8 @@ def balance_rows(d: dict) -> list[Metric]:
                  + "marks events, not direction",
         )
     else:
-        speculation = Metric(
-            "Speculation", "n/a",
+        volatility = Metric(
+            "Volatility", "n/a",
             note=f"not enough history for a {BALANCE_VOL_WINDOW}d window",
         )
 
@@ -1593,7 +1602,7 @@ def balance_rows(d: dict) -> list[Metric]:
         )
     else:
         participation = Metric("Participation", "n/a", note="no trade count ranked")
-    return [speculation, participation]
+    return [volatility, participation]
 
 
 # Percentile bounds for the notable strip. A reading fires at either extreme:
