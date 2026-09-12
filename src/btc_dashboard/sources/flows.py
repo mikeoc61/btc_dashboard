@@ -681,7 +681,16 @@ BALANCE_WINDOW = WINDOWS[0]
 
 
 def balance_rows(d: dict) -> list[Metric]:
-    """This source's one row on the balance card: the demand channel.
+    """This source's one row on the balance card.
+
+    Named for the instrument, not for what it is evidence of. The row was
+    "Liquidity" and that was a claim these figures cannot carry: liquidity in
+    its usual sense is depth — what can trade without moving the price — and a
+    day of heavy creations can sit on top of thin books. `context_lines` is
+    already careful to call these "one channel of demand, not total demand",
+    so the label was contradicting the module's own caveat. Same error the
+    warehouse row made as "Speculation", and it matches the card below it now
+    for the same reason that one does.
 
     On Farside's `Total` basis, like every other figure here — every listed
     fund, not the four this module itemizes. The basis travels in the note
@@ -699,7 +708,7 @@ def balance_rows(d: dict) -> list[Metric]:
     )
     if not window.get("covered"):
         return [Metric(
-            "Liquidity", "n/a",
+            "ETF Flows", "n/a",
             # Says "not zero" for the same reason the ETF card does: an absent
             # flow window is the one n/a a reader is most likely to read as a
             # quiet market rather than as a window that could not be filled.
@@ -713,7 +722,7 @@ def balance_rows(d: dict) -> list[Metric]:
     # warehouse rows: a U.S. trading calendar has gaps a reader counting back
     # five days cannot see.
     return [Metric(
-        "Liquidity", _m(window.get("total")),
+        "ETF Flows", _m(window.get("total")),
         note=f"US spot ETF net, {BALANCE_WINDOW}d through {dated(d.get('as_of'))}"
              f" · Farside Total basis, every listed fund",
         tone=_tone(window.get("total")),

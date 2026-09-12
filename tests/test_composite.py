@@ -175,7 +175,7 @@ class TestEveryReadingCarriesItsWindow:
         notes = {m.label: str(m.note) for m in composite.rows(_snap())}
         assert "through 10 Sep" in notes["Volatility"]
         assert "through 10 Sep" in notes["Participation"]
-        assert "through Thu 10 Sep 2026" in notes["Liquidity"]
+        assert "through Thu 10 Sep 2026" in notes["ETF Flows"]
 
     def test_the_live_readings_are_not_dated(self):
         """The page stamp already dates them, and a date on a live figure
@@ -220,7 +220,7 @@ class TestItIsNotAScore:
         time. Pinned so a rename has to be deliberate."""
         assert [m.label for m in composite.rows(_snap())] == [
             "Trend", "Momentum", "Network", "Volatility", "Participation",
-            "Liquidity"]
+            "ETF Flows"]
 
     def test_the_undirected_readings_carry_no_tone(self):
         """Volatility fires at both tails and trade count is participation.
@@ -230,7 +230,7 @@ class TestItIsNotAScore:
         assert tones["Volatility"] == (None, None)
         assert tones["Participation"] == (None, None)
         assert tones["Momentum"] == (None, None)
-        assert tones["Trend"][0] and tones["Liquidity"][0] and tones["Network"][0]
+        assert tones["Trend"][0] and tones["ETF Flows"][0] and tones["Network"][0]
 
 
 class TestNoValueIsColouredWithoutASign:
@@ -259,7 +259,7 @@ class TestItNeverCostsThePage:
                             lambda d: (_ for _ in ()).throw(ValueError("boom")))
         rows = composite.rows(_snap())
         assert [m.label for m in rows] == [
-            "Network", "Volatility", "Participation", "Liquidity"]
+            "Network", "Volatility", "Participation", "ETF Flows"]
         assert "BALANCE OF EVIDENCE" in page.render_html(_snap())
 
     def test_a_snapshot_with_no_known_source_renders_no_card(self):
