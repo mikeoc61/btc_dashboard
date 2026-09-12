@@ -21,7 +21,7 @@ from __future__ import annotations
 import html as _html
 import json
 
-from . import composite, snapshot as snap
+from . import composite, notable as _notable_mod, snapshot as snap
 from .render import human_age
 from .sources import Metric, Panel
 
@@ -696,43 +696,6 @@ def _answer_card(answer: dict | None) -> str:
     )
 
 
-def _notable(snapshot: dict) -> list[str]:
-    """Readings worth leading with, gathered from the sources themselves.
-
-    Each source owns its own thresholds, because what counts as extreme is a
-    property of the measure, not of the page. Availability and staleness are
-    added here since they are facts about the snapshot rather than about any
-    one source.
-
-    Every entry is a stated reading with its window attached — never an
-    interpretation. "30d volatility at the 1st percentile of 2y" is a fact;
-    "compression, expect a large move" is a forecast, and volatility carries no
-    direction. The reader draws the conclusion.
-    """
-    out: list[str] = []
-    for name in snap.ordered_names(snapshot):
-        block = snapshot["sources"][name]
-        label = snap.TITLES.get(name, name).split(" (")[0]
-        if not block.get("available"):
-            out.append(f"{label.lower()} unavailable")
-            continue
-        if block.get("stale"):
-            age = block.get("cache_age_seconds")
-            out.append(
-                f"{label.lower()} is stale"
-                + (f" ({human_age(age)} old)" if age is not None else "")
-            )
-        mod = snap.module_for(name)
-        if mod is None or not hasattr(mod, "notable"):
-            continue
-        try:
-            out.extend(mod.notable(block["data"]) or [])
-        except Exception:
-            # A threshold check must never cost the page.
-            continue
-    return out
-
-
 def _live_parts(snapshot: dict) -> dict[str, str]:
     """The regions that change with the data, wrapped and keyed by element id.
 
@@ -812,7 +775,7 @@ def _live_parts(snapshot: dict) -> dict[str, str]:
     # "[NOTABLE:7d volatility 10%30d volatility 22%]". A comma also binds to
     # the item it follows, so a wrapped line can never open with a stray
     # separator — which the old pipe needed a non-breaking space to guarantee.
-    notable = _notable(snapshot)
+    notable = _notable_mod.entries(snapshot)
     notable_html = ""
     if notable:
         notable_html = (

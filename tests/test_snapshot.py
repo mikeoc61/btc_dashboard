@@ -241,9 +241,16 @@ class TestUntrustedText:
         assert injected[0].startswith("[NETWORK (live)] UNAVAILABLE:")
 
     def test_long_error_is_truncated(self):
+        """Asserted against the payload itself rather than against the longest
+        line in the prompt. The bound is on what the *snapshot* contributes,
+        and this client's own wording is allowed to be as long as it needs to
+        be — measuring the maximum turns every added line of guidance into a
+        failure of the error bound, which says nothing about the error."""
+        import re
+
         ctx = analyst.build_context(self._with_error("A" * 5000))
         assert "…(truncated)" in ctx
-        assert len(max(ctx.splitlines(), key=len)) < analyst.MAX_ERROR_CHARS + 100
+        assert not re.search("A" * (analyst.MAX_ERROR_CHARS + 1), ctx)
 
     def test_context_separates_this_tools_wording_from_the_snapshot(self):
         """The block used to be labelled untrusted in full, which was not true

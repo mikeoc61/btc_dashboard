@@ -196,6 +196,20 @@ rules keep them honest:
   prediction, and volatility carries no direction. The reader draws the
   conclusion; there's a test asserting the words don't appear.
 
+**`--ask` is told the same list.** The thresholds themselves are information
+the prompt does not otherwise carry — nothing in it says this client leads at
+the 95th percentile, or at two standard errors on a retarget — so without them
+a model asked what to look at invents its own bar, and can disagree with the
+bracket printed directly above the ask box. `notable.py` gathers the list once
+and both consumers read it, because a page and an answer that disagree leave
+the reader no way to tell which is wrong.
+
+It arrives *after* the readings, described as fixed bounds rather than a
+ranking: a curated list read first is one a model reasons from instead of from
+the figures. The empty case is stated too, unlike the page — absence is legible
+to someone looking at a page with no bracket on it, while a model handed no
+line cannot tell "nothing crossed" from "this client does not do that".
+
 Volatility bounds fire at *both* tails, since historically the lowest and
 highest quintiles each preceded larger moves than mid-range ones. Unavailable
 and stale sources lead the strip, being facts about the snapshot rather than

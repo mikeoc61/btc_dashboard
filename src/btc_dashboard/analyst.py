@@ -35,7 +35,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from . import providers
+from . import notable as _notable, providers
 from . import snapshot as snap
 from .text import safe_text
 
@@ -236,6 +236,36 @@ def build_context(snapshot: dict) -> str:
                 f"ago (within the normal refresh interval)."
             )
         lines.extend(f"[{label}] {f}" for f in facts)
+
+    # Last, deliberately. The thresholds are information the prompt does not
+    # otherwise carry — nothing above says this client leads at the 95th
+    # percentile, or at 2 standard errors on a retarget — so without them a
+    # model asked what to look at invents its own bar, and can disagree with
+    # the list printed directly above the ask box on the same page.
+    #
+    # After the readings rather than before them, because a curated list read
+    # first is one a model reasons from instead of from the facts. Here it is a
+    # footnote saying which of the figures above crossed a stated bound, which
+    # is what it actually is.
+    #
+    # The empty case is stated too, unlike the page. Absence is legible to
+    # someone looking at a page with no bracket on it; a model handed no line
+    # at all cannot tell "nothing crossed" from "this client does not do that",
+    # and being told what is *not* there is the same courtesy the unavailable
+    # sources get.
+    entries = _notable.entries(snapshot)
+    lines.append(
+        "[NOTABLE] These readings crossed this client's own thresholds for "
+        "leading the page: " + ", ".join(entries) + ". The thresholds are "
+        "fixed in the tool rather than chosen for today, so this says which "
+        "readings are unusual against their own history — it is not a ranking, "
+        "and not a claim about which matter to any particular question. Every "
+        "figure here also appears above with its full qualifiers."
+        if entries else
+        "[NOTABLE] No reading crossed this client's thresholds for leading the "
+        "page. That is a statement about fixed bounds, not a judgement that "
+        "nothing is worth discussing."
+    )
     return "\n".join(lines)
 
 

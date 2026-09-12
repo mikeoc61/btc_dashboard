@@ -40,6 +40,10 @@ tooling arrived unannounced.
   scrape). Collected concurrently, each independently fail-soft.
 - **Consumers**: `render.render()` terminal, `html.render_html()` page,
   `analyst.build_context()` LLM, `--json`. None of them re-fetch anything.
+- **Notable**: `notable.entries()` — threshold-selected readings, gathered once
+  and read by both the page (bracketed into the balance card's heading) and the
+  analyst's context. Shared because the bracket sits above the ask box, and two
+  that disagree leave the reader no way to tell which is wrong.
 - **Balance card**: `composite.py` — one reading per domain, gathered from the
   sources through `balance_rows()` and rendered by the terminal and the page.
   A shared derivation over the snapshot, not a source and not a snapshot field.
