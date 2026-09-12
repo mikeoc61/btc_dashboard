@@ -141,7 +141,7 @@ def rows(snapshot: dict, *, reasons: bool = True) -> list[Metric]:
                   else "unavailable")
         out.extend(
             replace(r, value=NA, note=reason if i == 0 else None,
-                    tone=None, note_tone=None)
+                    category=None, tone=None, note_tone=None)
             for i, r in enumerate(got)
         )
     return out
@@ -165,6 +165,11 @@ def coverage_label(metrics: list[Metric]) -> str:
 def lines(metrics: list[Metric]) -> list[str]:
     """The card as terminal text.
 
+    The category goes in a column before the value, where a reader meets it
+    first — the whole reason it was promoted out of the note. Blank for the
+    rows whose measure defines no classifier, which is what the card has to
+    say about them.
+
     Dot leaders rather than spaces: the value column is ragged — a percentage,
     a percentile, a dollar figure — and over six rows a run of spaces stops
     connecting a label to the number opposite it.
@@ -182,8 +187,14 @@ def lines(metrics: list[Metric]) -> list[str]:
     if not metrics:
         return []
     width = max(len(m.label) for m in metrics)
+    # A column of its own, padded even where it is empty, so the values still
+    # line up underneath each other and the blanks read as blanks rather than
+    # as a ragged left edge. Absent entirely when no row has a category.
+    cat_width = max((len(m.category or "") for m in metrics), default=0)
     out = [
-        f"{(m.label + ' ').ljust(width + 2, '.')} {m.value}"
+        f"{(m.label + ' ').ljust(width + 2, '.')} "
+        + (f"{(m.category or '').ljust(cat_width)} " if cat_width else "")
+        + m.value
         + (f" — {m.note}" if m.note else "")
         for m in metrics
     ]

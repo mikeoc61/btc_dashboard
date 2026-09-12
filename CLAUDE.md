@@ -139,7 +139,12 @@ Breaking one of these is a regression even when the number is right.
   are not independent, trend and momentum being the same close series. A
   missing reading stays on the card as `n/a`, which is why `balance_rows(data)`
   must survive an empty dict and keep its labels: a row that can vanish
-  renormalises six readings onto whatever reported. Being derived, it is not a
+  renormalises six readings onto whatever reported. `Metric.category` promotes
+  a measure's *own* classifier — `above`, `inflow` — and only where one exists
+  with its cut point stated; the four rows without a word carry no direction,
+  and inventing one ("High", "Elevated") is the same error one word at a time.
+  Labels name the measure, never the mechanism: `Speculation` and `Liquidity`
+  both had to go, and a test pins the six. Being derived, it is not a
   snapshot field, so a score can never arrive from an ingested payload.
 - **No imports from sibling projects, no shelling out to their scripts.** The
   only shared thing is the DuckDB *file*.

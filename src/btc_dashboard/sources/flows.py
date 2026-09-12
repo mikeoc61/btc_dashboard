@@ -721,11 +721,18 @@ def balance_rows(d: dict) -> list[Metric]:
     # one day it is guaranteed to exclude. The weekday stays here, unlike the
     # warehouse rows: a U.S. trading calendar has gaps a reader counting back
     # five days cannot see.
+    # `inflow` / `outflow` are the words `streak_sign` already uses, so the
+    # band and the card cannot end up describing one sign two ways. Unlike a
+    # hashrate estimate, this total carries no sampling error to sit inside —
+    # it is a published sum, so its sign is real however small it is, and an
+    # exact zero gets no category rather than a made-up one.
+    sign = _tone(window.get("total"))
     return [Metric(
         "ETF Flows", _m(window.get("total")),
+        category={"up": "inflow", "down": "outflow"}.get(sign),
         note=f"US spot ETF net, {BALANCE_WINDOW}d through {dated(d.get('as_of'))}"
              f" · Farside Total basis, every listed fund",
-        tone=_tone(window.get("total")),
+        tone=sign,
     )]
 
 

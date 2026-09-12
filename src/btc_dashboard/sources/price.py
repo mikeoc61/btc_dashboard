@@ -458,24 +458,32 @@ def balance_rows(d: dict) -> list[Metric]:
     )
     if primary.get("covered"):
         pct = primary.get("pct")
-        # Tone on the value here, unlike the PRICE card, because here the value
-        # *is* the signed quantity — the distance — rather than the average it
-        # is measured from. Forced to a side outside the dead band, matching
-        # that card so the two cannot disagree about which way today leans.
-        #
-        # Except when there is no number to sign. An ingested payload can carry
-        # `covered: true` with a null `pct`, and a bare sign test sends that to
-        # the `else` branch: the row then prints `n/a` in red, which reads as a
-        # trend that has fallen rather than as a trend nobody measured. That is
-        # the same bug the retarget projection had, and the reason `n/a` is
-        # uncoloured everywhere here.
+        # The classifier is the category, reconstructed from the distance when
+        # a payload predates the field — the same recovery `node._sigma` does,
+        # and for the same reason: a qualifier that can be rebuilt from what is
+        # present should never be silently absent.
+        raw = primary.get("position")
+        # Gated on there being a distance at all. An ingested payload can carry
+        # `position: "below"` with a null `pct`, and a classification of a
+        # number nobody has is not a reading: the row would print a red
+        # "below" beside `n/a`, which is the same thing as painting the `n/a`
+        # itself — a trend that fell rather than one that was never measured.
+        position = (
+            (safe_text(raw) if isinstance(raw, str) else classify(pct))
+            if isinstance(pct, (int, float)) else None
+        )
+        # Tone from the classifier, not from the raw sign. `NEAR_BAND_PCT`
+        # exists to say a distance this small is not a direction, so painting a
+        # +1.5% "near" reading green contradicts the band printed beside it —
+        # the same call the retarget projection makes inside its own dead band.
+        # An unknown category from an ingested payload colours nothing, which
+        # also keeps `n/a` uncoloured: a red n/a reads as a trend that fell
+        # rather than as one nobody measured.
         trend = Metric(
             "Trend", fmt(pct, "+.1f", suffix="%"),
-            note=f"spot vs {PRIMARY_SMA}d SMA · "
-                 f"{safe_text(primary.get('position') or 'n/a')} "
-                 f"(±{NEAR_BAND_PCT:.0f}% band)",
-            tone=(change_tone(pct) or ("up" if pct >= 0 else "down"))
-                 if isinstance(pct, (int, float)) else None,
+            category=position,
+            note=f"spot vs {PRIMARY_SMA}d SMA · ±{NEAR_BAND_PCT:.0f}% band",
+            tone={"above": "up", "below": "down"}.get(position),
         )
     else:
         trend = Metric(

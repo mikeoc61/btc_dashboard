@@ -294,6 +294,26 @@ So the readings sit side by side and the weighing is the reader's. If a score is
 ever wanted, the way in is a study under `tools/` scoring it against the
 unconditional base rate first — the pattern `hashrate_study.py` sets.
 
+**A row shows a word only where its measure defines one.** Trend carries
+`above` / `near` / `below`, from the ±2% band around the SMA; ETF Flows carries
+`inflow` / `outflow`, the words the streak already uses. Both are promoted out
+of the note into their own column, because a word is read before a number.
+
+The other four show a number alone, and the gaps are the point. An RSI level, a
+volatility percentile and a trade count carry no direction, so a word invented
+for them — "High", "Elevated" — is a judgement the reading does not support:
+the score error at one word instead of a hundred points. Network is signed and
+coloured but still has no word, for a quantitative reason: block discovery is
+Poisson, so a 1008-block hashrate estimate carries ~3.2% standard error and the
+change between two of them ~4.5%, which makes a sub-1% week a fifth of one
+standard error. Colouring that is a hint; calling it "rising" is a claim.
+
+Where a row has a word, the **colour follows the classifier rather than the raw
+sign**. A distance the same row calls `near` is one the ±2% band exists to say
+is not a direction, so painting it green would contradict the qualifier printed
+beside it — the same call the retarget projection makes inside its own dead
+band.
+
 **A missing reading is `n/a` and keeps its row.** The same rule as an unfillable
 flow window or SMA, and the reason `balance_rows` has to survive an empty dict:
 a source that is down still occupies its rows, so nothing is renormalised onto

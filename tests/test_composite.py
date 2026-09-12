@@ -222,6 +222,56 @@ class TestItIsNotAScore:
             "Trend", "Momentum", "Network", "Volatility", "Participation",
             "ETF Flows"]
 
+    def test_only_a_measure_with_a_classifier_gets_a_word(self):
+        """The gaps are the point. Trend has a classifier with a stated band
+        and a flow total has a sign; an RSI level, a volatility percentile and
+        a trade count do not, and a word invented for them ("High",
+        "Elevated") is a judgement the reading does not carry — the score
+        error at one word instead of a hundred points.
+
+        Network is absent on purpose too, though its row is signed: a 1008
+        block hashrate estimate carries ~3.2% standard error, so a change
+        between two of them carries ~4.5%, and a sub-1% week is a fifth of one.
+        Colouring that is a hint; calling it "rising" is a claim."""
+        cats = {m.label: m.category for m in composite.rows(_snap())}
+        assert cats == {"Trend": "below", "Momentum": None, "Network": None,
+                        "Volatility": None, "Participation": None,
+                        "ETF Flows": "outflow"}
+
+    def test_a_reading_inside_the_band_is_classified_but_not_coloured(self):
+        """`near` exists to say a distance this small is not a direction.
+        Colouring it green because the raw sign is positive contradicts the
+        band printed on the same row."""
+        snap = _snap()
+        snap["sources"]["price"]["data"] = dict(
+            PRICE, smas=[{"days": 200, "covered": True, "value": 71840.0,
+                          "pct": 1.4, "position": "near", "days_available": 201}])
+        trend = next(m for m in composite.rows(snap) if m.label == "Trend")
+        assert trend.category == "near" and trend.tone is None
+        assert trend.value == "+1.4%"
+
+    def test_a_dead_source_keeps_no_classifier(self):
+        """A category beside `n/a` classifies a number nobody has."""
+        rows = {m.label: m for m in composite.rows(_snap(down=("flows",)))}
+        assert rows["ETF Flows"].value == "n/a"
+        assert rows["ETF Flows"].category is None
+
+    def test_the_word_survives_the_stylesheet_being_stripped(self):
+        import re
+
+        out = page.render_html(_snap())
+        stripped = re.sub(r"<style>.*?</style>", "", out, flags=re.S)
+        assert "below" in stripped and "outflow" in stripped
+
+    def test_the_terminal_keeps_the_word_in_its_own_column(self):
+        """Padded even where it is blank, so the values stay aligned and the
+        gaps read as gaps rather than as a ragged edge."""
+        rows = composite.rows(_snap())
+        lines = composite.lines(rows)[:len(rows)]
+        assert "below  " in lines[0]                       # padded past "outflow"
+        # Every value begins in the same column, categorised or not.
+        assert len({ln.index(m.value) for ln, m in zip(lines, rows)}) == 1
+
     def test_the_undirected_readings_carry_no_tone(self):
         """Volatility fires at both tails and trade count is participation.
         A colour on either asserts a direction the measure does not have, and
@@ -246,6 +296,10 @@ class TestNoValueIsColouredWithoutASign:
                           "days_available": 201}], sma200_pct=None)
         trend = next(m for m in composite.rows(snap) if m.label == "Trend")
         assert trend.value == "n/a" and trend.tone is None
+        # Nor a classification of the number it hasn't got. The payload still
+        # carries `position: "below"`, and taking it would print a red "below"
+        # beside the n/a — the same assertion by another route.
+        assert trend.category is None
 
     @pytest.mark.parametrize("name", sorted(PAYLOADS))
     def test_no_empty_payload_colours_anything(self, name):

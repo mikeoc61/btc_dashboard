@@ -440,6 +440,15 @@ h1 { font-size:1.05rem; margin:0; letter-spacing:.06em; color:var(--accent); }
 .row + .row, .note + .row {
   border-top:1px solid color-mix(in srgb, var(--line) 45%, transparent); }
 .label { color:var(--muted); font-size:.9rem; }
+/* The categorical reading, sitting inside the label but not wearing its muted
+   colour -- the point of promoting it out of the note is that a word is read
+   before a number, and a word in the label's own grey is not. Only the rows
+   whose measure defines a classifier have one, so the gaps down this column
+   are the card saying which readings carry a direction, which it otherwise
+   says only in prose. */
+.cat { color:var(--text); font-weight:600; font-size:.92rem; margin-left:.45rem; }
+.cat.up { color:var(--up); } .cat.down { color:var(--down); }
+.cat.warn { color:var(--warn); }
 .value { font-family:var(--mono); font-size:1.02rem; font-variant-numeric:tabular-nums;
          white-space:nowrap; font-weight:600; letter-spacing:-.01em; }
 .value.up { color:var(--up); } .value.down { color:var(--down); }
@@ -545,8 +554,15 @@ def _rows(metrics: list[Metric]) -> str:
     out = []
     for m in metrics:
         tone = f" {m.tone}" if m.tone in ("up", "down", "warn") else ""
+        # The category rides inside the label rather than as a third flex
+        # child: `.row` spreads its children apart, and a word placed between
+        # the label and the value would drift to the middle of the card. Inside
+        # it reads "Trend above" with the stylesheet gone, which is the order
+        # it should be read in anyway.
+        cat = (f'<span class="cat{tone}">{_esc(m.category)}</span>'
+               if m.category else "")
         out.append(
-            f'<div class="row"><span class="label">{_esc(m.label)}</span>'
+            f'<div class="row"><span class="label">{_esc(m.label)}{cat}</span>'
             f'<span class="value{tone}">{_esc(m.value)}</span></div>'
         )
         if m.note:

@@ -138,6 +138,20 @@ class Metric:
     # colours the note, and a row uses whichever one is actually signed.
     tone: str | None = None
     note_tone: str | None = None
+    # A categorical restatement of the value — "above", "inflow" — promoted to
+    # its own slot on the balance band, because a word is read before a number.
+    #
+    # Only where the measure already defines one **and states its cut point**:
+    # spot's ±2% band around an SMA, the sign of a flow total. A measure with
+    # no direction has no category, and inventing one for it ("High",
+    # "Elevated") puts a judgement on a reading that carries none — which is
+    # the failure the band exists to avoid, at one word instead of one score.
+    # An absent category is therefore information, not an omission to fill in.
+    #
+    # `tone` colours it, and where a row has one the tone should come from the
+    # *classifier* rather than from the raw sign: a distance inside a band the
+    # same row calls "near" is not a direction, and colouring it says it is.
+    category: str | None = None
 
 
 @dataclass(frozen=True)

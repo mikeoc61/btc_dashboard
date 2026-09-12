@@ -329,6 +329,20 @@ def balance_rows(d: dict) -> list[Metric]:
     what a row on this card has to do. The projection keeps its place on the
     NETWORK card and on the strip above, where it is stated with its band.
 
+    No category, deliberately, though the row is signed and coloured. A word
+    is a stronger claim than a tint, and this figure cannot carry it: block
+    discovery is Poisson, so a `HASHRATE_WINDOW`-block estimate has a relative
+    standard error of 1/sqrt(1008) = 3.2%, and a change between two adjacent
+    such windows inherits sqrt(2) of that — about **4.5%**. A +0.9% week is a
+    fifth of one standard error. Calling that "rising" asserts a direction the
+    estimate does not have, which is exactly what promoting a classifier
+    without a stated cut point does.
+
+    Giving it one is a real option — `projection_sigma` already does this
+    arithmetic for the retarget, and the same band would work here — but it
+    would be a new measurement decision rather than the promotion of an
+    existing classifier, so the row stays a number until that is made.
+
     Survives an empty dict with its label intact, so a dead node still occupies
     its row.
     """
