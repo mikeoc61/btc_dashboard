@@ -1285,8 +1285,18 @@ def context_lines(d: dict) -> list[str]:
         )
     activity = _activity_items(sig)
     if activity:
+        # Dated, and by the `btc` table rather than the on-chain day stated
+        # further down. The same rule `render_lines` follows, and it matters
+        # more here: the prompt's nearest date to this line belongs to a table
+        # that advances independently, so an undated reading does not merely
+        # lack a day — it is handed the wrong one. On a +5.3% session that
+        # reads as today's participation when it is the previous close's, and
+        # the model has nothing to check it against.
+        day = _close_day(d)
         out.append(
-            "BTC exchange activity, weekday-adjusted: "
+            "BTC exchange activity, weekday-adjusted"
+            + (f", through {day}" if day else "")
+            + ": "
             + "; ".join(f"{label} {_ordinal(v)} percentile of {w}"
                         for _, label, v, w in activity)
             + f". Kraken only — a median {VENUE_SHARE_PCT}% of cross-venue "

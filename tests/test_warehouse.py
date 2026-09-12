@@ -787,6 +787,31 @@ class TestExchangeActivity:
 
         assert any("exchange activity" in c for c in warehouse.context_lines(d))
 
+    def test_the_activity_reading_names_its_day_in_every_presentation(self, tmp_path):
+        """These percentiles are ranked over the `btc` table, which advances
+        independently of `onchain` — so the day stated further down the prompt
+        for the on-chain figures is not necessarily theirs. Undated, the
+        reading does not merely lack a day: it is handed the wrong one by
+        proximity, which on a +5.3% session reads as today's participation
+        when it is the previous close's. The terminal and the page had this;
+        the prompt, the one consumer that cannot notice, did not."""
+        d = self._collect(tmp_path)
+        day = d["close_date"]
+
+        line = next(l for l in warehouse.context_lines(d)
+                    if "exchange activity" in l)
+        assert f"through UTC {day}" in line
+
+        terminal = next(l for l in warehouse.render_lines(d)
+                        if l.startswith("activity"))
+        assert f"through UTC {day}" in terminal
+
+    def test_an_undatable_payload_states_no_day_rather_than_guessing(self, tmp_path):
+        d = dict(self._collect(tmp_path), close_date=None)
+        line = next(l for l in warehouse.context_lines(d)
+                    if "exchange activity" in l)
+        assert "through" not in line and "percentile" in line
+
     def test_each_reading_carries_its_own_window(self, tmp_path):
         """Trade size is ranked over 90 days and the other two over 2y. A
         window label borrowed from the wrong signal is the exact form of
