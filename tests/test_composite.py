@@ -422,11 +422,11 @@ class TestMeaningSurvivesThePresentation:
 class TestWhereItLives:
     def test_the_band_is_inside_the_captured_region(self):
         """A PNG is the copy most likely to be read away from the page, so the
-        digest has to be in it. Both regions are named, not a wrapper around
-        them: the capture clones each into one flat stage, which reproduces a
-        stack exactly."""
-        assert "composite" in page.CAPTURE_IDS and "notable" in page.CAPTURE_IDS
-        assert "lead" not in page.CAPTURE_IDS
+        digest has to be in it — and the notable readings travel with it now
+        that they ride in its heading, rather than needing a region of their
+        own in the allow-list."""
+        assert "composite" in page.CAPTURE_IDS
+        assert "notable" not in page.CAPTURE_IDS and "lead" not in page.CAPTURE_IDS
         assert "BALANCE OF EVIDENCE" in _band(page.render_html(_snap()))
 
     def test_the_readings_are_cells_so_the_band_can_lay_them_out(self):
@@ -453,33 +453,18 @@ class TestWhereItLives:
         must not be anywhere inside one."""
         assert "askform" not in _band(page.render_html(_snap(), ask=True))
 
-    def test_an_ordinary_day_leaves_the_strip_empty(self):
-        """Nothing to lead with renders an empty wrapper, not an empty box.
-        The band below it is unaffected — it is a separate region now, which is
-        the whole reason the strip can come and go without moving anything."""
+    def test_an_ordinary_day_shows_no_bracket(self):
+        """Nothing to lead with renders no bracket at all — not an empty one.
+        Inside the heading it can come and go without moving anything, which
+        is what a card of its own used to buy at 56px."""
         quiet = _snap()
         quiet["sources"]["warehouse"]["data"]["signals"] = {"trades_pctile": 48.0}
         quiet["sources"]["flows"]["data"]["streak_days"] = 2
         for w in quiet["sources"]["warehouse"]["data"]["volatility"]["windows"]:
             w["percentile_recent"] = 47.0
         out = page.render_html(quiet)
-        assert '<div id="notable"></div>' in out
+        assert "[NOTABLE" not in out
         assert "BALANCE OF EVIDENCE" in out
-
-    def test_nothing_but_the_strips_label_claims_the_lead_class(self):
-        """`.lead` is a short, generic name already bound to the one-word label
-        inside the strip, styled inline with a right margin. A second rule on
-        it — a "lead section", say — turns that span into whatever the new rule
-        says, and a display rule turns it into a block: the label breaks onto
-        its own line and reads as a heading over the items rather than as the
-        start of them. Cost a rework once already."""
-        import re
-
-        # Selectors only: the comments talk about `.lead` on purpose.
-        stripped = re.sub(r"/\*.*?\*/", "", page.CSS, flags=re.S)
-        selectors = [chunk.split("{", 1)[0].strip()
-                     for chunk in stripped.split("}") if "{" in chunk]
-        assert [sel for sel in selectors if ".lead" in sel] == [".notable .lead"]
 
     def test_the_digest_stays_out_of_the_analyst_prompt(self):
         """Every reading on it is already in that context, phrased by the

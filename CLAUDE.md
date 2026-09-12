@@ -51,7 +51,7 @@ tooling arrived unannounced.
   the rest. Tool use works on all three; the warehouse lends a read-only SQL
   tool, and `--no-tools` forces the old single-shot behaviour.
 - **Web**: `btc-dashboard-web` — FastAPI on `127.0.0.1:8001`, ask box,
-  `NOTABLE` strip beside the balance card, systemd unit in `deploy/`. Live on the Pi. The page patches
+  `NOTABLE` readings in the balance card's heading, systemd unit in `deploy/`. Live on the Pi. The page patches
   its data regions from `/live` on a timer; it does not reload. `copy PNG` /
   `save PNG` draw the data regions to an image in the browser, no server
   involved; `html.CAPTURE_IDS` names what the image contains.
@@ -166,7 +166,7 @@ def collect(cfg) -> SourceResult: ...   # never raises
 def render_lines(data) -> list[str]:    # terminal
 def context_lines(data) -> list[str]:   # facts phrased for the LLM
 def html_panels(data) -> list[Panel]:   # optional; cards, each with a priority
-def notable(data) -> list[str]:         # optional; NOTABLE strip, threshold-selected
+def notable(data) -> list[str]:         # optional; NOTABLE entries, threshold-selected
 def balance_rows(data) -> list[Metric]: # optional; balance card — must survive {}
 def refresh_derived(data) -> dict:      # optional; only if fields age with the clock
 def analyst_tools(cfg) -> list[Tool]:   # optional; live queries lent to --ask

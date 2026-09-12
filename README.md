@@ -180,9 +180,12 @@ says so itself rather than the page imposing a layout. Each panel declares a
 the warehouse but belongs beside price, since a distance from a moving average
 only means something in volatility units.
 
-**A `NOTABLE` strip leads the page**, listing readings extreme enough to lead
-with, inline and pipe-separated so it stays one line and doesn't push the cards
-it introduces below the fold. Two rules keep it honest:
+**The `NOTABLE` readings lead the page**, bracketed into the balance card's
+heading — `[NOTABLE: fee/subsidy 3 pctile of 2y, 41d under 1.0% fee/subsidy]`.
+They had a card of their own once, 56px tall to hold one line of text; in the
+heading they still come first on the page and cost nothing. Up to seven entries
+fit one line at 1920, and a day bad enough to produce nine wraps to two. Two
+rules keep them honest:
 
 - **Threshold-selected, not hand-picked.** Each source owns its own bounds via
   `notable()`, because what counts as extreme is a property of the measure. The
@@ -264,7 +267,7 @@ snapshot's error strings are controlled by whoever produced it.
 
 ### Balance of evidence
 
-A second card leads the page, beside the `NOTABLE` strip: one reading per
+One card leads the page, its heading carrying the `NOTABLE` readings: one per
 domain — trend, momentum, network, volatility, participation, ETF flows —
 each with its own window, gathered from the sources that own them through
 `balance_rows()`. It answers "what does the whole board look like" at a glance,
@@ -375,7 +378,7 @@ a form POST that redirects back to `/`, so reloading never re-submits.
 **The page updates its data in place, not by reloading.** A meta refresh
 replaced the whole document, which meant a tick landing mid-sentence wiped
 whatever was half-typed in the ask box. Instead the regions that carry data —
-the source ticks, the timestamp, the `NOTABLE` strip and the cards — are named
+the source ticks, the timestamp, the balance card and the data cards — are named
 by id and patched from `/live`, which serves exactly those regions and no
 controls. The ask box is outside all of them and changes only when an answer
 comes back. Both the page and the fragment are built by `html._live_parts()`,
@@ -464,7 +467,7 @@ def render_lines(data) -> list[str]:    # terminal text
 def context_lines(data) -> list[str]:   # facts phrased for the LLM
 
 def html_panels(data) -> list[Panel]:   # optional; cards for --html and the web view
-def notable(data) -> list[str]:         # optional; entries for the NOTABLE strip
+def notable(data) -> list[str]:         # optional; NOTABLE entries, threshold-selected
 def balance_rows(data) -> list[Metric]: # optional; rows on the BALANCE OF EVIDENCE card
 def refresh_derived(data) -> dict:      # optional; only if fields age with the clock
 def analyst_tools(cfg) -> list[Tool]:   # optional; live queries offered to --ask

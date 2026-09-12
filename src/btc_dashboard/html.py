@@ -31,7 +31,7 @@ REFRESH_SECONDS = 60
 # agree on them: the page that lays them out, the fragment that re-renders
 # them, and the script that patches one into the other. Three literals would
 # drift the first time a region moved.
-LIVE_IDS = ("ticks", "stamp", "notable", "composite", "cards")
+LIVE_IDS = ("ticks", "stamp", "composite", "cards")
 
 # The regions the PNG capture draws, named for the same reason `LIVE_IDS` is:
 # what the image contains has to be agreed on by the markup that ids the
@@ -49,12 +49,9 @@ LIVE_IDS = ("ticks", "stamp", "notable", "composite", "cards")
 # to be read away from this page — so dropping the qualifier from exactly the
 # copy that travels is the regression this project keeps having.
 #
-# The balance band is named beside the strip rather than through a wrapper.
-# The capture clones each named region into one flat stage, which reproduces a
-# stack exactly -- it was a wrapper only while the two sat side by side, where
-# cloning them separately would have stacked them in the image whatever the
-# stylesheet said.
-CAPTURE_IDS = ("pagehead", "notable", "composite", "cards", "pagefoot")
+# The notable readings are not named here because they are no longer a region:
+# they ride in the balance card's own heading, inside `composite`.
+CAPTURE_IDS = ("pagehead", "composite", "cards", "pagefoot")
 
 # Patch those regions on a timer instead of reloading the document.
 #
@@ -469,12 +466,11 @@ h1 { font-size:1.05rem; margin:0; letter-spacing:.06em; color:var(--accent); }
    so an in-place update can replace every data card without touching it.
    The margin restores the gap the shared grid used to supply. */
 .askgrid { margin-top:.85rem; }
-/* The balance card is a band across the top, not a column beside the strip.
-   Side by side, a one-line strip left a 349px hole next to a 392px card, and
-   the page went from 874px to 1223px at 1920 -- past the point where the six
-   cards fit a 1080 screen, which is what the grid's column count was tuned
-   around in the first place. Full width the card is 165px and every note fits
-   on one line.
+/* The balance card is a band across the top, and the only thing above the card
+   grid. Side by side with a strip of its own it was wrong in a way that only
+   measures: a one-line strip left a 349px hole next to a 392px card, and the
+   page went from 874px to 1223px at 1920 -- past the point where the six cards
+   fit a 1080 screen, which is what the grid's column count was tuned around.
 
    Three columns, matching the grid below, so a reading lines up with the cards
    it summarises. Not auto-fit: at 1920 that packs six across, which wraps four
@@ -484,7 +480,11 @@ h1 { font-size:1.05rem; margin:0; letter-spacing:.06em; color:var(--accent); }
    grid below is tuned to three by measurement rather than by arithmetic.
 
    One column below 900px, where three columns would leave a reading about
-   200px to put a label and a value in. */
+   200px to put a label and a value in.
+
+   ASCII only, like every comment in here: this stylesheet is copied verbatim
+   into the PNG capture's SVG, where a stray glyph is a parse error rather than
+   a typo. */
 #composite { margin-bottom:.85rem; }
 #composite:empty { display:none; }
 .bgrid { display:grid; grid-template-columns:repeat(3,1fr); gap:0 1.6rem; }
@@ -493,16 +493,17 @@ h1 { font-size:1.05rem; margin:0; letter-spacing:.06em; color:var(--accent); }
    here deliberately: the column gaps already group them, and a rule under every
    cell of a two-row band reads as a table someone forgot to finish. */
 .bcell { min-width:0; }
-/* A plain block, not flex: whitespace between flex items is discarded, so the
-   separating spaces have to be real text and the container has to lay out as
-   text for them to survive. */
-.notable { background:var(--card); border:1px solid var(--line);
-           border-left:3px solid var(--warn); border-radius:8px;
-           padding:.55rem .9rem; margin-bottom:.85rem; font-size:.9rem;
-           line-height:1.6; }
-.notable .lead { color:var(--warn); font-weight:600; font-size:.85rem;
-                 letter-spacing:.05em; margin-right:.3rem; }
-.notable .sep { color:var(--muted); }
+/* Title and bracket travel together as one flex child, so the badge stays at
+   the right edge and a long list wraps under the title instead of being
+   centred between the two. */
+.ttl { min-width:0; }
+/* The bracket itself is the label and wears the warning colour the strip used
+   to; the readings inside it are content and are not shouted. Both drop the
+   heading's weight, letter-spacing and accent -- a heading-styled sentence is
+   a heading, and these are readings that happen to sit in one. */
+.nota { color:var(--warn); font-weight:600; letter-spacing:0; margin-left:.5rem;
+        font-size:.82rem; }
+.notatext { color:var(--text); font-weight:400; }
 .askform { display:flex; gap:.6rem; }
 .askform input { flex:1; padding:.6rem .7rem; background:var(--bg);
                  color:var(--text); border:1px solid var(--line);
@@ -797,29 +798,27 @@ def _live_parts(snapshot: dict) -> dict[str, str]:
             f'{cardnote}{_rows(panel.metrics)}{err}</section>'
         )
 
+    # The notable readings, bracketed into the balance card's heading rather
+    # than given a card of their own. They still lead the page — the heading is
+    # the first thing on it — and they now cost no vertical space at all, which
+    # a card 56px tall to hold one line of text could not say.
+    #
+    # Absent entirely when nothing qualifies, brackets included. A strip that
+    # always finds something to say teaches the reader to stop looking at it,
+    # and an empty `[NOTABLE: ]` is exactly that.
+    #
+    # Comma-separated as text, never a CSS separator: spacing supplied by the
+    # stylesheet disappears with it, and the line would read
+    # "[NOTABLE:7d volatility 10%30d volatility 22%]". A comma also binds to
+    # the item it follows, so a wrapped line can never open with a stray
+    # separator — which the old pipe needed a non-breaking space to guarantee.
     notable = _notable(snapshot)
     notable_html = ""
     if notable:
-        # Absent entirely when nothing qualifies. A strip that always finds
-        # something to say teaches the reader to stop looking at it.
-        # Inline rather than a bulleted list: the strip is a header, and a
-        # column of bullets pushes the cards it is meant to introduce below the
-        # fold. The separator is a character in the markup, not a CSS
-        # ::before — it sits inside the preceding item so it can never begin a
-        # wrapped line, and it survives the stylesheet being stripped.
-        # The separator and the spaces around it are markup, not flex `gap`:
-        # spacing supplied by the stylesheet disappears with it, and the strip
-        # then reads "NOTABLE7d volatility 10%|30d volatility 22%". A
-        # non-breaking space before the bar glues it to the item it follows, so
-        # a wrapped line never opens with a stray "|".
-        last = len(notable) - 1
-        items = " ".join(
-            _esc(n) + ('<span class="sep">&nbsp;|</span>' if i < last else "")
-            for i, n in enumerate(notable)
-        )
         notable_html = (
-            f'<section class="notable"><span class="lead">NOTABLE</span> '
-            f'{items}</section>'
+            '<span class="nota">[NOTABLE: '
+            f'<span class="notatext">{", ".join(_esc(n) for n in notable)}</span>]'
+            '</span>'
         )
 
     # The balance card. A card like any other, so it inherits the row layout
@@ -828,13 +827,25 @@ def _live_parts(snapshot: dict) -> dict[str, str]:
     # rather than reporting a cache age.
     balance = composite.rows(snapshot)
     balance_html = ""
-    if balance:
-        cls = "badge" if composite.complete(balance) else "badge warn"
+    # Built when there are readings *or* something to lead with. An ingested
+    # snapshot whose sources this build has no renderer for yields no rows, and
+    # the notable list would then have nowhere to go — including the one entry
+    # it can always produce, which is that a source is unavailable.
+    if balance or notable_html:
+        badge = ""
+        if balance:
+            cls = "badge" if composite.complete(balance) else "badge warn"
+            badge = (f'<span class="{cls}">'
+                     f'{_esc(composite.coverage_label(balance))}</span>')
+        # Two flex children, not three: `h2` spreads its children apart, so a
+        # bracket added as a sibling would float to the middle of the card.
+        # Grouped with the title it stays beside it and wraps under it.
+        body = (f'<div class="cardnote">{_esc(composite.NOTE)}</div>'
+                f'<div class="bgrid">{_band_cells(balance)}</div>') if balance else ""
         balance_html = (
-            f'<section class="card"><h2>{_esc(composite.TITLE)}'
-            f'<span class="{cls}">{_esc(composite.coverage_label(balance))}</span>'
-            f'</h2><div class="cardnote">{_esc(composite.NOTE)}</div>'
-            f'<div class="bgrid">{_band_cells(balance)}</div></section>'
+            f'<section class="card"><h2><span class="ttl">'
+            f'{_esc(composite.TITLE)}{notable_html}</span>{badge}</h2>'
+            f'{body}</section>'
         )
 
     # Each part is wrapped in the element the updater patches. The wrapper is
@@ -845,7 +856,6 @@ def _live_parts(snapshot: dict) -> dict[str, str]:
     return {
         "ticks": f'<div class="ticks" id="ticks">{ticks}</div>',
         "stamp": f'<div class="meta" id="stamp">{_esc(generated)} UTC</div>',
-        "notable": f'<div id="notable">{notable_html}</div>',
         "composite": f'<div id="composite">{balance_html}</div>',
         "cards": f'<div class="grid" id="cards">{"".join(cards)}</div>',
     }
@@ -980,7 +990,6 @@ def render_html(snapshot: dict, *, title: str = "BTC DASHBOARD",
   {parts['stamp']}
 </header>
 <main>
-{parts['notable']}
 {parts['composite']}
 {parts['cards']}{ask_html}
 </main>

@@ -576,8 +576,8 @@ class TestNotableStrip:
 
 
 class TestNotableIsInline:
-    """A column of bullets pushes the cards the strip introduces below the
-    fold, so it lays out as one line."""
+    """The notable readings ride in the balance card's heading, bracketed and
+    comma-separated, so they lead the page without costing a line of it."""
 
     def _snap(self):
         base = {"available": True, "stale": False, "cached": False,
@@ -596,24 +596,37 @@ class TestNotableIsInline:
         out = page.render_html(self._snap())
         assert "<li>" not in out and "<ul>" not in out
 
-    def test_items_are_pipe_separated(self):
-        assert '<span class="sep">&nbsp;|</span>' in page.render_html(self._snap())
+    def test_items_are_comma_separated_in_the_markup(self):
+        """Separators supplied by the stylesheet vanish with it, running the
+        readings together as `[NOTABLE:7d volatility 10%30d volatility 22%]`.
+        A comma also binds to the item it follows, so a wrapped line can never
+        open with a stray separator."""
+        assert "pctile of 2y, 30d volatility" in page.render_html(self._snap())
 
     def test_a_single_item_has_no_trailing_separator(self):
         snap = self._snap()
         snap["sources"]["warehouse"]["data"]["volatility"]["windows"].pop()
-        assert '<span class="sep">' not in page.render_html(snap)
+        assert ", " not in self._bracket(page.render_html(snap))
+
+    def _bracket(self, out: str) -> str:
+        import re
+        section = re.search(r'<span class="nota">(.*?)</span></span>', out, re.S)
+        return re.sub(r"<[^>]+>", "", section.group(1)) if section else ""
 
     def test_it_still_reads_with_the_stylesheet_stripped(self):
-        """Spacing from flex `gap` vanishes with the CSS, running the items
-        together as NOTABLE7d volatility 10%|30d volatility 22%."""
-        import re
+        plain = self._bracket(page.render_html(self._snap()))
+        assert plain.startswith("[NOTABLE: 7d volatility")
+        assert ", " in plain and plain.endswith("]")
+        assert "[NOTABLE:7d" not in plain
+
+    def test_it_sits_in_the_heading_and_costs_no_line(self):
+        """The whole reason it stopped being a card of its own: a section 56px
+        tall to hold one line of text, above a page already 179px longer than
+        it used to be."""
         out = page.render_html(self._snap())
-        section = re.search(r'<section class="notable">(.*?)</section>', out, re.S).group(1)
-        plain = re.sub(r"<[^>]+>", "", section).replace("&nbsp;", " ")
-        assert plain.startswith("NOTABLE 7d volatility")
-        assert " | " in plain
-        assert "NOTABLE7d" not in plain
+        assert '<section class="notable">' not in out
+        heading = out.split("<h2>", 1)[1].split("</h2>", 1)[0]
+        assert "[NOTABLE:" in heading
 
 
 class TestUpdatingInPlace:
@@ -688,12 +701,14 @@ class TestUpdatingInPlace:
             assert marker in page.render_html(snap), f"{ident} missing from the page"
             assert marker in page.render_live(snap), f"{ident} missing from the fragment"
 
-    def test_an_empty_notable_strip_keeps_its_slot(self):
-        """The strip is absent when nothing qualifies. Its wrapper is not, or
-        the update has nowhere to put one back."""
+    def test_an_ordinary_day_shows_no_bracket_at_all(self):
+        """Absent when nothing qualifies, brackets included — an empty
+        `[NOTABLE: ]` is exactly the always-says-something strip the threshold
+        rule exists to avoid. It can come back on a tick without a slot of its
+        own now, because it lives inside `composite`, which is a live region."""
         out = page.render_html(_snap())
-        assert '<section class="notable">' not in out
-        assert 'id="notable"' in out
+        assert "[NOTABLE" not in out
+        assert "composite" in page.LIVE_IDS
 
 
 class TestRefreshMechanism:
