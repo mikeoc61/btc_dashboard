@@ -158,7 +158,8 @@ terminal maps those through the user's own theme, so they stay legible on light
 and dark backgrounds alike. **No colour carries meaning on its own** — a
 `[STALE]` marker reads identically in plain text, and stripping the escape
 codes from coloured output reproduces the plain output exactly (there's a test
-for that).
+for that). The same split governs the `--ask` progress line: `--color never`
+drops its dimming and keeps the spinner, which is progress rather than colour.
 
 ### HTML
 
@@ -389,17 +390,31 @@ unit file — `systemctl show` prints a unit's environment in full. See
 Same page as `--html`, plus an **ask box** wired to the analyst. A question is
 a form POST that redirects back to `/`, so reloading never re-submits.
 
+**The page says when a question is in flight.** That POST is why it has to: the
+browser keeps the document painted and changes nothing on it while the answer
+is written, which runs to minutes once the analyst starts querying, and the
+only cue is the browser's own tab spinner. So the button relabels to `Asking…`
+and disables, and a line under it counts `Thinking… 12s` until the answer
+lands. The counter is the part that does the work — a static word can't be
+told apart from the frozen page it exists to rule out. The server's cooldown is
+unchanged; this only stops the honest double-click, which until now cost you
+the answer rather than being prevented. The line lives inside the ask box, so
+it inherits the two exemptions described below instead of needing its own: a
+tick can't wipe a counter that is still counting, and a PNG taken mid-question
+can't show a dashboard apparently still loading.
+
 **The page updates its data in place, not by reloading.** A meta refresh
 replaced the whole document, which meant a tick landing mid-sentence wiped
 whatever was half-typed in the ask box. Instead the regions that carry data —
 the source ticks, the timestamp, the balance card and the data cards — are named
 by id and patched from `/live`, which serves exactly those regions and no
-controls. The ask box is outside all of them and changes only when an answer
-comes back. Both the page and the fragment are built by `html._live_parts()`,
-so the updater can never patch markup shaped differently from the page it is
-patching. A failed fetch is swallowed and the last good render stays up; the
-timestamp then visibly stops advancing, which is the signal that updates have
-stopped. With scripting off, a `<noscript>` meta refresh reloads as before.
+controls. The ask box is outside all of them: a tick never touches it, and it
+changes only when you submit a question or an answer comes back. Both the page
+and the fragment are built by `html._live_parts()`, so the updater can never
+patch markup shaped differently from the page it is patching. A failed fetch is
+swallowed and the last good render stays up; the timestamp then visibly stops
+advancing, which is the signal that updates have stopped. With scripting off, a
+`<noscript>` meta refresh reloads as before.
 
 **`copy PNG` and `save PNG` draw the page to an image**, in the browser, with
 no server involved: the data regions are cloned into an SVG `foreignObject`,
@@ -568,6 +583,11 @@ see [Credential boundary](#credential-boundary-the-llm-is-client-side-only).
 
 Exit codes: `0` ok, `1` no source available, `2` bad usage or analyst failed. The analyst
 failing never costs you the panel — it prints first.
+
+While `--ask` waits, a spinner and an elapsed-seconds counter sit on one line
+of stderr, erased when the answer prints. Off a terminal nothing is drawn at
+all, so a redirect or a pipe stays clean — and a call that returns quickly
+never paints, rather than flashing a spinner up and wiping it.
 
 ## Configuration
 
