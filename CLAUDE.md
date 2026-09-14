@@ -53,12 +53,16 @@ tooling arrived unannounced.
   anthropic (default), openai, deepseek, openrouter, ollama. Three wire
   protocols: Anthropic Messages, OpenAI **Responses**, and chat-completions for
   the rest. Tool use works on all three; the warehouse lends a read-only SQL
-  tool, and `--no-tools` forces the old single-shot behaviour.
+  tool, and `--no-tools` forces the old single-shot behaviour. `progress.py`
+  paints the terminal's spinner and elapsed-seconds counter on stderr while
+  the call blocks, and nothing at all off a terminal.
 - **Web**: `btc-dashboard-web` — FastAPI on `127.0.0.1:8001`, ask box,
   `NOTABLE` readings in the balance card's heading, systemd unit in `deploy/`. Live on the Pi. The page patches
   its data regions from `/live` on a timer; it does not reload. `copy PNG` /
   `save PNG` draw the data regions to an image in the browser, no server
-  involved; `html.CAPTURE_IDS` names what the image contains.
+  involved; `html.CAPTURE_IDS` names what the image contains. The ask box says
+  when a question is in flight: the button disables and a line under it counts
+  the seconds, outside both id lists like the rest of that box.
 - **Studies**: `tools/hashrate_study.py`, read-only over the warehouse.
 
 ## Hard constraints
@@ -98,19 +102,23 @@ Breaking one of these is a regression even when the number is right.
   someone else's; dropping one to tidy a layout is the most common way to
   regress this project.
 - **The ask box is never inside a region the page updates.** `html.LIVE_IDS`
-  names what a tick overwrites; the box and the answer sit outside all of it.
-  Reloading the document to refresh the data throws away a half-typed
-  question, which is the one thing on the page the reader owns rather than the
-  snapshot. `render_live()` therefore serves no form controls at all, and a
-  test walks the page to prove the box has no live region as an ancestor.
-  It is not in `CAPTURE_IDS` either, for a sharper version of the same reason:
-  a PNG is handed to other people, so a half-typed question must not be able to
-  travel in one. That is why the capture buttons live *inside* the ask box —
-  a control there keeps itself out of its own image, where one in the header
-  would have to be stripped from the clone and would reappear the first time
-  that was got wrong. `CAPTURE_IDS` is an allow-list for the same reason: it
-  fails by omitting a card, which anyone looking at the image can see, rather
-  than by leaking the one region that must never be in it.
+  names what a tick overwrites; the box, the answer and the in-flight line sit
+  outside all of it. The last is the newest and the least obvious to lose: a
+  tick that wiped a counter mid-count would not look broken, it would look
+  like the answer had arrived. Reloading the document to refresh the data
+  throws away a half-typed question, which is the one thing on the page the
+  reader owns rather than the snapshot. `render_live()` therefore serves no
+  form controls at all, and a test walks the page to prove the box has no live
+  region as an ancestor. It is not in `CAPTURE_IDS` either, for a sharper
+  version of the same reason: a PNG is handed to other people, so a half-typed
+  question must not be able to travel in one — nor a question still being
+  answered, which would hand someone a dashboard apparently still loading.
+  That is why the capture buttons live *inside* the ask box — a control there
+  keeps itself out of its own image, where one in the header would have to be
+  stripped from the clone and would reappear the first time that was got
+  wrong. `CAPTURE_IDS` is an allow-list for the same reason: it fails by
+  omitting a card, which anyone looking at the image can see, rather than by
+  leaking the one region that must never be in it.
 - **Meaning never lives in the presentation layer.** Strip the ANSI codes or
   the `<style>` block and the output must still say the same thing. Tests
   enforce this. It has been broken three separate ways — colour, a CSS-injected
@@ -240,6 +248,15 @@ needs belongs with the code that knows why.
   `lock_configuration` cannot be undone. Harmless today because nothing here
   uses external access — but a `SET` added anywhere in `warehouse.py` would
   start failing only after an ask had run, which is a horrible bug to chase.
+- **Disabling the ask box's input on submit drops the question.** A browser
+  builds a form's data set *after* the `submit` event, so a handler that
+  disables the field removes `q` from the POST. `web.py` reads an empty
+  question as "clear the answer" and redirects — so the symptom is a question
+  that vanishes with the page looking perfectly healthy, which reads as a
+  server bug rather than as the two lines of JavaScript that caused it.
+  Disable the *button* instead: the submission is already in flight, the
+  button carries no `name`, and that is what stops the second click the
+  cooldown would otherwise have to refuse.
 
 ## Data and hosts
 
