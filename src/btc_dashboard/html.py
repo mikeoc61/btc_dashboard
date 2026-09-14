@@ -267,6 +267,81 @@ _CAPTURE_JS = """<script>
   }
 })();
 </script>"""
+
+# Spinner frames. ASCII on purpose: a nicer glyph (braille, a dotted circle) is
+# font-dependent, and where the font has no such glyph the reader gets a
+# substitution box or nothing at all — leaving the counter beside it carrying
+# the whole message. Every one of these four exists everywhere.
+SPINNER_FRAMES = ("|", "/", "-", "\\")
+# Frame interval. Four a second, which is visibly moving without being busy;
+# the seconds counter beside it advances once a second regardless.
+ASK_TICK_MS = 250
+
+# Say that a question is in flight.
+#
+# `/ask` is a form POST, so the browser keeps this document painted and shows
+# nothing but its own tab spinner while the answer is being written — and an
+# answer can take minutes, because the analyst may run up to `MAX_TOOL_ROUNDS`
+# paid rounds before it replies. With no cue on the page the reader cannot tell
+# a slow answer from a dead one, and clicks Ask again; the server's cooldown
+# then refuses the second question, so impatience currently costs an answer
+# rather than being prevented.
+#
+# So: relabel and disable the button, and paint `<frame> Thinking... <n>s`
+# below it until the navigation commits and this document is replaced.
+#
+# The counter is the part that does the work. A static word cannot be told
+# apart from a frozen page, which is the state it is meant to rule out.
+#
+# Two things here are not tidiness:
+#
+# 1. The BUTTON is disabled, never the input. The browser builds the form data
+#    set *after* the submit event, so disabling the field would drop `q` and
+#    the server would see an empty question — which it treats as "clear the
+#    answer", so the failure looks like a server bug rather than a script one.
+# 2. `pageshow` restores it. Going Back from an answer serves this document out
+#    of the bfcache exactly as it was left: button disabled, counter frozen
+#    mid-count. Nothing re-runs on that path, so the reset has to be hooked.
+#
+# The text is written as a text node rather than drawn by the stylesheet, so
+# stripping the CSS costs the alignment and nothing that the line says.
+_ASKBUSY_JS = """<script>
+(function () {
+  var FRAMES = FRAMES_JSON, EVERY = TICK_MS;
+  var form = document.querySelector("form.askform");
+  if (!form) return;
+  var slot = document.getElementById("askbusy");
+  var field = form.querySelector("input[name=q]");
+  var button = form.querySelector("button[type=submit]");
+  var asked = button ? button.textContent : "";
+  var timer = null;
+
+  function idle() {
+    if (timer !== null) { clearInterval(timer); timer = null; }
+    if (slot) slot.textContent = "";
+    if (button) { button.disabled = false; button.textContent = asked; }
+  }
+
+  form.addEventListener("submit", function () {
+    // An empty question is never sent — the server just clears the answer and
+    // redirects. Claiming to be thinking about it would be a lie, and a fast
+    // one, which is worse than saying nothing.
+    if (field && !field.value.trim()) return;
+    if (button) { button.disabled = true; button.textContent = "Asking\u2026"; }
+    var start = Date.now(), frame = 0;
+    function paint() {
+      if (!slot) return;
+      var secs = Math.floor((Date.now() - start) / 1000);
+      slot.textContent =
+        FRAMES[frame++ % FRAMES.length] + " Thinking\u2026 " + secs + "s";
+    }
+    paint();
+    timer = setInterval(paint, EVERY);
+  });
+
+  window.addEventListener("pageshow", function (e) { if (e.persisted) idle(); });
+})();
+</script>"""
 TICK_OK = "\u2713"   # CHECK MARK
 TICK_NO = "\u2717"   # BALLOT X
 
@@ -513,6 +588,13 @@ h1 { font-size:1.05rem; margin:0; letter-spacing:.06em; color:var(--accent); }
                  font:inherit; font-size:.95rem; font-weight:600; cursor:pointer; }
 .linkish { padding:.15rem .55rem; background:none; color:var(--muted);
            font-weight:400; font-size:.8rem; }
+/* The in-flight line. Hidden while empty so it costs no space on a page that
+   has never been asked anything, and monospaced so the spinner frame -- four
+   glyphs of four different widths in a proportional font -- does not shift the
+   counter beside it on every frame. Both are arrangement: the line says what
+   it says with the stylesheet gone. */
+#askbusy:empty { display:none; }
+#askbusy { font-family:var(--mono); }
 /* The card-level controls, kept together at the right of the heading. Spacing
    only: each control says what it is in its own text, so losing the stylesheet
    costs the arrangement and nothing else. */
@@ -860,6 +942,15 @@ def _capture_script() -> str:
     )
 
 
+def _askbusy_script() -> str:
+    """The in-flight indicator for the ask box, carrying its own frames."""
+    return (
+        _ASKBUSY_JS
+        .replace("FRAMES_JSON", json.dumps(list(SPINNER_FRAMES)))
+        .replace("TICK_MS", str(ASK_TICK_MS))
+    )
+
+
 def render_html(snapshot: dict, *, title: str = "BTC DASHBOARD",
                 refresh: int | None = REFRESH_SECONDS,
                 ask: bool = False, answer: dict | None = None,
@@ -917,6 +1008,12 @@ def render_html(snapshot: dict, *, title: str = "BTC DASHBOARD",
             '<input name="q" autofocus autocomplete="off" '
             'placeholder="ask a question about this snapshot">'
             '<button type="submit">Ask</button></form>'
+            # Filled by the script while a question is in flight, and empty
+            # otherwise. Inside the ask card rather than beside the data, which
+            # is what keeps it out of a tick's way and out of the PNG: this is
+            # the one region `LIVE_IDS` never patches and `CAPTURE_IDS` never
+            # draws, and a progress line belongs in neither.
+            '<div class="note" id="askbusy"></div>'
             # Above the cost note on purpose: this is what you need while
             # composing the question, not after sending it.
             + scope_html
@@ -959,6 +1056,6 @@ def render_html(snapshot: dict, *, title: str = "BTC DASHBOARD",
 <footer id="pagefoot">Data: local node + DuckDB · price: CoinGecko · ETF: Farside.
 Percentile windows and volatility annualisation are stated on each figure —
 compare those, not bare levels, against any external source.</footer>
-{updater}{_capture_script() if capture else ""}
+{updater}{_askbusy_script() if ask else ""}{_capture_script() if capture else ""}
 </body></html>
 """

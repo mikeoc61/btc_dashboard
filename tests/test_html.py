@@ -1064,3 +1064,89 @@ class TestPngCapture:
         """A `</script>` inside a JS string literal ends the block early, and
         the rest of the script becomes text in the document."""
         assert "</script>" not in page._CAPTURE_JS[:-len("</script>")]
+
+
+class TestTheAskBoxSaysItIsWorking:
+    """A question is a form POST, so the browser keeps this document painted
+    and changes nothing on it while the answer is being written — and that can
+    take minutes, because the analyst may run several paid tool rounds first.
+    A reader who cannot tell a slow answer from a hung page clicks Ask again,
+    and the server's cooldown then refuses the second question. The cue is what
+    turns that into waiting rather than a lost answer.
+    """
+
+    def test_the_slot_and_the_script_arrive_with_the_ask_box(self):
+        out = page.render_html(_snap(), ask=True)
+        assert 'id="askbusy"' in out
+        assert "Thinking" in out
+
+    def test_a_page_with_no_ask_box_carries_neither(self):
+        """`--html` writes a file with no server behind it. Nothing can be in
+        flight, so there is never anything to wait for. The stylesheet still
+        carries the rule, as it does for every other optional part of the page
+        — a rule matching an element that is never rendered costs nothing."""
+        out = page.render_html(_snap())
+        assert 'id="askbusy"' not in out
+        assert "Thinking" not in out
+
+    def test_a_tick_neither_replaces_it_nor_carries_it(self):
+        """It rides inside the ask box, which is the one region `LIVE_IDS`
+        never patches and `CAPTURE_IDS` never draws — so it inherits both
+        exemptions instead of needing its own. Put it beside the data and an
+        update would wipe a counter that is still counting, and a PNG taken
+        mid-question would show a dashboard apparently still loading."""
+        assert "askbusy" not in page.render_live(_snap())
+        out = page.render_html(_snap(), ask=True, capture=True,
+                               live_endpoint="/live")
+        assert 'id="askbusy"' in out.split('class="grid askgrid"', 1)[1]
+
+    def test_it_still_reads_with_the_stylesheet_stripped(self):
+        """Meaning never lives in the presentation layer. The stylesheet only
+        hides the empty line and holds the frame still; the word and the
+        seconds are a text node the script writes."""
+        import re
+        out = page.render_html(_snap(), ask=True)
+        without_css = re.sub(r"<style>.*?</style>", "", out, flags=re.S)
+        assert "Thinking" in without_css
+        assert "textContent" in without_css
+
+    def test_the_counter_is_what_proves_it_is_alive(self):
+        """A static word cannot be told apart from the frozen page it is meant
+        to rule out. The elapsed seconds can."""
+        out = page.render_html(_snap(), ask=True)
+        assert "Date.now()" in out
+        assert "setInterval" in out
+
+    def test_the_field_is_never_disabled_only_the_button(self):
+        """The browser builds the form data set *after* the submit event, so
+        disabling the input drops `q`. The server reads an empty question as
+        "clear the answer" and redirects, so the symptom is a question that
+        silently vanishes — which reads as a server bug, not a script one."""
+        assert "button.disabled" in page._ASKBUSY_JS
+        assert "field.disabled" not in page._ASKBUSY_JS
+
+    def test_going_back_does_not_restore_a_stuck_button(self):
+        """Back serves this document out of the bfcache exactly as it was left
+        — button disabled, counter stopped mid-count. Nothing re-runs on that
+        path, so the reset has to be hooked."""
+        assert "pageshow" in page._ASKBUSY_JS
+        assert "persisted" in page._ASKBUSY_JS
+
+    def test_an_empty_question_is_not_dressed_up_as_thinking(self):
+        """It is never sent — the server just clears the answer and redirects.
+        A spinner for a request that was not made is a lie, and a fast one."""
+        assert "value.trim()" in page._ASKBUSY_JS
+
+    def test_the_frames_are_ascii(self):
+        """A braille or dotted-circle spinner is font-dependent, and where the
+        font lacks it the reader gets a substitution box — leaving the counter
+        to carry the whole message on its own."""
+        assert all(ord(c) < 128 for frame in page.SPINNER_FRAMES for c in frame)
+
+    def test_the_script_cannot_close_its_own_tag(self):
+        assert "</script>" not in page._ASKBUSY_JS[:-len("</script>")]
+
+    def test_it_keeps_the_page_self_contained(self):
+        out = page.render_html(_snap(), ask=True)
+        for external in ("<script src", "http://", "https://"):
+            assert external not in out, f"page must not reference {external}"
