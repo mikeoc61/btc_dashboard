@@ -5,7 +5,7 @@ import argparse
 import json
 import sys
 
-from . import analyst, render, snapshot
+from . import analyst, progress, render, snapshot
 from .config import Config
 from .text import safe_block, safe_text
 
@@ -163,7 +163,12 @@ def main(argv=None) -> int:
         return 1
 
     if args.ask:
-        result = analyst.ask(snap, args.ask, cfg, use_tools=not args.no_tools)
+        # The panel has printed and nothing else will until the analyst
+        # answers, which can take minutes. Without a cue that is
+        # indistinguishable from a hang. The block clears its own line, so the
+        # answer below starts on a clean one either way.
+        with progress.Activity("thinking", color=color):
+            result = analyst.ask(snap, args.ask, cfg, use_tools=not args.no_tools)
         if not result.ok:
             # Provider errors can carry an API response body, so they are
             # bounded like any other text this process did not write.
