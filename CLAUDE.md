@@ -2,7 +2,7 @@
 
 BTC analytics. Four sources collapse into one JSON **snapshot**, which four
 consumers read: a terminal panel, a self-contained HTML page, an LLM context
-block, and raw JSON. Full design in `README.md` — read the *Design* and
+block, and raw JSON. Full design in `docs/reference.md` — read the *Design* and
 *Measurement notes* sections before changing how any figure is computed or
 displayed.
 
@@ -309,10 +309,12 @@ needs belongs with the code that knows why.
 
 - The JSON service still needs **authentication, TLS and rate limiting** before
   anything is exposed beyond loopback. The web `/ask` now runs SQL as well as
-  spending money, which raises the cost of getting that wrong. Load shedding is
-  already handled by the cache.
-- `README.md` is long; if it grows further, split *Measurement notes* and
-  *Studies* into `DECISIONS.md`, as `data_stores` does.
+  spending money, which raises the cost of getting that wrong. The cache blunts
+  repeat load but is not load shedding: it holds no cross-process collection
+  lock, so concurrent misses still collect concurrently.
+- `README.md` covers setup and everyday use. Detailed design, measurement notes
+  and studies live in `docs/reference.md`; CLI and configuration details live
+  in `docs/usage.md`. Keep new implementation history in the reference guide.
 - No long-history directional flow series exists. Adding one (exchange
   netflows, stablecoin issuance) would do more for the analysis than refining
   any existing measure.

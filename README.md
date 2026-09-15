@@ -1,1245 +1,177 @@
 # btc_dashboard
 
-BTC-focused analytics. Collects live network state, deep on-chain history, spot
-price against its 200-day SMA, and U.S. spot ETF flows into a **single JSON
-snapshot**, renders it as a terminal panel, and — only when you ask — answers
-ad-hoc questions about it through the LLM provider of your choice, using
-credentials on your own machine.
+A Bitcoin dashboard for the terminal and browser. See price trends, network
+activity, on-chain history, and U.S. spot ETF flows together. Optionally ask an
+LLM questions about the readings and your local historical data.
 
-```
-$ btc-dashboard
-BTC DASHBOARD — 2026-08-16 20:52:08 UTC
-────────────────────────────────────────────────────────────
-PRICE
-  spot $62,995 -0.06% vs 15 Aug close (coingecko)
-  SMA 20d $63,842 -1.3% | 50d $63,516 -0.8% | 200d $69,353 -9.2% (below 200d)
+**Start with price and ETF flows on any machine with internet access.** Add a
+Bitcoin Core node and a DuckDB warehouse for the full picture. A missing source
+is shown as unavailable; the rest of the dashboard still works.
 
-NETWORK (live)
-  height 962,780 | hashrate 911.41 EH/s (+1.37% 7d) | difficulty 127.48T
-  retarget 868 blks, ~6.1d | proj -0.91% ±3.0% (1,148 blks in)
-  mempool 13,447 tx / 2.3 vMB
-  fees 1.2/1.0/0.6 sat/vB (fast/1hr/1d)
+[Quick start](#quick-start) · [Browser dashboard](#browser-dashboard) ·
+[Ask a question](#ask-a-question) · [Configuration](docs/usage.md#configuration) ·
+[Technical reference](docs/reference.md)
 
-ON-CHAIN (daily) [cached 37m]
-  day (UTC 2026-08-15 Sat): 145 blks | 98% full | p50 1.0 sat/vB | fee/subsidy 0.51% | miner rev 455.5 BTC
-  signal: fee/subsidy 33rd pctile 2y (7d) | apathy 3d | hashrate -12.6% off 90d high
-  daily close $63,024 (warehouse)
-  SMA 20d $63,829 -1.3% | 50d $63,509 -0.8% | 200d $69,373 -9.2%
-  vol (ann √365, pctile 2y/all): 7d 10% (<1/1) | 30d 22% (<1/1) | 90d 34% (13/5) | 180d 38% (20/5) | 360d 43% (21/4)
-  block pace 145/144 (+0.7%, ±8% day-to-day noise)
+## Quick start
 
-ETF FLOWS (US SPOT) [cached 37m]
-  latest -56.2M total | -55.5M IBIT (Fri 14 Aug 2026, 2d ago)
-  5d net -385.2M total | -78.9M IBIT (20% IBIT — broad distribution)
-  20d net +452.5M total | +606.0M IBIT
-  60d net -5.55B total | -3.91B IBIT
-  streak 3d outflow
-```
-
-```bash
-btc-dashboard --ask "is the flow picture consistent with price below the 200d?"
-```
-
----
-
-## Design
-
-**The snapshot is the contract.** Every consumer — the text renderer, the LLM
-analyst, and the JSON service this is heading toward — reads the same dict and
-nothing re-fetches a source:
-
-```
-       ┌─ price      (CoinGecko → Binance)
-       ├─ node       (bitcoin-cli)                        ┌─► render  → terminal
-sources┤                                    ├─► snapshot ─┼─► JSON    → --json / service
-       ├─ warehouse  (DuckDB, read-only)                  └─► analyst → LLM    [--ask only]
-       └─ flows      (Farside + cache)
-```
-
-Collection never touches an LLM. Only `--ask` does, and it runs on your machine
-under your key — see [Credential boundary](#credential-boundary-the-llm-is-client-side-only).
-
-**Every source is independently fail-soft.** `collect()` never raises; a source
-that can't produce data returns `available: false` with the reason attached.
-An unreachable node, a missing warehouse, or a Farside layout change costs one
-block of the panel and leaves the rest intact — and the *analyst is told what is
-missing*, so it reasons about a gap rather than assuming a healthy network.
-
-**Standalone.** No imports from any sibling project and no shelling out to
-their scripts — third-party libraries plus upstream `bitcoin-cli`, nothing else.
-See [Related repositories](#related-repositories) for what it does share.
-
-Sources are collected concurrently, so a run costs the slowest source rather
-than the sum.
-
-### Caching
-
-On-chain and ETF flow data are cached for **60 minutes**; price and node are
-never cached.
-
-That split is the whole design. The warehouse gains one row per UTC day and
-Farside publishes a trading day once, in the evening — so refetching either
-more than hourly buys nothing and, for Farside, just adds load to someone
-else's site. Spot price and mempool depth are live tip state, where serving a
-40-minute-old reading as current would be worse than not showing it.
-
-```
-$ btc-dashboard --only flows      # cold
-  1.80s
-$ btc-dashboard --only flows      # warm
-ETF FLOWS [cached 3m]
-  0.07s
-$ btc-dashboard --only flows --refresh   # forced re-collect
-  1.10s
-```
-
-**`cached` and `stale` are different states**, and both appear in the snapshot:
-
-| Marker | Meaning |
-| --- | --- |
-| *(none)* | Collected live this run |
-| `[cached 15m]` | Served from disk within its TTL — as good as when fetched |
-| `[STALE 3d]` | TTL expired *and* the live refresh failed; serving the old copy anyway, with the failure reason shown |
-
-Both describe **where the payload came from**, never whether its contents are
-current. A warehouse whose ingester has fallen behind is freshly read and
-perfectly provenanced; it says so in its own block text and in the `NOTABLE`
-strip, and it does not borrow this marker. It used to, which made the analyst's
-context announce a failed refresh and a cache age for a scrape that had just
-succeeded.
-
-The stale path is why the cache is worth having beyond speed: when Farside is
-unreachable, yesterday's finalized flows still render rather than the block
-disappearing. The analyst is told which state applies, so it can't describe an
-hour-old reading as "right now".
-
-**That rescue stops after four days.** Past `STALE_MAX_AGE` the block goes
-unavailable instead, and the error names both the live failure and the copy
-that was refused — two facts with two different fixes. Without a limit the
-fallback never ends: on a host where the live path *always* fails, such as a
-laptop with no warehouse file, the same copy is re-aged and re-served on every
-run, asserting figures that no later run can ever correct. This is not
-hypothetical. A payload written from a database this project had never read sat
-on the panel for three days with every label accurate and every value wrong,
-because re-derivation keeps the *age* honest — and age is not provenance. Four
-days is the shortest bound that still covers a Friday-evening failure across a
-weekend and a Monday holiday.
-
-**Time-relative fields are recomputed on every cache read.** `age_days`,
-`days_behind` and `stale_tables` are relative to when they are *read*, not when
-they were fetched — otherwise a three-day-old stale payload would report a
-trading day as "1d ago", exactly when accuracy matters most. A source with such
-fields exposes `refresh_derived(data)`.
-
-**Staleness is measured per table, and the lagging one is named.** The
-warehouse's price and on-chain tables are written by the same ingester but
-advance independently, so `days_behind` — which measures the on-chain table,
-the one the block is dated by — cannot speak for the other. With `onchain`
-current and `btc` three days short, the panel reported a healthy warehouse and
-showed a three-day-old close beside it. `stale_tables` carries one entry per
-table that is behind, both messages name it, and the volatility block and the
-daily close carry the date of the row they actually end on rather than the
-heading's.
-
-Cache files live in `~/.cache/btc_dashboard/<source>.json`. Writes are atomic
-(temp file + `os.replace`), so concurrent readers never see
-a partial payload. An unreadable or corrupt cache file is treated as a miss,
-never an error.
-
-### Colour
-
-Section headers, the rule, and the cache markers are colourised **only when
-writing to a terminal**, so `--json`, a redirect, or a pipe stay clean. The
-`NO_COLOR` convention is honoured (any value disables), `FORCE_COLOR` forces it
-on, and `--color always|never` overrides both.
-
-Only the basic 8 ANSI colours are used, never 256-colour or truecolour: a
-terminal maps those through the user's own theme, so they stay legible on light
-and dark backgrounds alike. **No colour carries meaning on its own** — a
-`[STALE]` marker reads identically in plain text, and stripping the escape
-codes from coloured output reproduces the plain output exactly (there's a test
-for that). The same split governs the `--ask` progress line: `--color never`
-drops its dimming and keeps the spinner, which is progress rather than colour.
-
-### HTML
-
-`--html` renders the snapshot as a self-contained page — inline CSS, no
-external assets, scripts or fonts — so it works from `file://`, from a static
-server, or over an SSH tunnel with no internet access. Light and dark follow
-`prefers-color-scheme`. The PNG capture buttons are *not* in this output: they
-render inside the ask box, so they belong to the [local web
-view](#local-web-view). The tab icon is inline in two formats — an SVG and a
-32×32 PNG rasterised from the same rectangles — so it costs no request and the
-page's "references nothing external" property stays literally checkable. Both
-are offered because Safari has never read an SVG favicon from a data URI and
-silently falls back to its own generated letter tile.
-
-Each source contributes `html_panels()` beside its terminal and LLM
-presentations, so a source that naturally splits (facts, signals, volatility)
-says so itself rather than the page imposing a layout. Each panel declares a
-`priority`, because the useful order isn't source order — volatility comes from
-the warehouse but belongs beside price, since a distance from a moving average
-only means something in volatility units.
-
-**The `NOTABLE` readings lead the page**, bracketed into the balance card's
-heading — `[NOTABLE: fee/subsidy 3 pctile of 2y, 41d under 1.0% fee/subsidy]`.
-They had a card of their own once, 56px tall to hold one line of text; in the
-heading they still come first on the page and cost nothing. Up to seven entries
-fit one line at 1920, and a day bad enough to produce nine wraps to two. Two
-rules keep them honest:
-
-- **Threshold-selected, not hand-picked.** Each source owns its own bounds via
-  `notable()`, because what counts as extreme is a property of the measure. The
-  strip is *absent* on an ordinary day — one that always finds three things to
-  say teaches you to stop reading it.
-- **Facts, never forecasts.** "30d volatility 22% — <1 pctile of 2y" is a
-  reading with its window attached. "Compression, expect a large move" is a
-  prediction, and volatility carries no direction. The reader draws the
-  conclusion; there's a test asserting the words don't appear.
-
-**`--ask` is told the same list.** The thresholds themselves are information
-the prompt does not otherwise carry — nothing in it says this client leads at
-the 95th percentile, or at two standard errors on a retarget — so without them
-a model asked what to look at invents its own bar, and can disagree with the
-bracket printed directly above the ask box. `notable.py` gathers the list once
-and both consumers read it, because a page and an answer that disagree leave
-the reader no way to tell which is wrong.
-
-It arrives *after* the readings, described as fixed bounds rather than a
-ranking: a curated list read first is one a model reasons from instead of from
-the figures. The empty case is stated too, unlike the page — absence is legible
-to someone looking at a page with no bracket on it, while a model handed no
-line cannot tell "nothing crossed" from "this client does not do that".
-
-Volatility bounds fire at *both* tails, since historically the lowest and
-highest quintiles each preceded larger moves than mid-range ones. Unavailable
-and stale sources lead the strip, being facts about the snapshot rather than
-about any one source.
-
-**Every close names its day.** The price card compares spot against the last
-completed daily close; the on-chain card shows the newest close the *warehouse*
-holds. Whenever the ingester hasn't run yet those are different days, and two
-undated "previous closes" a day apart look like the sources disagreeing about
-the price rather than an ordinary one-day lag. The price card names its
-reference date, and the on-chain day moved into that card's heading — as a row
-it read as one metric among many rather than as the date of the on-chain
-figures below it. The daily close is the exception on that card and names its
-own day in its note: it is read from the `btc` table, which advances
-independently of `onchain`, so inheriting the heading's date would state a day
-the number may not be from.
-
-The two providers date a daily bar by opposite conventions, which is handled
-explicitly: CoinGecko's points are instants stamped 00:00 UTC, so the one
-labelled 16 Aug is the *close of 15 Aug*; a Binance kline stamped with a day's
-open carries that day's close. Reading either the other way dates every close
-a day out.
-
-**Spot is coloured against the previous completed daily close**, with a dead
-band: a move under 0.1% is left uncoloured, because one standard deviation of
-a current day is near 1% and painting a tenth of that green asserts a
-direction the number doesn't carry. The reference close comes from the price
-source's *own* series, never the warehouse's — those are different venues, and
-mixing them would fold a venue spread into a figure meant to show the day's
-move. It is labelled "vs prev close" rather than "24h", because the reference
-is the last finished day, which may be an hour or a day old.
-
-**Colour lands on whatever is actually signed.** A 20-day SMA of $63,955
-painted red because spot sits below it reads as "the average fell" — what is
-negative is the *relationship*, which lives in the note. `Metric` therefore
-carries `tone` and `note_tone`, and a row uses whichever one describes a signed
-quantity. Same for hashrate: the level is not negative, its 7-day change is.
-Where the value *is* the signed thing (a retarget projection, a flow total) the
-value keeps the colour — provided the sign is real. The retarget projection
-gets the same dead band spot does, but measured in its own standard errors
-rather than in percent, since its noise floor moves across a period where daily
-volatility roughly does not: under **1σ** it is left uncoloured, and `n/a` is
-uncoloured too. That last one was a bug — an absent projection fell to the
-`else` of a sign test and rendered red, reading as a projected *fall* rather
-than as no projection at all. The bar for colour is deliberately lower than the
-2σ that puts the reading on the `NOTABLE` strip: committing to a direction is a
-smaller claim than leading the page, and at 2σ the colour would say nothing the
-strip had not already said.
-
-**Every card of a source carries its freshness badge**, not just the first. One
-source can produce several cards — the warehouse yields on-chain, signals and
-volatility — and the grid wraps them onto different rows, so a badge on the
-first alone leaves the rest looking undated. The failure *reason* still appears
-once, since repeating one error three times reads as three problems.
-
-**Type is sized for reading, not for density.** The page sets no pixel base, so
-it inherits the browser's own default and a reader who has already turned that
-up gets it. Labels and prose use a UI face; only the figures use monospace,
-where the fixed advance width earns its place aligning columns. Monospace
-everywhere reads poorly at small sizes, and bold monospace on a dark background
-worst of all.
-
-**Qualifiers survive the move.** A row-based layout invites dropping the window
-a percentile was ranked against, or the annualisation behind a volatility
-figure, because the numbers look tidier without them — but those are exactly
-what makes a figure comparable to an external source. Every `Metric` carries a
-`note` and the note is rendered. Free text is HTML-escaped, since an ingested
-snapshot's error strings are controlled by whoever produced it.
-
-### Balance of evidence
-
-One card leads the page, its heading carrying the `NOTABLE` readings: one per
-domain — trend, momentum, network, volatility, participation, ETF flows —
-each with its own window, gathered from the sources that own them through
-`balance_rows()`. It answers "what does the whole board look like" at a glance,
-where the strip answers "what is unusual today". Both lead, because those are
-different questions: on an ordinary day the strip is absent and this card takes
-the row.
-
-The obvious version of this is a weighted 0–100 with a name on it — "74/100,
-Quiet Accumulation". It is not built that way, and the reasons are not fixable
-by choosing better weights:
-
-- **A score cannot carry a qualifier.** Every figure here states the window it
-  was ranked against or the basis it was summed on, because that is what makes
-  it comparable to someone else's. The honest qualifier on a 74 is "out of a
-  scale invented here, comparable to nothing".
-- **Half the inputs have no direction.** Realised volatility fires at both
-  tails; trade count is participation, not direction; an RSI of 78 is a level,
-  and the price card deliberately leaves it uncoloured for that reason. A
-  weighted sum has to assign all three a sign they do not have. The card says
-  so in its own note, and only the three signed rows are coloured.
-- **The components are not independent.** Trend and momentum are the same close
-  series; exchange volume and trade count correlate 0.90 at this venue. Summing
-  them as though they were independent makes the total swing further than the
-  evidence does.
-
-So the readings sit side by side and the weighing is the reader's. If a score is
-ever wanted, the way in is a study under `tools/` scoring it against the
-unconditional base rate first — the pattern `hashrate_study.py` sets.
-
-**A row shows a word only where its measure defines one.** Trend carries
-`above` / `near` / `below`, from the ±2% band around the SMA; ETF Flows carries
-`inflow` / `outflow`, the words the streak already uses. Both are promoted out
-of the note into their own column, because a word is read before a number.
-
-The other four show a number alone, and the gaps are the point. An RSI level, a
-volatility percentile and a trade count carry no direction, so a word invented
-for them — "High", "Elevated" — is a judgement the reading does not support:
-the score error at one word instead of a hundred points. Network is signed and
-coloured but still has no word, for a quantitative reason: block discovery is
-Poisson, so a 1008-block hashrate estimate carries ~3.2% standard error and the
-change between two of them ~4.5%, which makes a sub-1% week a fifth of one
-standard error. Colouring that is a hint; calling it "rising" is a claim.
-
-Where a row has a word, the **colour follows the classifier rather than the raw
-sign**. A distance the same row calls `near` is one the ±2% band exists to say
-is not a direction, so painting it green would contradict the qualifier printed
-beside it — the same call the retarget projection makes inside its own dead
-band.
-
-**A reading extreme enough to lead the page is marked on its own row.** Two of
-the nine `NOTABLE` kinds have a band row to mark — a 30d volatility percentile
-and a trade count — and before this the strip and the row stated the same number
-with nothing connecting them. The row's value goes amber, and the threshold is
-stated in its note (`at or above the 95th pctile`), because the tint is the
-signal and the text is the meaning: strip the stylesheet and an amber 98 is
-just a 98.
-
-Amber rather than up or down, deliberately. Neither measure has a direction to
-colour, and the reader is being told the reading is unusual, not that it is
-good. The strip and the mark share one predicate, `notable_pctile_phrase`, so
-they cannot come to disagree — a row marked extreme beside a strip that never
-mentioned it leaves the reader no way to tell which of the two is wrong. It
-carries the asymmetry too: volatility is extreme at either tail, a trade count
-only ever for being high.
-
-**A missing reading is `n/a` and keeps its row.** The same rule as an unfillable
-flow window or SMA, and the reason `balance_rows` has to survive an empty dict:
-a source that is down still occupies its rows, so nothing is renormalised onto
-whatever happened to report. The badge counts what is filled — `4 of 6
-readings` — so an incomplete card reads as incomplete rather than as a weaker
-one. A failure reason is stated once per source, not once per row, since one
-missing warehouse owns two of them.
-
-It is derived, not collected: it is **not a field in the snapshot** and every
-consumer recomputes it, so a score cannot arrive from an ingested payload. It is
-also **not in the analyst's context** — every reading on it is already there,
-phrased by the source it came from, and repeating six of them would imply an
-emphasis the data has not earned.
-
-### Local web view
-
-```bash
-pip install -e ".[web]"
-btc-dashboard-web                 # http://127.0.0.1:8001
-```
-
-Port **8001**, not 8000 — [bitcoin_peer_monitor](https://github.com/mikeoc61/bitcoin_peer_monitor)
-conventionally takes 8000, and two local dashboards on one host shouldn't fight
-over a port by default. To
-tunnel both from a laptop:
-
-```bash
-ssh -L 8000:localhost:8000 -L 8001:localhost:8001 pibot
-```
-
-A taken port fails with a message naming the likely culprit and the flag to
-fix it, rather than uvicorn's bare `[Errno 98]`.
-
-To keep it running, `deploy/systemd/btc-dashboard-web.service` is a unit that
-binds loopback, runs the console script rather than `uvicorn` directly (so the
-safe defaults and the port check still apply), and keeps the API key out of the
-unit file — `systemctl show` prints a unit's environment in full. See
-[`deploy/README.md`](deploy/README.md).
-
-Same page as `--html`, plus an **ask box** wired to the analyst. A question is
-a form POST that redirects back to `/`, so reloading never re-submits.
-
-**The page says when a question is in flight.** That POST is why it has to: the
-browser keeps the document painted and changes nothing on it while the answer
-is written, which runs to minutes once the analyst starts querying, and the
-only cue is the browser's own tab spinner. So the button relabels to `Asking…`
-and disables, and a line under it counts `Thinking… 12s` until the answer
-lands. The counter is the part that does the work — a static word can't be
-told apart from the frozen page it exists to rule out. The server's cooldown is
-unchanged; this only stops the honest double-click, which until now cost you
-the answer rather than being prevented. The line lives inside the ask box, so
-it inherits the two exemptions described below instead of needing its own: a
-tick can't wipe a counter that is still counting, and a PNG taken mid-question
-can't show a dashboard apparently still loading.
-
-**The page updates its data in place, not by reloading.** A meta refresh
-replaced the whole document, which meant a tick landing mid-sentence wiped
-whatever was half-typed in the ask box. Instead the regions that carry data —
-the source ticks, the timestamp, the balance card and the data cards — are named
-by id and patched from `/live`, which serves exactly those regions and no
-controls. The ask box is outside all of them: a tick never touches it, and it
-changes only when you submit a question or an answer comes back. Both the page
-and the fragment are built by `html._live_parts()`, so the updater can never
-patch markup shaped differently from the page it is patching. A failed fetch is
-swallowed and the last good render stays up; the timestamp then visibly stops
-advancing, which is the signal that updates have stopped. With scripting off, a
-`<noscript>` meta refresh reloads as before.
-
-**`copy PNG` and `save PNG` draw the page to an image**, in the browser, with
-no server involved: the data regions are cloned into an SVG `foreignObject`,
-that SVG is decoded as an image, and the image is drawn to a canvas at 2×
-device scale. It fits in one small script only because the page is already
-self-contained — nothing external has to be fetched and inlined first, and so
-nothing can taint the canvas. The file is named from the timestamp the image
-itself carries, read at click time, so the two can't disagree.
-
-`html.CAPTURE_IDS` names what the image contains, the way `LIVE_IDS` names what
-a tick overwrites. Two choices there are deliberate:
-
-- **The footer is in it.** A PNG is the copy most likely to be read away from
-  this page, so it is the copy that can least afford to lose the provenance and
-  the compare-the-stated-windows line. Dropping a qualifier from exactly the
-  copy that travels is the regression this project keeps having.
-- **The ask box is the one region left out** — which is why the buttons sit
-  inside it. A control in the ask box keeps itself out of its own image, where
-  one in the header would have to be stripped from the clone and would
-  reappear the first time that was got wrong. The list is an allow-list for the
-  same reason: it fails by omitting a card, which is visible to anyone looking
-  at the image, rather than by leaking a half-typed question into a picture
-  someone is about to share.
-
-A capture that fails says so under the heading rather than handing over a blank
-image — unlike a failed tick, which is swallowed because the last good render
-stays on screen. Three details are load-bearing, each found by building the
-tidier version first: the SVG goes in as a `data:` URL (from a `blob:` URL it
-decodes identically and taints the canvas), `body`'s declarations are copied
-onto the clone's wrapper (a `foreignObject` holds a bare `<div>`, so `body {}`
-matches nothing inside the image and that text falls back to black serif), and
-the CSS custom properties are pinned to their computed values (the SVG sandbox
-doesn't inherit `prefers-color-scheme`, so a light-mode reader would otherwise
-get a dark PNG). Copying to the clipboard additionally needs a secure context,
-which `http://localhost` is, and a focused document; if either is missing the
-button says so and `save PNG` still works.
-
-**This process holds your provider key**, which is a deliberate departure from
-the boundary that holds everywhere else — see
-[Credential boundary](#credential-boundary-the-llm-is-client-side-only). An ask
-box in a browser cannot work any other way: the server has to make the call.
-That is fine when the server *is* your own machine reached over a tunnel, which
-is why:
-
-- **the default bind is `127.0.0.1`.** On `0.0.0.0` anyone who can reach the
-  port can spend your API budget. A wider bind prints a warning naming the SSH
-  alternative.
-- **a request another page caused is refused**, and so is a `Host` that isn't
-  ours. Loopback keeps other *machines* out, not other *pages*: a form POST
-  needs no permission to arrive, so any site you visited could otherwise drive
-  `/ask` from inside your own browser. `Sec-Fetch-Site` must say `same-origin`
-  — not merely "not cross-site", since another *port* of localhost reports
-  `same-site` and is still not us — with `Origin` against `Host` as the
-  fallback for older browsers. The `Host` check is the separate one: under DNS
-  rebinding the attacker's page really is same-origin, and only the name gives
-  it away. Neither header present means the caller isn't a browser, so `curl`
-  still works. On a wider bind the `Host` check is off, because the legitimate
-  name is then whatever your network calls the machine.
-- **`/ask` has a cooldown**, so a double-submit costs one call, not two.
-- **every answer shows its token count**, so the cost is visible.
-
-Collection is decoupled from HTTP: the app holds a snapshot in memory with a
-short TTL, so an auto-refreshing tab doesn't scrape Farside once a minute and
-three questions cost three LLM calls and zero collections. `/live` serves that
-same in-memory snapshot, so polling it collects nothing. `refresh data` on the
-page forces a re-collect.
-
-### Adding a source
-
-One new file in `sources/` exposing four names, plus one entry in
-`snapshot.SOURCES`. Nothing else changes:
-
-```python
-NAME = "mysource"
-CACHE_TTL = 3600                        # optional; omit for live tip state
-
-def collect(cfg) -> SourceResult: ...   # never raises
-def render_lines(data) -> list[str]:    # terminal text
-def context_lines(data) -> list[str]:   # facts phrased for the LLM
-
-def html_panels(data) -> list[Panel]:   # optional; cards for --html and the web view
-def notable(data) -> list[str]:         # optional; NOTABLE entries, threshold-selected
-def balance_rows(data) -> list[Metric]: # optional; rows on the BALANCE OF EVIDENCE card
-def refresh_derived(data) -> dict:      # optional; only if fields age with the clock
-def analyst_tools(cfg) -> list[Tool]:   # optional; live queries offered to --ask
-def analyst_scope(data) -> str | None:  # optional; what that tool can reach
-```
-
-Keeping all three presentations next to the collector is deliberate: the caveats
-a number needs ("this window is n/a, not zero") belong with the code that knows
-why, and a page or a prompt assembled elsewhere is where they get dropped.
-
-`balance_rows` carries one extra obligation: **it must survive an empty dict and
-return the same labels**, values reading `n/a`. That is how a source which is
-*down* still occupies its rows on the balance card rather than shrinking it —
-see [Balance of evidence](#balance-of-evidence). Writing the rows the ordinary
-way, through `fmt`, satisfies it without trying; a test holds every source to
-it.
-
----
-
-## Related repositories
-
-Two sibling projects sit behind this one. **Neither is a dependency** — nothing
-here imports them and nothing shells out to them.
-
-| Repo | Relationship |
-| --- | --- |
-| [data_stores](https://github.com/mikeoc61/data_stores) | Shares *data*. Its `market_warehouse` ingester is the sole writer of `~/data/market.duckdb`; this reads the same file `read_only=True`. Every on-chain figure, moving average and volatility window here comes from that file. |
-| [farside](https://github.com/mikeoc61/farside) | Shares *design*. The standalone ETF-flow scraper `sources/flows.py` was reimplemented from — same site, same hard-won semantics (a reported zero is not a missing cell; a day counts only once every tracked fund reports; an unfillable window is `n/a`, never a shorter sum), independent code and its own cache. Kept separate deliberately: farside covers BTC, ETH and SOL and feeds the morning brief, while this is BTC-only. |
-| [bitcoin_peer_monitor](https://github.com/mikeoc61/bitcoin_peer_monitor) | Unrelated to the data, but shares a host and a pattern — a FastAPI page on loopback reached over an SSH tunnel. It conventionally holds port 8000, which is why this defaults to 8001. |
-
-The split matters for the warehouse in particular: sharing the *file* rather
-than the *package* means a schema change is the only thing that can break this
-project, and the coupling is confined to one module (`sources/warehouse.py`), so
-the store is swappable without touching anything else. It never writes, so a
-running ingester is unaffected.
-
-⚠️ **The Farside scrape exists in two places.** A change to Farside's table
-layout breaks `farside_flows.py` and `sources/flows.py` *separately* — each has
-its own `parse_table`, column mapping and date regex, and fixing one will not
-fix the other. Both also scrape the same site on their own schedule, so the host
-running both makes two requests where one would do. That is the accepted price
-of keeping this project standalone; it is not an oversight.
-
-## Install
-
-```bash
-python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-```
-
-Then `btc-dashboard`, or `python -m btc_dashboard.cli`.
-
-## Usage
-
-```bash
-btc-dashboard                          # full panel
-btc-dashboard --json                   # the snapshot, for piping
-btc-dashboard --only flows,price       # subset
-btc-dashboard --context                # what the analyst would be told (no API call)
-btc-dashboard --ask "QUESTION"         # send the snapshot to an LLM (local key, opt-in)
-btc-dashboard --from URL|PATH|-        # ingest a snapshot instead of collecting one
-```
-
-`--ask` is the only thing that contacts an LLM, and it always runs locally —
-see [Credential boundary](#credential-boundary-the-llm-is-client-side-only).
-
-| Flag | Effect |
-| --- | --- |
-| `--json` | Emit the snapshot instead of the panel |
-| `--html` | Emit a self-contained HTML page instead of the panel |
-| `--from X` | Ingest a snapshot (http(s) URL, file, or `-`) instead of collecting one |
-| `--only A,B` | Restrict to named sources (`price`, `node`, `warehouse`, `flows`) |
-| `--ask Q` | Run the analyst over the snapshot |
-| `--context` | Print the analyst's fact list and exit — use this to debug what it sees |
-| `--db PATH` | Warehouse path |
-| `--provider P` | LLM provider for `--ask` (`anthropic`, `openai`, `deepseek`, `openrouter`, `ollama`) |
-| `--model ID` | Model for `--ask`, optionally `provider/model` |
-| `--effort L` | `low`/`medium`/`high`/`xhigh`/`max` (default `high`) |
-| `--no-tools` | Answer from the snapshot alone — don't let `--ask` query the warehouse |
-| `--refresh` | Bypass the cache and re-collect |
-| `--cache-ttl N` | Cache lifetime in seconds (default 3600; `0` disables) |
-| `--timeout N` | Per-source network timeout in seconds (default 20) |
-| `--color C` | `auto` (default, terminal only) / `always` / `never` |
-| `--quiet` | Hide unavailable-source detail |
-
-Exit codes: `0` ok, `1` no source available, `2` bad usage or analyst failed. The analyst
-failing never costs you the panel — it prints first.
-
-While `--ask` waits, a spinner and an elapsed-seconds counter sit on one line
-of stderr, erased when the answer prints. Off a terminal nothing is drawn at
-all, so a redirect or a pipe stays clean — and a call that returns quickly
-never paints, rather than flashing a spinner up and wiping it.
-
-## Configuration
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `BTC_DASHBOARD_DB` | `~/data/market.duckdb` | Warehouse path (falls back to `MARKET_WAREHOUSE_DB`) |
-| `BTC_DASHBOARD_BITCOIN_CLI` | `bitcoin-cli` | Path to the Core CLI |
-| `BTC_DASHBOARD_CACHE` | `~/.cache/btc_dashboard` | Cache directory (honours `XDG_CACHE_HOME`) |
-| `BTC_DASHBOARD_PROVIDER` | `anthropic` | Analyst provider |
-| `BTC_DASHBOARD_MODEL` | provider's default | Analyst model, optionally `provider/model` |
-| `BTC_DASHBOARD_EFFORT` | `high` | Analyst reasoning effort |
-| `BTC_DASHBOARD_TIMEOUT` | `20` | Per-source network timeout (s) |
-| `BTC_DASHBOARD_CACHE_TTL` | `3600` | Cache lifetime for cached sources (s) |
-| `ANTHROPIC_API_KEY` etc. | — | The selected provider's key; required for `--ask` |
-| `BTC_DASHBOARD_ENV` | `~/.config/btc_dashboard/env` | Path to the env file (honours `XDG_CONFIG_HOME`) |
-
-### The env file
-
-A scheduled run starts without a login shell, so nothing from your profile is
-exported. The env file covers that case, and it sets **any** variable in the
-table above — not only API keys:
-
-```
-# ~/.config/btc_dashboard/env
-BTC_DASHBOARD_PROVIDER=openai
-BTC_DASHBOARD_MODEL=openai/gpt-5.6-luna
-BTC_DASHBOARD_EFFORT=medium
-OPENAI_API_KEY=sk-...
-```
-
-A variable already set in the real environment wins, so an explicit `export`
-or a one-off `BTC_DASHBOARD_MODEL=x btc-dashboard` still overrides the file.
-`export` prefixes, quotes, comments and blank lines are all tolerated; nothing
-in the file is executed, so it can only set variables.
-
-Create it with restrictive permissions, since it may hold a key:
-
-```bash
-mkdir -p ~/.config/btc_dashboard && chmod 700 ~/.config/btc_dashboard
-echo 'ANTHROPIC_API_KEY=sk-ant-...' > ~/.config/btc_dashboard/env
-chmod 600 ~/.config/btc_dashboard/env
-```
-
-Paths follow the XDG base directory spec: cache under `$XDG_CACHE_HOME`
-(default `~/.cache/btc_dashboard`), config under `$XDG_CONFIG_HOME` (default
-`~/.config/btc_dashboard`). The pre-XDG `~/.btc_dashboard/env` is still read as
-a fallback, since it may hold a key; the old cache directory is not — cache is
-disposable, so an upgraded install simply refetches once. If you have one left
-over, `rm -rf ~/.btc_dashboard` after moving any env file.
-
-## Where it runs
-
-| Source | Needs | Laptop | Node host |
-| --- | --- | --- | --- |
-| `price` | network | ✅ | ✅ |
-| `flows` | network | ✅ | ✅ |
-| `node` | `bitcoin-cli`, synced node | ❌ | ✅ |
-| `warehouse` | the DuckDB file | ❌ | ✅ |
-
-On a laptop you get price and flows and an explicit note about the other two,
-which is enough to develop against. Full fidelity needs the node host.
-
-### Deploying to the node host
+Requires **Python 3.11 or newer**. No LLM key is needed to view the dashboard.
 
 ```bash
 git clone https://github.com/mikeoc61/btc_dashboard.git
 cd btc_dashboard
-pip install -e . --break-system-packages    # single-purpose appliance
-btc-dashboard                                # all four sources should report
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+btc-dashboard
 ```
 
-`--break-system-packages` is for a dedicated appliance where the system Python
-*is* the environment. On any machine you also use for other things, prefer a
-venv (`python3 -m venv .venv && .venv/bin/pip install -e .`).
-
-Two things to confirm on first run there, because they're the sources a laptop
-can't exercise:
-
-- `node` — needs `bitcoin-cli` on `PATH` and a synced node. If the daemon runs
-  as another user, set `BTC_DASHBOARD_BITCOIN_CLI` to a wrapper carrying the
-  right `-datadir`/`-conf`.
-- `warehouse` — needs the DuckDB file. Set `BTC_DASHBOARD_DB` if it isn't at
-  `~/data/market.duckdb`. Opened read-only, so it can run while the ingester
-  writes.
-
-If you want the analyst on a schedule there, the key must be in the env file —
-a timer starts without a login shell, so nothing from your profile is exported.
-See [Configuration](#configuration).
-
----
-
-## Measurement notes
-
-The numbers are the easy part; these decisions are what make them mean
-something. Each is enforced in code and covered by a test.
-
-**A reported zero is not a missing cell.** Farside renders an unpublished figure
-as `-` and a genuine zero flow as `0.0`. Collapsing them turns "hasn't reported"
-into "reported no flow" and drags every average toward zero.
-
-**A row with no fund posted is a third thing again.** Farside prints such a
-day as blank funds with `0.0` in the `Total` column. That is a U.S. market
-holiday, or an ordinary day whose flows have not been published yet — the row
-cannot tell you which, and it does not matter, since neither is a day that
-reported no flow. Both are dropped rather than averaged in. The shape appears
-live every day before publication, so it is not named for closures even though
-16 of its 17 occurrences in the BTC history are holidays.
-
-The test is *no fund posted*, not *everything is zero*: the site rounds to
-0.1M, so on an asset with smaller flows a quiet but perfectly real session
-prints `0.0` in every column. There are 12 such days in Farside's ETH history
-and none in BTC's, which is a fact about the size of BTC's flows rather than
-about the data — the looser test was correct here only by accident, and is now
-not relied on.
-
-**The flow date is rendered with its weekday, because the age beside it is in
-calendar days.** `age_days` is measured on the market's own clock
-(`America/New_York`) but counts calendar days, and a U.S. trading calendar has
-gaps that count cannot see: every weekend, plus the holidays Farside stopped
-printing rows for after 19 Jun 2025. So the most recent session there is can
-read `3d ago` — on Labor Day, 7 Sep 2026, the Friday close did exactly that,
-beside three cards badged fresh, and looked like a scrape falling behind.
-Measuring in *sessions* instead would need a holiday calendar this module does
-not have, for the same reason the row above cannot tell a closure from an
-unpublished day. So the count stays honest about what it counts and the date
-names its day — `Fri 04 Sep 2026 · 3d ago` — which is the one fact that
-explains the gap. The in-progress day is formatted the same way: the two sit on
-one card and exist to be compared.
-
-**A flow day counts only once every tracked fund has reported and Farside has
-published a `Total` for it.** Funds post progressively through the afternoon,
-and a day read mid-session has a real but incomplete total whose *sign* can
-still flip. Partial days are excluded from every figure and surfaced
-separately. The `Total` is required because it is the basis of every figure
-here: a day without one contributes nothing to a sum taken over every listed
-fund, so admitting it puts a day into a window that adds zero — a five-day net
-over four days, reported as covered.
-
-**An unfillable window reports `n/a`, never a shorter sum.** A 60-day net over
-40 available days is a 40-day net wearing a 60-day label — worse than no answer,
-because it looks like one. The analyst is told explicitly not to read it as zero.
-The same rule governs the moving averages: with 60 days of history you get a
-20d and a 50d SMA and `200d n/a`, never a 60-day mean labelled 200d. RSI is
-stricter still — see below, where too short a series is not merely imprecise
-but a different statistic.
-
-**An RSI without its variant is not comparable to anyone else's.** Wilder's
-smoothing and Cutler's simple averages are both called "RSI(14)" and both are
-correct; on 28 Aug 2026 they read 70.8 and 81.6 on the same closes, which is
-the difference between sitting under the conventional overbought line and well
-above it. This computes Wilder's — the variant charting packages draw — and
-says so on every surface. It also refuses to report one at all below 120 bars:
-Wilder smoothing is recursive from a seed, and until that seed has decayed
-below the displayed precision the value is closer to its simple-average seed
-than to Wilder's, making a short reading mislabelled rather than merely rough.
-
-**Both RSI vintages are shown, because for RSI they genuinely differ.** The
-newest bar carries a fourteenth of the smoothed average against a two-hundredth
-of an SMA200, so including today's in-progress candle moved the reading a mean
-of 3.4 points — 9.8 at the 95th percentile — across the 2021–2026 daily series.
-The displayed value includes it, matching a chart and sharing the spot row's
-vintage; the note carries the settled close-only figure, dated. The gap between
-the two is that day's move restated in RSI units, not independent information,
-which is why it is not a `notable` — over the same period the pair straddled a
-70 or 30 threshold on 5.9% of days, firing hardest exactly when the reading
-sits closest to the line and the disagreement means least.
-
-**A tag names the window it came from.** The lead-share classifier describes
-the *primary (5d) window*, so it is printed on that window's line where the
-total's sign is visible beside it — not on the streak line, which is a
-different measure that can point the other way. A one-day inflow inside a
-five-day net outflow is ordinary. The label carries direction for the same
-reason: "conviction" alone reads as conviction *buying*, so an outflow window
-tagged with the bare word said the opposite of what the data meant.
-
-**Weekly seasonality is corrected, two different ways.** `fee_subsidy` runs
-materially lower at weekends, so a raw daily percentile substantially reports
-the day of the week rather than the network. A 7-day mean spans one of each
-weekday and cancels the cycle, but blurs single-day events; ranking against the
-same weekday's mean keeps daily resolution. Sustained regimes get smoothing,
-transient spikes get detrending. `tests/test_warehouse.py` pins this: on a purely
-seasonal series the raw percentile swings ~28 points between a Wednesday and a
-Saturday reading, and the smoothed one barely moves.
-
-Related: percentiles are **mid-ranked with a floating-point tolerance**. The
-sliding-window mean is computed incrementally, so mathematically-equal values
-differ in their last bits — a strict comparison split a perfectly flat series
-across the 58th percentile. Ties are now counted and halved, so a value equal to
-everything else reads 50th.
-
-**Exchange activity is three readings, not one, and each names its own
-window.** Volume alone cannot separate "more money traded" from "the same money
-traded in more pieces", so trade count and average trade size are carried beside
-it. They are not redundant: at this venue volume and trade count correlate 0.90,
-yet on 2 Sep 2026 volume ranked 58th of 2y and trade count 97th on identical
-treatment — near-record participation on an ordinary tape, which is a fact about
-who is trading. Average trade size is the residual that explains the gap.
-
-Trade size is ranked over **90 days** where the other two use 2y, because it
-trends hard enough that a longer window would rank the trend: the median trade
-ran $3,516 in Q3 2024 against $1,879 in Q3 2026, down 47% inside a 2y window, so
-today would sit near the floor almost every day by construction. This is the same
-trap the volatility percentiles document, and the fix is the same shape — rank
-against a window short enough that the structural drift is small.
-
-All three are weekday-detrended. Weekends run about 28% below the weekday mean
-for trade size, because volume falls further at a weekend than trade count does.
-
-**One venue is named as one venue, with the number.** These come from Kraken,
-the only exchange in the warehouse, whose dollar volume ran a median **0.4%** of
-CoinGecko's cross-venue aggregate over the 201 days to 2 Sep 2026, correlating
-0.74 with it. That is a real reading about participation and it is not a
-market-wide volume figure, so the venue travels with it in the terminal, on the
-page and in the analyst's context. "Single venue" without the share understates
-how narrow the sample is.
-
-**A card is dated by the table its heading covers, not by the card.** The
-`SIGNALS` card mixes two frontiers: fee/subsidy, the apathy streak and the
-hashrate drawdown read `onchain`, while volume, trade count and average trade
-size read `btc`. Those tables are written by one ingester and are allowed to
-advance independently — `onchain` current with `btc` three days short is a shape
-this project has already shipped once. So the heading carries the on-chain day,
-covering the three rows that came from it, and the exchange rows say which day
-they are through in the card's note. One heading over all six would read as true
-every day the tables happen to agree and go quietly false on the day they do
-not.
-
-The date is stated whether or not the two currently agree. A qualifier that
-appears only on the day the tables diverge is one the reader cannot rely on
-being there, and cannot tell apart from a card that never dates its rows.
-
-The terminal line does the same, for the same reason and less obviously: it sits
-between a line dated from `onchain` and a self-dating daily close, so undated it
-inherits the wrong day purely by proximity. On a session where spot has moved
-5% against the last close, that reads as today's participation when it is the
-previous day's.
-
-**An ordinary reading still reaches the reader.** These percentiles were
-rendered only at or above the 95th, which by construction reaches a reader about
-19 days a year — so a quiet tape was indistinguishable from a dead source, and
-could not corroborate the apathy streak rendered one line above it. The panel now
-carries them always; the 95th-percentile gate still selects for the `NOTABLE`
-strip, which is what a threshold is for. Trade size is deliberately never
-notable: it is a mix rather than an intensity, and "smallest average trade in 90
-days" is a fact about market structure, not an event of the day.
-
-**A single day's block count is noise, and is labelled as such.** Block
-discovery is Poisson, so one day at the 144-block target has a standard
-deviation of 12 blocks — about 8%. A day at -12% is only 1.4sd low, which
-happens roughly one day in twelve by chance. It is therefore rendered as
-`block pace 127/144 (-11.8%, ±8% day-to-day noise)` rather than as a second
-"retarget projection" competing with the node's cumulative estimate, which is
-computed over the whole difficulty period and is the better of the two for
-direction — though not an unqualified one, for the reason immediately below.
-
-**The retarget projection carries the same kind of band, and it shrinks.** The
-node's cumulative estimate is a pace measurement over the blocks found so far
-in the period, so by the same Poisson argument its relative standard error is
-1/√n: **±8.3%** at the 144-block floor below which it isn't computed at all,
-**±5.6%** a sixth of the way in, **±2.2%** at a full 2016 blocks. A bare
-`+5.7%` is therefore not one reading but two — nothing at 323 blocks in, and a
-four-standard-error move in hashrate at 1,700 — so the level is rendered as
-`proj +5.72% ±5.6% (323 blks in)` everywhere it appears, and the analyst is
-additionally told how many standard errors from flat the reading is, because a
-model handed the level alone narrates an early-period wobble as a miner story.
-
-For the same reason the `NOTABLE` gate is stated in **multiples of that error
-rather than as a fixed percentage**. It was a flat 5%, which is inside the
-noise for the first third of every period and over-conservative for the last:
-on 7 Sep 2026 it put `+5.7%` at the top of the page off 323 blocks, where one
-standard error is 5.6% — the strip led with a reading indistinguishable from
-on-pace. The bound is now 2σ, and the band travels onto the strip with the
-level.
-
-**Volatility is reported as a level *and two* percentiles, with the
-annualisation named.** The level is not portable: the same series on a 252-day year reads
-~17% lower, and the price source and close time move it further. So a level
-compared against someone else's published threshold silently compares
-conventions as much as markets — a reading of 28% here and 18% elsewhere can
-be the same market. The percentile travels; the level does not. Both are
-shown, and `ann √365` is printed so a disagreement is diagnosable rather than
-mysterious.
-
-The two percentile windows — `2y/all` — exist because they disagree by up to
-19 points. Bitcoin's volatility has declined structurally as the market
-matured (median 30d vol: 79% in 2014, 38% in 2026), so ranking today against
-the 2014–17 era substantially reports that decline rather than current
-conditions. On the live series 360d vol reads **5th percentile of all history
-and 24th of the last two years** — the first number is mostly about
-maturation, the second about now. Short windows barely move (7d is 3rd
-either way), so the divergence is concentrated exactly where the all-history
-figure is least trustworthy. The 2-year window matches the one the
-`signal:` line already uses, so "percentile" means the same thing on both
-lines, and the analyst is told to prefer it.
-
-At the extremes the percentile reports as a band (`<1`, `>99`) rather than a
-rounded bound. A mid-ranked percentile can never actually reach 0 — the single
-lowest of 730 observations ranks 0.07 — so printing `0` claimed an all-time
-floor for what was the second-lowest reading of two years.
-
-The estimates are close-to-close, because the warehouse holds no OHLC.
-Range-based estimators (Parkinson, Garman-Klass) are several times more
-efficient per observation and are simply unavailable here — worth knowing when
-comparing against a vendor figure. There is no options data either, so this is
-realised volatility only, never implied.
-
-And the caveat that belongs next to the numbers: **volatility describes the
-size of moves, not their direction.** Conditioning next-30d outcomes on the
-current 30d vol quintile gives a U-shape in the *absolute* move — the lowest
-and highest quintiles both precede larger moves than mid-range ones — while
-the signed move barely separates. It is not a bottom indicator, and the
-analyst is told so explicitly.
-
-Absolute and relative thresholds are kept distinct on purpose. A percentile
-recalibrates to the window it measures, so by construction only N% of days can
-sit below the Nth percentile however depressed the regime — it finds a *new low*
-and can never express the *duration* of a sustained one. That's why the apathy
-streak uses a fixed threshold.
-
-## The warehouse is read-only
-
-A separate ingester owns writes to `market.duckdb`. DuckDB permits one writer
-per file, and this tool opens it `read_only=True` everywhere — that is what
-keeps it from ever contending with the writer. Nothing here writes, and nothing
-here should.
-
-### The analyst can query it
-
-The snapshot is a fixed set of derived figures chosen in advance, so questions
-needing history it does not carry — a particular past date, a comparison with
-an earlier regime, how often something has happened — used to be answered "the
-data does not cover that": correct, and useless. `--ask` can now run read-only
-SQL against the warehouse while it answers.
+To show only the sources that need internet access:
 
 ```bash
-btc-dashboard --ask "how does this drawdown compare to the last three?"
-btc-dashboard --ask "..." --no-tools     # snapshot only, as before
+btc-dashboard --only price,flows
 ```
 
-A source offers this by exposing `analyst_tools(cfg)` (see
-[Adding a source](#adding-a-source)); the warehouse is the only one that does.
-The tool carries the schema, read live from the database rather than hardcoded
-— the ingester adds columns without asking, and a stale hand-written list would
-have the model writing SQL against columns that no longer exist. It also
-carries the measurement caveats that a source would normally attach for the
-analyst: annualise on 365, `fee_subsidy` has a weekly cycle, rows are complete
-UTC days. A figure the model computes itself needs its qualifier as much as one
-this code computes.
+### What you get
 
-**Every query the analyst ran is shown** — under `QUERIED` in the terminal, in
-a collapsed disclosure on the page. A number resting on a query nobody can see
-is not checkable, and being checkable is the reason this reads a local
-warehouse instead of asking a model what it remembers.
+| Section | Shows | Needs |
+| --- | --- | --- |
+| Price | Spot price, moving averages, and RSI momentum | Public price APIs |
+| Network | Block height, hashrate, fees, mempool, and difficulty adjustment | `bitcoin-cli` connected to your node |
+| On-chain | Daily network activity, historical signals, and realized volatility | A local DuckDB warehouse |
+| ETF flows | U.S. spot Bitcoin ETF inflows, outflows, and rolling totals | Farside Investors |
 
-**Whether the tool exists is stated in the prompt.** With no warehouse (a Mac,
-or a Pi whose database has moved) the model is told it has the snapshot and
-nothing else. A model that believes it can check history and silently cannot
-answers from the snapshot while sounding like it checked.
+The warehouse defaults to `~/data/market.duckdb`. It is populated separately by
+[data_stores](https://github.com/mikeoc61/data_stores); this dashboard reads it
+and does not run an ingester. Use `--db /path/to/market.duckdb` to select another
+file. See [host setup](docs/usage.md#where-it-runs) for node requirements.
 
-**And it is stated to you.** Telling only the model is not enough: it answers
-from the snapshot without complaint, and you cannot tell that answer apart from
-one that checked. So an answer with no tool behind it carries a line saying so,
-in the terminal and on the page, distinguishing a missing warehouse from a
-`--no-tools` you asked for. This matters most over `--from`: the snapshot has a
-remote path and queries do not, so on any machine that isn't the one holding
-the warehouse, snapshot-only is the normal case rather than the exception.
+## Browser dashboard
 
-#### The ask box says what it can reach
-
-Above the cost note, the page states the history available to query:
-
-> History available to query: price from 2013-10-06, on-chain from 2016-01-01,
-> both through 2026-08-26 — complete UTC days.
-
-**Each span is stated separately, and never summed.** `btc` runs from 2013 and
-`onchain` from 2016 — two and a half years apart — so a single "N days of
-history" figure would be right for a price question and badly wrong for an
-on-chain one. The shared end date is factored out so the differing starts are
-what the eye lands on, since those are the part that changes an answer.
-
-The coverage travels in the snapshot rather than being read from the database
-at render time: it is collected once per `warehouse.collect()` and rides the
-60-minute cache, where a page asking the file directly would reopen it on every
-render and every 60-second poll. A source supplies its own line through
-`analyst_scope(data)`, so the renderer never has to know which source owns
-history.
-
-With no source offering history, the box says so rather than going quiet.
-
-One known staleness: the ask card sits outside the regions the page updates in
-place, so this line refreshes on a full page load rather than on a tick.
-Coverage moves once a day at most.
-
-#### Which providers can drive it
-
-- **anthropic** — works, and is the default.
-- **openai** — works, over the Responses API. See below.
-- **deepseek, openrouter** — chat-completions; down to the model.
-- **ollama** — down to the local model; many small ones have no tool support.
-
-**Why OpenAI gets its own transport.** Its reasoning models refuse function
-tools on chat-completions unless reasoning is switched off entirely. Probed
-against `gpt-5.6-luna`, tools are accepted there with `reasoning_effort:
-"none"` and rejected at `low`, `medium` and the default alike — it is not a
-graduated restriction but a binary one, and the only value that works buys tool
-use by discarding the reasoning the tools exist to serve. `/v1/responses` takes
-both together, so that is what this client speaks to OpenAI.
-
-Two consequences: **`--effort` now reaches OpenAI** as `reasoning.effort`,
-where on chat-completions it was accepted and silently ignored; and the
-conversation is sent with `store: false`, so the snapshot is not retained on
-OpenAI's servers past the request that needed it.
-
-A provider that still rejects tools — a small local model behind ollama, most
-likely — prints both ways out, provider switch first:
-
-```
-    --provider anthropic  # keeps the warehouse queries
-    --no-tools            # answers from the snapshot alone
-```
-
-Reach for `--no-tools` last. It answers from the snapshot alone, which for a
-question about history is rarely the answer you wanted.
-
-#### What the model cannot do with it
-
-A model composes the SQL, so the connection is built assuming it eventually
-composes the worst statement it could.
-
-- **Only one read runs.** The statement is wrapped in
-  `SELECT * FROM ( ... ) LIMIT n` rather than pattern-matched, which makes
-  DuckDB's own parser the authority on what counts as a single read. An
-  `INSERT`, `UPDATE`, `DROP`, `PRAGMA`, `SET`, or a second statement after a
-  semicolon is a syntax error in that position. No blocklist has to anticipate
-  the next statement type.
-- **No filesystem, no network.** `read_only=True` stops writes to the database;
-  it does not stop DuckDB reading the rest of the disk with `read_csv`, writing
-  one with `COPY ... TO`, `ATTACH`ing another database, or `INSTALL`ing
-  `httpfs` and reaching the internet. `enable_external_access=false` plus
-  `lock_configuration=true` close all of that, and cannot be undone once set.
-- **Bounded.** 200 rows, and a 20-second cap enforced by interrupting the
-  query — DuckDB has no statement timeout of its own. The connection survives
-  the interrupt.
-- **Bounded rounds.** At most `MAX_TOOL_ROUNDS` tool calls per question; the
-  final round withholds the tools so the model has to answer with what it has.
-
-A failed query comes back to the model as text, not as an exception, so it can
-read the error and fix its SQL. Token counts accumulate across every round, so
-the reported cost is the cost of the whole exchange.
-
-Note that the DuckDB lockdown applies to the database *instance*, so once an
-ask has run, every later connection to that file in the same process is locked
-too. That is intended — nothing here reads anything but the warehouse — but it
-does mean a future `SET` in this codebase would fail after an ask.
-
-### Choosing a provider
-
-`--ask` is the only thing that contacts an LLM, and the provider is yours to
-pick. `anthropic` is the default; `openai`, `deepseek` and `openrouter` speak
-the OpenAI chat-completions shape; `ollama` runs locally and needs no key.
+With the virtual environment active:
 
 ```bash
-btc-dashboard --ask "..."                                   # anthropic default
-btc-dashboard --ask "..." --model deepseek/deepseek-chat    # provider in the id
-btc-dashboard --ask "..." --provider ollama --model llama3  # local, no key
+python -m pip install -e '.[web]'
+btc-dashboard-web
 ```
 
-Ollama is the one provider whose address is yours to move — set `OLLAMA_HOST`,
-in the environment or the env file, and it is read when the request is made
-rather than when the module loads. A bare `host:port` is accepted, since that
-is the form ollama's own tooling uses; `http://` is supplied when no scheme is
-given.
+Open [localhost:8001](http://localhost:8001). The page updates its readings in
+place, keeps your question intact during updates, and includes **copy PNG** and
+**save PNG** buttons. Images contain the page header, the readings and the
+footer, leaving out the question and answer box.
 
-A `provider/` prefix on `--model` beats `--provider`, so `BTC_DASHBOARD_MODEL`
-can carry both in one variable for a scheduled run. Each provider reads its own
-key (`ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, …) from the environment or the
-env file.
-
-**There is no config-level default model.** An unset model means "use the
-chosen provider's default" — a shared default would be silently applied to
-whichever provider was selected, so `--provider openai` would have requested an
-Anthropic model id from OpenAI. Providers without a stable default (OpenAI,
-OpenRouter) ask you to name one rather than guessing at an id that moves.
-
-`--effort` reaches Anthropic and OpenAI. The chat-completions path (DeepSeek,
-OpenRouter, Ollama) never sends it, and `max_tokens` is omitted where a
-provider rejects it.
-
-## Credential boundary: the LLM is client-side only
-
-**The analyst never runs server-side.** This is the load-bearing rule of the
-design, not an implementation detail:
-
-```
-   ┌──────────── service (data plane) ─────────┐   ┌──── local CLI ────┐
-   │  sources → snapshot → raw JSON over HTTP  │──▶│ --from → render   │
-   │  no API key · no model config · no egress │   │ --ask  → Claude   │
-   └───────────────────────────────────────────┘   └──── your key ─────┘
-```
-
-- The service **collects and serves JSON, nothing else.** It holds no
-  `ANTHROPIC_API_KEY`, imports no model client, and makes no outbound LLM call.
-  There is no credential on it to steal and no way to make it spend yours.
-- **`--ask` is opt-in and always local.** It reads the selected provider's key
-  on the machine you run it from, and uses the provider, model and effort
-  configured *there*. Two people can point at the same service and use
-  different providers entirely — including a local one, where the snapshot
-  never leaves the machine that collected it.
-- `snapshot.py` and every source are LLM-free by construction; `analyst.py` is
-  the only module that touches the API, and a service must not import it.
-
-This holds today, before any server exists — `--from` is the client half:
+For a dashboard running on another machine, use an SSH tunnel (replace
+`your-node-host` with its SSH hostname):
 
 ```bash
-# on the node host
-btc-dashboard --json > /srv/www/btc/snapshot.json
-
-# anywhere else — collection is remote, analysis is local
-btc-dashboard --from https://pi.local/btc/snapshot.json --ask "what changed?"
-btc-dashboard --json | ssh laptop 'btc-dashboard --from - --ask "..."'
+ssh -L 8001:localhost:8001 your-node-host
 ```
 
-`--from` accepts an http(s) URL, a file path, or `-` for stdin. Other schemes
-are refused rather than guessed at.
+Then open the same localhost address. Keep the default loopback binding: the
+web server uses its own machine's provider credentials when answering questions.
 
-### Ingested snapshots are untrusted
+For a persistent service, see the [systemd deployment guide](deploy/README.md).
+After updating an editable installation, restart the web service so it loads
+the new code.
 
-Once a payload can arrive over the wire it is untrusted input heading into a
-prompt, and it's handled as such:
-
-- the shape every consumer relies on is validated on ingest, and only that:
-  `schema_version` (a payload from a newer service is refused with "upgrade the
-  client" rather than half-read), a string `generated_at`, and per block a
-  **boolean** `available` with an object `data` behind it. The boolean matters
-  more than it looks — a string `"false"` is truthy, so a source that is down
-  would read as healthy, its `error` never reached and `missing()` reporting
-  nothing missing, which is the opposite of this tool's promise that you are
-  told what it could not see.
-- Free-text fields (`error`) are collapsed to one line, stripped of control and
-  bidi characters, and truncated before reaching the prompt, so an injected
-  `\n\nIGNORE PRIOR INSTRUCTIONS…` can't forge its own section — it stays on one
-  labelled data line.
-- **So is every rendered value — and so is the frame around them.** The rule
-  lives in `text.safe_text`; `sources.fmt()` is one caller of it, not the choke
-  point. A format spec already rejects a string — `fmt("x", ".0f")` is `n/a` —
-  but a bare `fmt(x)` used to reproduce one verbatim, newlines included, and
-  the frame never went through `fmt` at all: the error, the timestamp, a
-  source's own name, and the categorical strings (`regime`, `streak_sign`,
-  `as_of`, `source`, `position`) are interpolated straight into a sentence.
-  `render()` indents only the first physical line of a body string, so a
-  newline anywhere in that frame emitted a line at column 0 — a `[SYSTEM]`
-  header in the context block, or a whole fake PRICE section in the terminal
-  panel with a plausible spot price in it. Three things close it: collapsing to
-  one line, stripping control and bidi characters (`\x1b` is not whitespace,
-  and `ESC [ 2 J` clears the reader's screen), and capping the length. The HTML
-  page escapes everything and was never exposed.
-- **The answer is bounded on the way back too**, in `text.safe_block`. A
-  hostile snapshot steers the model, and the model's reply lands on a terminal:
-  the answer and the queries keep their own lines, because prose and SQL are
-  meant to span them, but not the escape sequences, carriage returns or bidi
-  overrides. `--html` and the web view escape it instead, as they do everything
-  else.
-- The context block draws the trust boundary where it actually falls. The
-  *wording* of each line is composed by this client — including the lines that
-  say how to read a figure — and is guidance to follow. What came from the
-  snapshot is the figures inside those lines and anything in quotation marks,
-  and only that is framed as untrusted, with instructions there to be reported
-  as an anomaly rather than obeyed.
-
-  The earlier framing called the whole block untrusted, which was not true of
-  it: the sources phrase interpretive guidance into that block, and a model
-  applying the rule literally reported *"Prefer the 2-year percentile"* as an
-  injection attempt. Guidance the analyst is meant to weigh is not an anomaly,
-  and a rule that cries wolf on first-party text erodes the one that matters.
-  Quote characters are stripped from free-text fields before they are wrapped,
-  so a field cannot close the quotation early and continue as though it were
-  the tool speaking.
-- A source this build has no renderer for is reported as present-but-
-  uninterpretable; its raw contents are never dumped into the prompt as a guess.
-
-### Still required before exposing it
-
-Authentication, TLS, and rate limiting — none of which exist. Don't expose it
-publicly until they do; being read-only and secret-free limits the blast radius
-but substitutes for none of them.
-
-Load shedding is handled: the [cache](#caching) means N clients share one hourly
-Farside scrape and one hourly warehouse read rather than each triggering their
-own.
-
-## Studies
-
-`tools/` holds one-off analyses that query the warehouse read-only. They are not
-part of the CLI and nothing in the package imports them.
+## Everyday commands
 
 ```bash
-python tools/hashrate_study.py                    # full report
-python tools/hashrate_study.py --min-depth 50     # macro bottoms only
-python tools/hashrate_study.py --json
+btc-dashboard --refresh                      # collect again, bypassing disk cache
+btc-dashboard --json > snapshot.json          # save the underlying data
+btc-dashboard --html > dashboard.html         # save a self-contained page
+btc-dashboard --from snapshot.json            # view a saved snapshot
+btc-dashboard --context                      # inspect the analyst's facts, no LLM call
+btc-dashboard --help
 ```
 
-**`hashrate_study.py`** — do hashrate-derived indicators mark cycle price
-bottoms? It derives drawdown episodes from the price series (rather than
-hardcoding dates chosen with hindsight), scores the hash ribbon against the
-*unconditional base rate*, and conditions forward returns on hashrate drawdown
-across every day rather than on a handful of troughs.
+`--from` also accepts an HTTP(S) URL or `-` for stdin. This lets you collect data
+on one machine and read it on another.
 
-Four reporting choices are deliberate, because each guards a way this kind of
-study normally misleads:
+See [all CLI options](docs/usage.md#usage) for filtering, timeouts, colors, and
+exit codes.
 
-- **A base-rate column.** BTC's unconditional forward return over the sample is
-  strongly positive, so any signal judged on its own absolute return looks
-  excellent. Only the edge over entering on a random day means anything — and
-  the hash ribbon's edge is real at 90–180d and gone at 365d.
-- **An effective-sample column.** Daily rows are autocorrelated and their
-  forward windows overlap, so a decile of ~380 days holds barely one
-  independent 365-day observation. Printing `n=386` alone would imply a
-  precision the data cannot support.
-- **Durations measured from the peak.** Timing an episode from the day price
-  crossed the threshold, rather than from the high it fell from, understates
-  every decline by days or weeks. Peak → trough and trough → recovery are
-  reported separately since the halves are not symmetric, and an unresolved
-  episode shows elapsed-so-far rather than a blank.
-- **A bounded signal-to-trough association.** An unbounded "nearest signal"
-  always finds one, however far away — beyond 90 days the tool reports none
-  rather than inventing a link.
+## Ask a question
 
-The headline finding is negative and worth keeping: hashrate stress was extreme
-at two of four macro troughs (2018, 2021) and entirely ordinary at the other two
-(2022, 2026). A credit or exchange failure can bottom price while hashrate barely
-moves, so no single hashrate metric can confirm a bottom on its own.
-
-## Tests
+Configure a provider key in your environment or the
+[configuration file](docs/usage.md#the-env-file), then:
 
 ```bash
-.venv/bin/pytest
+btc-dashboard --ask "What stands out in these readings?"
+btc-dashboard --ask "How does this drawdown compare with earlier ones?"
+btc-dashboard --ask "Summarize the current readings" --no-tools
 ```
 
-The warehouse tests run against a real DuckDB file built per-test rather than a
-mock — the signal definitions are the part most worth pinning down, and a mock
-would only assert that we called ourselves. `tests/conftest.py` isolates the
-cache directory, the environment and colour, so a run cannot depend on the
-developer's machine or leak into it.
+Supported providers are **Anthropic** (the default), **OpenAI**, **DeepSeek**,
+**OpenRouter**, and **Ollama**. OpenAI, OpenRouter, and Ollama require an explicit
+model selection. See [provider configuration](docs/reference.md#choosing-a-provider).
 
-## License
+When a local warehouse is available, the analyst can run read-only SQL to
+answer historical questions. Queries are shown with the answer. `--no-tools`
+limits it to the snapshot, and the dashboard tells you when historical queries
+are unavailable.
 
-[MIT](LICENSE) © 2026 Michael OConnor
+**Where analysis runs:** CLI questions use the machine running the command;
+browser questions use the machine running `btc-dashboard-web`. Importing a
+remote snapshot does not grant access to the remote warehouse. Normal
+collection and rendering make no LLM calls.
 
-## Disclaimer
+## Reading the dashboard
 
-Flow data is scraped from [Farside Investors](https://farside.co.uk/) and
-provided as is, with no
-guarantee of accuracy, completeness, or timeliness. Price data comes from public
-APIs on the same terms. This is informational tooling and **not investment
-advice**.
+- **Dates and windows matter.** Live spot prices, daily warehouse closes, and
+  ETF trading sessions describe different periods. Compare their stated dates.
+- **`n/a` means a reading is unavailable**, rather than zero.
+- **`cached` means a saved reading is within its cache lifetime.** Warehouse
+  and flow data use a one-hour disk cache; price and node data do not. The web
+  view also shares a snapshot for up to two minutes between collections.
+- **`STALE` means a refresh failed and an older cached copy is being shown.**
+  Copies older than four days are refused. Content can also lag independently
+  of cache age, so check the source's dates and warnings.
+- **NOTABLE highlights readings that cross defined thresholds.** These are
+  observations, not forecasts.
+- **Balance of evidence puts six readings side by side.** It does not combine
+  them into a trading score.
+
+For definitions, calculation windows, and caveats, read the
+[measurement notes](docs/reference.md#measurement-notes).
+
+## How it works
+
+Four independent source collectors produce one JSON snapshot. Terminal, HTML,
+JSON, and analyst views all use that snapshot. Historical SQL queries during
+analysis are the explicit exception.
+
+```text
+Price APIs ──────────────┐
+Bitcoin Core ────────────┤                   ┌─ Terminal / JSON / HTML
+DuckDB warehouse ─ cache ├─ Shared snapshot ─┼─ Local web dashboard
+Farside flows ──── cache ┘                   └─ Optional LLM analyst
+```
+
+Collection runs concurrently and handles source failures independently. Each
+source owns its measurement definitions and presentation notes, keeping the
+qualifiers close to the calculations.
+
+Explore the [architecture](docs/reference.md#design),
+[source interface](docs/reference.md#adding-a-source),
+[related repositories](docs/reference.md#related-repositories), and
+[historical studies](docs/reference.md#studies).
+
+## Development
+
+```bash
+python -m pip install -e '.[dev]'
+python -m pytest
+```
+
+Tests cover collection, real temporary DuckDB databases, cache behavior,
+rendering, analyst tools, and web routes. Progress tests currently assume a
+capable terminal: if your runner sets `TERM=dumb`, use `TERM=xterm python -m
+pytest`. One web test needs permission to bind a local socket.
+
+## License and data
+
+[MIT](LICENSE) © 2026 Michael OConnor.
+
+ETF flows come from [Farside Investors](https://farside.co.uk/); price data comes
+from public APIs. Data is provided as is, without guarantees of accuracy,
+completeness, or timeliness. This is informational tooling, not investment advice.
