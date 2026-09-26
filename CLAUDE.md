@@ -262,6 +262,16 @@ needs belongs with the code that knows why.
 
 - **Warehouse**: `~/data/market.duckdb`, Pi only. Written by `data_stores`'
   ingester on a 02:00 UTC timer. Override with `BTC_DASHBOARD_DB`.
+  - **Check `data_stores` before stating what the warehouse holds.** Its
+    ingester owns the rows as well as the columns, and it changes them with
+    nothing here noticing: on 26 Sep 2026 it patched 2024-03-31 into `btc` an
+    hour after this repo told the analyst that day was missing. Before writing
+    or changing any claim about warehouse contents (a tool note, a context
+    line, a dated figure, `docs/reference.md`), read its recent history:
+    `git -C ~/projects/data_stores log --oneline -10`, after a fetch, since the
+    Pi is what is deployed. Its `deploy/README.md` and `DECISIONS.md` carry
+    the provenance. Better still, read the fact from the file, as the
+    absent-day count now does; the check is for what cannot be.
 - **Node**: `bitcoin-cli`, Pi only.
 - **Cache**: `~/.cache/btc_dashboard/` (XDG). Disposable.
 - **Env file**: `~/.config/btc_dashboard/env`, chmod 600 — holds the provider
