@@ -162,6 +162,32 @@ class TestTheSchemaComesFromTheDatabase:
             con.close()
         assert "2024-01-01" in text and "400 rows" in text
 
+    def test_absent_days_are_counted_from_the_file(self, db):
+        """A row count stops being a day count once days are absent, and the
+        note that used to name them by hand went stale within the hour."""
+        con = duckdb.connect(str(db))
+        con.execute("DELETE FROM btc WHERE date IN "
+                    "('2024-02-10', '2024-02-11', '2024-06-01')")
+        con.close()
+        con = warehouse._connect_sandboxed(db)
+        try:
+            text = warehouse.schema_text(con)
+        finally:
+            con.close()
+        btc = next(l for l in text.splitlines() if l.startswith("btc("))
+        assert "397 rows" in btc
+        assert "3 days absent (latest 2024-06-01)" in btc
+
+    def test_a_complete_table_reports_no_gaps(self, db):
+        """Silence means none, so a clause on every line would teach the model
+        to ignore it."""
+        con = warehouse._connect_sandboxed(db)
+        try:
+            text = warehouse.schema_text(con)
+        finally:
+            con.close()
+        assert "absent" not in text
+
     def test_a_new_column_appears_without_a_code_change(self, db):
         """The ingester owns this schema and adds columns without asking. A
         hardcoded list would have the model writing SQL against a stale one."""
@@ -199,8 +225,8 @@ class TestTheToolIsOfferedOnlyWhenItWorks:
         assert "Kraken" in text and "2016" in text, (
             "the thin early venue: the tool is the one place 2013-15 closes "
             "are read as levels")
-        assert "missing days" in text, (
-            "row windows over btc span more calendar days where it has gaps")
+        assert "absent days" in text, (
+            "row windows span more calendar days where a table has gaps")
 
     def test_a_failing_query_comes_back_as_text_not_an_exception(self, db):
         """A bad query is a turn the model can recover from, if it is told."""

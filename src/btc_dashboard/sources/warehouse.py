@@ -525,6 +525,34 @@ def table_span(con, table: str) -> dict | None:
     return {"first": lo.isoformat(), "last": hi.isoformat(), "days": int(n)}
 
 
+def table_gaps(con, table: str) -> tuple[int, datetime.date] | None:
+    """Calendar days absent inside a table's span, and the latest one.
+
+    None when there are none, or when the count fails. Read from the file
+    rather than stated in a note because the ingester owns the rows: a
+    hand-written "2024-03-31 is missing" went false within the hour, when that
+    day was patched in. Absent *rows* only — a present row with a NULL is a
+    different thing, and on `onchain` a NULL is valid data rather than a gap.
+    """
+    try:
+        absent, latest = con.execute(
+            f"""
+            WITH d AS (
+                SELECT date, lag(date) OVER (ORDER BY date) AS prev
+                FROM {_ident(table)}
+            )
+            SELECT sum(date - prev - 1),
+                   max(CASE WHEN date - prev > 1 THEN date - 1 END)
+            FROM d
+            """
+        ).fetchone()
+    except Exception:
+        return None
+    if not absent or latest is None:
+        return None
+    return int(absent), latest
+
+
 def _dated_tables(con) -> list[str]:
     """Tables carrying a `date` column, which is all coverage means here."""
     rows = con.execute(
@@ -616,6 +644,12 @@ def schema_text(con) -> str:
             got = table_span(con, table)
             if got:
                 span = f"  -- {got['days']} rows, {got['first']} to {got['last']}"
+                # A row count is not a day count once days are absent, and a
+                # model computing an "N-day" window over rows needs to know.
+                gaps = table_gaps(con, table)
+                if gaps:
+                    span += (f", {gaps[0]} days absent "
+                             f"(latest {gaps[1].isoformat()})")
         out.append(f"{table}({names}){span}")
     return "\n".join(out)
 
@@ -754,10 +788,11 @@ def analyst_tools(cfg) -> list[Tool]:
             "volatility runs about 9 points above Bitstamp's in 2014 and "
             "converges by 2017. Treat pre-2016 levels, volatility and drawdowns "
             "as approximate, and say so when an answer relies on them.\n"
-            "- btc has missing days: 12 in 2013-14 (10 in 2014) and 2024-03-31. "
-            "A window of N rows can therefore span more than N calendar days, "
-            "and a return across a gap is a multi-day return. Bound windows by "
-            "date, or check the span, before labelling one \"30-day\".\n"
+            "- Where a schema line reports absent days, a window of N rows "
+            "spans more than N calendar days there, and a return across a gap "
+            "is a multi-day return. Bound windows by date, or check the span, "
+            "before labelling one \"30-day\". btc's absent days are days with "
+            "no trades on Kraken.\n"
             "- State the window any figure you compute was measured over, in the "
             "answer."
         ),
