@@ -754,6 +754,10 @@ def analyst_tools(cfg) -> list[Tool]:
             "volatility runs about 9 points above Bitstamp's in 2014 and "
             "converges by 2017. Treat pre-2016 levels, volatility and drawdowns "
             "as approximate, and say so when an answer relies on them.\n"
+            "- btc has missing days: 12 in 2013-14 (10 in 2014) and 2024-03-31. "
+            "A window of N rows can therefore span more than N calendar days, "
+            "and a return across a gap is a multi-day return. Bound windows by "
+            "date, or check the span, before labelling one \"30-day\".\n"
             "- State the window any figure you compute was measured over, in the "
             "answer."
         ),
