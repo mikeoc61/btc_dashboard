@@ -709,17 +709,33 @@ be the same market. The percentile travels; the level does not. Both are
 shown, and `ann √365` is printed so a disagreement is diagnosable rather than
 mysterious.
 
-The two percentile windows — `2y/all` — exist because they disagree by up to
-19 points. Bitcoin's volatility has declined structurally as the market
-matured (median 30d vol: 79% in 2014, 38% in 2026), so ranking today against
-the 2014–17 era substantially reports that decline rather than current
-conditions. On the live series 360d vol reads **5th percentile of all history
-and 24th of the last two years** — the first number is mostly about
-maturation, the second about now. Short windows barely move (7d is 3rd
-either way), so the divergence is concentrated exactly where the all-history
-figure is least trustworthy. The 2-year window matches the one the
-`signal:` line already uses, so "percentile" means the same thing on both
-lines, and the analyst is told to prefer it.
+The two percentile windows — `2y/all` — exist because they disagree
+materially. Bitcoin's volatility has declined structurally as the market
+matured (median 30d vol on the warehouse's Kraken closes: 79% in 2014, 38% in
+2026 to 11 Aug), so ranking today against the 2014–17 era substantially
+reports that decline rather than current conditions. On closes through 11 Aug
+2026, 360d vol read **5th percentile of all history and 24th of the last two
+years** — the first number mostly about maturation, the second about now —
+while 7d was 3rd either way, because a reading already at the floor of both
+histories has nowhere to diverge. Off the floor the gap opens at every window:
+on closes through 25 Sep 2026, 360d read 12th against 54th and 7d 53rd against
+81st. The 2-year window matches the one the `signal:` line already uses, so
+"percentile" means the same thing on both lines, and the analyst is told to
+prefer it.
+
+Part of the all-history decline is the venue rather than the market.
+`btc` is Kraken only, and Kraken was thin in its first years: in 2013–14 it
+traded roughly 1/1000 of Bitstamp's volume, and single-day closes differ from
+Bitstamp's by up to 26% (22 Oct 2013: $150.00 against $189.75). Thin-book
+closes add noise to close-to-close returns, so Kraken's median 30d vol runs
+above Bitstamp's on the same UTC days — by about 16 points in 2013, 9 in 2014
+(79% against 70%), 5 in 2015 and 3 in 2016, converging by 2017. Measured
+26 Sep 2026 against Bitstamp's own daily bars. Today's all-history
+percentiles move by under 2 points if Bitstamp's closes replace Kraken's
+before 2016, so the ranking itself is not materially distorted; what the
+caveat protects is anything read *off* those years directly. The analyst's
+query tool says so, because that tool is the one place in this project where
+2013–15 closes are read as levels.
 
 At the extremes the percentile reports as a band (`<1`, `>99`) rather than a
 rounded bound. A mid-ranked percentile can never actually reach 0 — the single

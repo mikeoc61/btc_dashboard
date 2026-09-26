@@ -54,11 +54,16 @@ VOL_WINDOWS = (7, 30, 90, 180, 360)
 VOL_ANNUALISATION = 365
 # Volatility is ranked twice. Against all history it looks more extreme than it
 # is, because Bitcoin's volatility has structurally declined — median 30d vol
-# ran 79% in 2014 and 38% in 2026 — so ranking today against the 2014-17 era
-# partly measures the market's maturation rather than current conditions. The
-# gap is largest at the long windows: 360d vol reads 5th percentile against all
-# history and 24th against two years. The recent window matches the 2y used by
-# the fee/subsidy signal, so the two lines mean the same thing by "percentile".
+# on these Kraken closes ran 79% in 2014 and 38% in 2026 to 11 Aug — so ranking
+# today against the 2014-17 era partly measures the market's maturation rather
+# than current conditions. Part of that 2014 figure is the venue, not the
+# market: Kraken was thin then, trading roughly 1/1000 of Bitstamp's volume in
+# 2013-14, and its 30d vol ran about 9 points above Bitstamp's (79% against 70%)
+# in 2014, converging by 2017 — measured on 26 Sep 2026 against Bitstamp's daily
+# bars on matching UTC days. The gap was largest at the long windows: on closes
+# through 11 Aug 2026, 360d vol read 5th percentile against all history and
+# 24th against two years. The recent window matches the 2y used by the
+# fee/subsidy signal, so the two lines mean the same thing by "percentile".
 VOL_PERCENTILE_RECENT_DAYS = 730
 APATHY_MAX = 1.0
 # A percentile threshold fires (100-N)% of days by construction, so 95 means
@@ -743,6 +748,12 @@ def analyst_tools(cfg) -> list[Tool]:
             "Use a 7-day mean, or compare against the same weekday.\n"
             "- Annualise volatility on a 365-day year, not 252. Bitcoin trades "
             "every day, and 252 understates it by about 17%.\n"
+            "- btc is a single venue (Kraken), and before about 2016 a very thin "
+            "one: in 2013-14 it traded roughly 1/1000 of Bitstamp's volume, and "
+            "single-day closes differ from Bitstamp's by up to 26%. Its 30d "
+            "volatility runs about 9 points above Bitstamp's in 2014 and "
+            "converges by 2017. Treat pre-2016 levels, volatility and drawdowns "
+            "as approximate, and say so when an answer relies on them.\n"
             "- State the window any figure you compute was measured over, in the "
             "answer."
         ),
@@ -1155,8 +1166,9 @@ def render_lines(d: dict) -> list[str]:
         # The annualisation is named because the level is meaningless without
         # it: the same series on a 252-day convention reads ~17% lower, which
         # is enough to put a reading the wrong side of a published threshold.
-        # Both percentile windows are shown because they diverge by up to 19
-        # points at the long end, where the all-history figure is substantially
+        # Both percentile windows are shown because they diverge materially at
+        # the long end — 19 points at 360d on closes through 11 Aug 2026, 42 on
+        # closes through 25 Sep — where the all-history figure is substantially
         # reporting Bitcoin's declining volatility rather than today.
         years = fmt(vol.get("percentile_window_days", 730) // 365)
         # Dated like the SMAs and for the same reason: these run over the same
@@ -1342,11 +1354,13 @@ def context_lines(d: dict) -> list[str]:
         )
         out.append(
             f"Prefer the {years}-year percentile. Bitcoin's volatility has "
-            f"declined structurally as the market matured — median 30d vol ran "
-            f"about 79% in 2014 against 38% in 2026 — so the all-history figure "
-            f"partly reports that decline rather than current conditions, and "
-            f"reads more extreme than the recent one, especially at the long "
-            f"windows."
+            f"declined structurally as the market matured — median 30d vol on "
+            f"these Kraken closes ran about 79% in 2014 against 38% in 2026 to "
+            f"11 Aug, and roughly 9 points of the 2014 figure is Kraken's thin "
+            f"early order book rather than the market (Bitstamp, far deeper then, "
+            f"ran 70%) — so the all-history figure partly reports that decline "
+            f"and that thinness rather than current conditions, and reads more "
+            f"extreme than the recent one, especially at the long windows."
         )
         out.append(
             "Volatility describes the SIZE of moves, not their direction. A low "

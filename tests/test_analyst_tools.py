@@ -196,6 +196,9 @@ class TestTheToolIsOfferedOnlyWhenItWorks:
         assert "365" in text and "252" in text, "volatility annualisation"
         assert "weekend" in text or "weekly cycle" in text, "the fee_subsidy cycle"
         assert "complete UTC day" in text.replace("COMPLETE", "complete")
+        assert "Kraken" in text and "2016" in text, (
+            "the thin early venue: the tool is the one place 2013-15 closes "
+            "are read as levels")
 
     def test_a_failing_query_comes_back_as_text_not_an_exception(self, db):
         """A bad query is a turn the model can recover from, if it is told."""

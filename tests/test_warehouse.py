@@ -472,8 +472,9 @@ class TestVolatilityPercentileWindows:
     """Ranked against two histories, because they disagree materially.
 
     Bitcoin's volatility fell as the market matured, so ranking today against
-    2014-17 partly measures that decline. On the real series the 360d reading
-    is 5th percentile of all history and 24th of the last two years.
+    2014-17 partly measures that decline. On the real series through 11 Aug
+    2026 the 360d reading was 5th percentile of all history and 24th of the
+    last two years.
     """
 
     def _regime_shift(self, tmp_path, name):
@@ -520,6 +521,15 @@ class TestVolatilityPercentileWindows:
         ctx = " ".join(warehouse.context_lines(r.data))
         assert "Prefer the 2-year percentile" in ctx
         assert "declined structurally" in ctx
+
+    def test_the_2014_figure_is_attributed_to_its_venue(self, tmp_path):
+        """79% is Kraken's 2014 median, about 9 points above Bitstamp's on the
+        same days. Quoted bare, it reads as the market's and overstates the
+        decline the model is being told to discount."""
+        path = self._regime_shift(tmp_path, "v.duckdb")
+        r = warehouse.collect(Config.from_env(db_path=path, cache_dir=tmp_path / "c3"))
+        ctx = " ".join(warehouse.context_lines(r.data))
+        assert "Kraken" in ctx and "Bitstamp" in ctx
 
 
 class TestPercentileDisplayAtTheExtremes:
