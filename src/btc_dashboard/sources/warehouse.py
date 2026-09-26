@@ -34,7 +34,21 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import Metric, Panel, SourceResult, Tool, fmt, safe_text, unavailable
+from . import (
+    NOTABLE_PCTILE_HIGH,
+    NOTABLE_PCTILE_LOW,
+    Metric,
+    Panel,
+    SourceResult,
+    Tool,
+    fmt,
+    notable_pctile_phrase,
+    safe_text,
+    unavailable,
+)
+# Shared with the flow percentile since it arrived; imported under the names
+# this module has always used for them.
+from . import ordinal as _ordinal, pctile_text as _pctile
 
 NAME = "warehouse"
 
@@ -1014,35 +1028,6 @@ def refresh_derived(data: dict) -> dict:
     return data
 
 
-def _pctile(value) -> str:
-    """Percentile for the panel, without letting rounding overstate an extreme.
-
-    A mid-ranked percentile can never actually reach 0 or 100: the single
-    lowest of 730 observations ranks 0.07, not 0. Rounding to an integer
-    therefore prints "0" for anything in the bottom half-percent, which reads
-    as "the lowest ever recorded" when it may be the second-lowest of two
-    years. The extremes report as a band instead.
-
-    The rounded text is compared rather than the number because Python rounds
-    halves to even, so 0.5 formats as "0" and a threshold test on the value
-    alone would miss it.
-    """
-    if not isinstance(value, (int, float)):
-        return "-"
-    text = f"{value:.0f}"
-    if text == "0" and value > 0:
-        return "<1"
-    if text == "100" and value < 100:
-        return ">99"
-    return text
-
-
-def _ordinal(p: float) -> str:
-    n = max(1, round(p))
-    suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
-    return f"{n}{suffix}"
-
-
 def _window_label(days: int) -> str:
     """`2y` for whole years, `90d` otherwise — a percentile's other half."""
     return f"{days // 365}y" if days >= 365 and days % 365 == 0 else f"{days}d"
@@ -1681,41 +1666,12 @@ def balance_rows(d: dict) -> list[Metric]:
     return [volatility, participation]
 
 
-# Percentile bounds for the notable strip. A reading fires at either extreme:
-# both very low and very high volatility historically preceded larger moves
-# than mid-range readings, so only surfacing lows would report half the story.
-NOTABLE_PCTILE_LOW = 5.0
-NOTABLE_PCTILE_HIGH = 95.0
 # Historic miner washouts ran -33% to -50%, so this is the level at which a
 # drawdown stops being ordinary variation.
 NOTABLE_HASHRATE_DD = -20.0
 # Roughly a month in the basement. Shorter runs are common and largely track
 # the weekend cycle.
 NOTABLE_APATHY_DAYS = 30
-
-
-def notable_pctile_phrase(value, *, both_tails: bool) -> str:
-    """The bound a percentile has crossed, worded, or `""` if it has not.
-
-    The test and its wording in one place because two things apply it: the
-    strip, which decides what leads the page, and `balance_rows`, which marks
-    the band row whose measure is the one being led with. Stated separately
-    they would drift, and a row marked extreme beside a strip that had not
-    mentioned it is worse than either alone — the reader has no way to tell
-    which of the two is wrong.
-
-    `both_tails` because the rules genuinely differ: volatility is extreme at
-    either end, since the lowest and highest quintiles each preceded larger
-    moves, while a trade count is only ever notable for being high. There is no
-    reading of "unusually few trades" this tool is prepared to lead with.
-    """
-    if not isinstance(value, (int, float)):
-        return ""
-    if value >= NOTABLE_PCTILE_HIGH:
-        return f"at or above the {_ordinal(NOTABLE_PCTILE_HIGH)} pctile"
-    if both_tails and value <= NOTABLE_PCTILE_LOW:
-        return f"at or below the {_ordinal(NOTABLE_PCTILE_LOW)} pctile"
-    return ""
 
 
 def notable(d: dict) -> list[str]:

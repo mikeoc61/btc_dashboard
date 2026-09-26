@@ -34,7 +34,16 @@ import re
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from . import Metric, Panel, SourceResult, fmt, safe_text, unavailable
+from . import (
+    Metric,
+    Panel,
+    SourceResult,
+    fmt,
+    notable_pctile_phrase,
+    pctile_text,
+    safe_text,
+    unavailable,
+)
 
 NAME = "flows"
 
@@ -43,6 +52,39 @@ ALL_DATA_URL = "https://farside.co.uk/bitcoin-etf-flow-all-data/"
 LEAD = "IBIT"
 FUNDS = ("IBIT", "FBTC", "ARKB", "GBTC")
 WINDOWS = (5, 20, 60)
+
+# How large the primary window's net is against its own history: that net,
+# ranked among the same window's nets ending on each of the trailing sessions.
+# The dollar figures alone have no scale — nothing on the panel said whether a
+# +2.39B week was ordinary or rare — and the history to rank against is
+# already in the table this module scrapes.
+#
+# Ranked, not z-scored. Daily totals run in same-sign clusters (lag-1
+# autocorrelation 0.54 over Farside's history, 11 Jan 2024 to 25 Sep 2026), so
+# a five-day net spreads far wider than the daily deviation times √5 and a
+# z-score scaled that way calls ordinary weeks extreme. Ranking against past
+# five-day nets lets the history supply its own spread.
+#
+# 504 sessions is two U.S. trading years — the `2y` the warehouse percentiles
+# use, counted in sessions because a flow exists only on a trading day. Not all
+# history: the launch half-year ran quieter (daily s.d. $263M in 2024 H1
+# against $327-380M in every half since), so ranking against it measures the
+# launch as much as the week — the trap the trade-size percentile documents.
+# The mean still moves inside the window (+$124M/day in 2024 H1, -$44M in
+# 2026 H1), so the rank partly reflects the regime; the analyst is told so.
+PCTILE_WINDOW = WINDOWS[0]
+PCTILE_SESSIONS = 504
+SESSIONS_PER_YEAR = 252
+
+# Wider than the warehouse's 5/95, because these tails are sticky: one heavy
+# day stays inside five consecutive windows as it rolls through, and clustered
+# days extend the run. Over the 172 sessions the history can rank so far
+# (21 Jan to 25 Sep 2026), 5/95 fired on 12.8% of them in 8 episodes and
+# 2.5/97.5 on 7.0% in 6 — roughly one episode every six weeks. All six were
+# outflow tails, from eight months of one regime, so the cut is worth
+# re-measuring as the rankable history grows.
+NOTABLE_PCTILE_LOW = 2.5
+NOTABLE_PCTILE_HIGH = 97.5
 
 # Farside publishes a trading day's flows once, in the evening — so a scrape
 # more than once an hour buys nothing and only adds load to someone else's
@@ -246,6 +288,41 @@ def _window(complete: list[dict], days: int) -> dict:
     }
 
 
+def _mid_rank(values: list[float], v: float) -> float:
+    """Percentile of `v` among `values`, mid-ranked with a tolerance.
+
+    The rule `warehouse.percentile_rank` applies, for the same reasons: ties are
+    split so a value equal to everything reads 50th rather than 0th or 100th,
+    and the tolerance absorbs the last-bit noise of summing one-decimal figures
+    in binary floating point, which would otherwise split two equal weeks.
+    """
+    eps = 1e-9 * max(abs(v), 1)
+    below = sum(1 for x in values if x < v - eps)
+    ties = sum(1 for x in values if abs(x - v) <= eps)
+    return 100.0 * (below + ties / 2.0) / len(values)
+
+
+def _net_pctile(complete: list[dict]) -> dict:
+    """The latest `PCTILE_WINDOW`-day net's rank among the trailing sessions'.
+
+    `n/a` below a full `PCTILE_SESSIONS` — a rank over fewer is a shorter
+    window wearing the longer label. That includes the fallback scrape of the
+    recent-days page, which cannot fill it, and is why the fallback now shows
+    no percentile rather than one ranked against a few weeks.
+    """
+    totals = [r["Total"] for r in complete]  # Unguarded: see `_window`.
+    w = PCTILE_WINDOW
+    nets = [sum(totals[i - w + 1:i + 1]) for i in range(w - 1, len(totals))]
+    ranked = nets[-PCTILE_SESSIONS:]
+    covered = len(ranked) == PCTILE_SESSIONS
+    return {
+        "days": w,
+        "sessions": PCTILE_SESSIONS,
+        "sessions_available": len(ranked),
+        "value": _mid_rank(ranked, ranked[-1]) if covered else None,
+    }
+
+
 def _streak(complete: list[dict]) -> tuple[int, str]:
     """Consecutive same-sign days, walking back through the usable ones.
 
@@ -403,6 +480,7 @@ def summarize(rows: list[dict]) -> dict:
             if lead_share(primary["total"], primary["lead"]) is not None
             else None
         ),
+        "net_pctile": _net_pctile(complete),
         "partial": partial,
     }
 
@@ -489,6 +567,9 @@ def render_lines(d: dict) -> list[str]:
             share = d.get("lead_share_pct")
             share_txt = f"{fmt(share, '.0f')}% {lead} — " if share is not None else ""
             line += f" ({share_txt}{safe_text(d['regime'])})"
+        rank = _rank_text(_rank(d, w.get("days")))
+        if rank:
+            line += f" · {rank}"
         out.append(line)
 
     sign = safe_text(d.get("streak_sign") or "n/a")
@@ -550,6 +631,7 @@ def context_lines(d: dict) -> list[str]:
                 f"fully-reported days exist. Do not treat this as zero or as a "
                 f"smaller window's figure."
             )
+    out.extend(_rank_context(d))
 
     sign = safe_text(d.get("streak_sign") or "same-sign")
     out.append(
@@ -614,8 +696,15 @@ def html_panels(d: dict) -> list[Panel]:
             share = d.get("lead_share_pct")
             note += (f" ({fmt(share, '.0f')}% of it) · {d['regime']}"
                      if share is not None else f" · {d['regime']}")
+        rank = _rank(d, w.get("days"))
+        if rank:
+            note += f" · {_rank_text(rank)}"
+        # The value keeps its sign's colour; the amber goes on the note, which
+        # is where the rank is — the same "unusual, not good or bad" mark the
+        # warehouse rows use, without repainting an inflow as a warning.
         rows.append(Metric(f"{days}D Net", _m(w.get("total")), note=note,
-                           tone=_tone(w.get("total"))))
+                           tone=_tone(w.get("total")),
+                           note_tone="warn" if _extreme(rank) else None))
 
     rows.append(Metric(
         "Streak", f"{fmt(d.get('streak_days'))}d {d.get('streak_sign') or 'n/a'}",
@@ -670,6 +759,73 @@ def _tone(v) -> str | None:
     if not isinstance(v, (int, float)):
         return None
     return "up" if v > 0 else ("down" if v < 0 else None)
+
+
+def _rank(d: dict, days) -> dict:
+    """The net percentile when it describes the window `days`, else `{}`.
+
+    Matched on the window, like the regime tag, so the rank can only ever be
+    printed beside the net it ranks.
+    """
+    r = d.get("net_pctile")
+    return r if isinstance(r, dict) and r.get("days") == days else {}
+
+
+def _rank_over(r: dict) -> str:
+    """What a rank was taken over: `504 sessions (~2y)`.
+
+    Sessions first, because that is what was counted; the years are the
+    comparison to the warehouse's calendar `2y`, and only approximately it.
+    """
+    n = r.get("sessions")
+    years = (f" (~{n / SESSIONS_PER_YEAR:.0f}y)"
+             if isinstance(n, int) and n >= SESSIONS_PER_YEAR else "")
+    return f"{fmt(n, missing='?')} sessions{years}"
+
+
+def _extreme(r: dict) -> str:
+    """The bound the rank has crossed, worded — shared by the mark and the strip."""
+    return notable_pctile_phrase(r.get("value"), both_tails=True,
+                                 low=NOTABLE_PCTILE_LOW, high=NOTABLE_PCTILE_HIGH)
+
+
+def _rank_text(r: dict) -> str:
+    """`92 pctile of 504 sessions (~2y)`, the bound if crossed, or why not."""
+    if not r:
+        return ""
+    v = r.get("value")
+    if not isinstance(v, (int, float)):
+        return (f"pctile n/a — {fmt(r.get('sessions_available'), missing='?')} "
+                f"of {_rank_over(r)}")
+    extreme = _extreme(r)
+    return f"{pctile_text(v)} pctile of {_rank_over(r)}" + (
+        f", {extreme}" if extreme else "")
+
+
+def _rank_context(d: dict) -> list[str]:
+    r = d.get("net_pctile")
+    if not isinstance(r, dict) or not r:
+        return []
+    days = fmt(r.get("days"))
+    v = r.get("value")
+    if not isinstance(v, (int, float)):
+        return [
+            f"BTC ETF {days}d net percentile: not available — only "
+            f"{fmt(r.get('sessions_available'), missing='an unknown number of')} "
+            f"of the {fmt(r.get('sessions'), missing='?')} sessions it ranks over "
+            f"have a complete window. Do not estimate one."
+        ]
+    extreme = _extreme(r)
+    return [
+        f"BTC ETF {days}d net ranks at percentile {pctile_text(v)} among the "
+        f"{days}d nets ending on each of the last {_rank_over(r)}, counted in "
+        f"U.S. trading sessions, mid-ranked, Farside Total basis"
+        + (f" — {extreme}, the bound this dashboard treats as notable" if extreme else "")
+        + ". It says how large that window's flow is against its own recent "
+        f"history, not whether it will continue. The average daily flow has "
+        f"itself shifted across that span, so the rank partly reflects the "
+        f"broader regime rather than this window alone."
+    ]
 
 
 # The flow window the balance card carries: the primary one, which is also the
@@ -727,12 +883,19 @@ def balance_rows(d: dict) -> list[Metric]:
     # it is a published sum, so its sign is real however small it is, and an
     # exact zero gets no category rather than a made-up one.
     sign = _tone(window.get("total"))
+    # The rank rides in the note, amber when it crosses the strip's bound, on
+    # the rule the volatility and participation rows follow: the phrase carries
+    # the meaning and the tint only points at it. On the note rather than the
+    # value, which keeps the colour its inflow/outflow category gives it.
+    rank = _rank(d, BALANCE_WINDOW)
     return [Metric(
         "ETF Flows", _m(window.get("total")),
         category={"up": "inflow", "down": "outflow"}.get(sign),
         note=f"US spot ETF net, {BALANCE_WINDOW}d through {dated(d.get('as_of'))}"
-             f" · Farside Total basis, every listed fund",
+             + (f" · {_rank_text(rank)}" if rank else "")
+             + " · Farside Total basis, every listed fund",
         tone=sign,
+        note_tone="warn" if _extreme(rank) else None,
     )]
 
 
@@ -743,7 +906,22 @@ NOTABLE_STREAK_DAYS = 5
 
 
 def notable(d: dict) -> list[str]:
+    out: list[str] = []
     days, sign = d.get("streak_days"), d.get("streak_sign")
     if isinstance(days, int) and days >= NOTABLE_STREAK_DAYS and sign in ("inflow", "outflow"):
-        return [f"ETF flows: {days} consecutive {sign} days"]
-    return []
+        out.append(f"ETF flows: {days} consecutive {sign} days")
+    # Size, where the streak is duration — two measures, two entries, rather
+    # than one heading mixing them. Both tails: a record outflow week is as
+    # much a fact about demand as a record inflow one.
+    rank = d.get("net_pctile")
+    if isinstance(rank, dict) and _extreme(rank):
+        window = next(
+            (w for w in (d.get("windows") or [])
+             if isinstance(w, dict) and w.get("days") == rank.get("days")),
+            {},
+        )
+        out.append(
+            f"ETF flows: {fmt(rank.get('days'))}d net {_m(window.get('total'))} "
+            f"— {pctile_text(rank.get('value'))} pctile of {_rank_over(rank)}"
+        )
+    return out

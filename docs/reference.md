@@ -307,13 +307,18 @@ is not a direction, so painting it green would contradict the qualifier printed
 beside it — the same call the retarget projection makes inside its own dead
 band.
 
-**A reading extreme enough to lead the page is marked on its own row.** Two of
-the nine `NOTABLE` kinds have a band row to mark — a 30d volatility percentile
-and a trade count — and before this the strip and the row stated the same number
-with nothing connecting them. The row's value goes amber, and the threshold is
+**A reading extreme enough to lead the page is marked on its own row.** Three
+of the ten `NOTABLE` kinds have a band row to mark — a 30d volatility
+percentile, a trade count and the ETF 5d net percentile — and before this the
+strip and the row stated the same number with nothing connecting them. The row's value goes amber, and the threshold is
 stated in its note (`at or above the 95th pctile`), because the tint is the
 signal and the text is the meaning: strip the stylesheet and an amber 98 is
 just a 98.
+
+The ETF row is the exception in where the amber lands: on its note, which
+carries the rank, rather than on its value, which keeps the colour of its
+`inflow` / `outflow` word. A flow total has a sign, and repainting a record
+inflow amber would say it is a warning rather than that it is rare.
 
 Amber rather than up or down, deliberately. Neither measure has a direction to
 colour, and the reader is being told the reading is unusual, not that it is
@@ -600,6 +605,48 @@ different measure that can point the other way. A one-day inflow inside a
 five-day net outflow is ordinary. The label carries direction for the same
 reason: "conviction" alone reads as conviction *buying*, so an outflow window
 tagged with the bare word said the opposite of what the data meant.
+
+**The 5d net carries a percentile, because the dollar figure alone has no
+scale.** On 25 Sep 2026 the card read +2.39B with nothing saying whether that
+was an ordinary week; it ranked 92nd of two years. The rank is the latest 5d
+net among the 5d nets ending on each of the last **504 sessions** — two U.S.
+trading years, the warehouse's `2y` counted in sessions because a flow exists
+only on a trading day. The whole history is already in the table the scrape
+reads, so it costs no new source, and it is mid-ranked with the warehouse's
+tie rule. Short of 504 sessions it reports `n/a`, which is also what the
+fallback scrape of the recent-days page shows.
+
+Three shapes were measured over Farside's history (11 Jan 2024 – 25 Sep 2026)
+and rejected:
+
+- *A z-score.* Daily totals run in clusters — lag-1 autocorrelation 0.54 — so a
+  five-day net spreads far wider than the daily deviation times √5, and a
+  z-score scaled that way calls ordinary weeks extreme. A daily z against a
+  trailing 60 days cleared ±2 on 7.3% of days: an alert every three weeks, on
+  the single-day noise the 5d window exists to smooth.
+- *Flow volatility as its own reading.* A 20-day standard deviation of daily
+  flows correlates 0.90 with their mean absolute size, so it is the size of the
+  flows under another name — and, like realised volatility, carries no
+  direction.
+- *All history as the window.* The launch half-year ran quieter (daily s.d.
+  $263M in 2024 H1 against $327–380M in every half since), so it ranks the
+  launch as much as the week. The mean still moves inside two years (+$124M a
+  day in 2024 H1, −$44M in 2026 H1), so the rank partly reflects the regime,
+  and the analyst is told that alongside it.
+
+Normalising by AUM would remove the scale drift properly, but Farside's table
+carries no AUM, and converting to BTC would have this source read another's.
+
+**Its strip bound is 2.5 / 97.5, not the warehouse's 5 / 95**, because these
+tails are sticky: one heavy day sits inside five consecutive windows, and
+clustered days extend the run. Over the 172 sessions the history can rank so
+far, 5 / 95 fired on 12.8% of them in 8 episodes and 2.5 / 97.5 on 7.0% in 6 —
+about one episode every six weeks. Both tails fire: a record outflow week is as
+much a fact about demand as a record inflow one. All six episodes were outflow
+tails from eight months of a single regime, so the cut is worth re-measuring
+as the rankable history grows. It says the week is large, not what follows it;
+a directional reading would need a study under `tools/` against the base rate
+first.
 
 **Weekly seasonality is corrected, two different ways.** `fee_subsidy` runs
 materially lower at weekends, so a raw daily percentile substantially reports

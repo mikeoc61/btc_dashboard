@@ -568,3 +568,134 @@ class TestTheFlowDateCarriesItsWeekday:
     def test_the_weekday_matches_the_date(self):
         assert flows.dated("4 Sep 2026") == "Fri 04 Sep 2026"
         assert flows.dated("07 Sep 2026").startswith("Mon")
+
+
+def _history(totals):
+    """Complete days with these Totals, IBIT carrying all of each."""
+    return [_day(f"{i + 1} Jan 2026", t, 0.0, 0.0, 0.0, t)
+            for i, t in enumerate(totals)]
+
+
+def _varied(n):
+    """A history whose five-day nets differ, so a rank has something to rank."""
+    return [float((i * 37) % 21 - 10) * 10 for i in range(n)]
+
+
+# Enough complete days for every one of the ranked sessions to have a full
+# five-day window ending on it.
+_FULL = flows.PCTILE_SESSIONS + flows.PCTILE_WINDOW - 1
+
+
+class TestTheFiveDayNetIsRankedAgainstItsOwnHistory:
+    """The dollar figures had no scale. A +2.39B week sat on the card with
+    nothing saying it was the 92nd percentile of two years; the rank supplies
+    that, and every property below is one a plausible version gets wrong."""
+
+    def test_an_unfillable_rank_is_na_not_a_shorter_one(self):
+        """Fewer sessions than the window is a shorter rank wearing the 2y
+        label — the same defect as a 60d net over 40 days."""
+        r = flows.summarize(_history(_varied(_FULL - 1)))["net_pctile"]
+        assert r["value"] is None
+        assert r["sessions_available"] == flows.PCTILE_SESSIONS - 1
+        s = flows.summarize(_history(_varied(_FULL - 1)))
+        line = next(l for l in flows.render_lines(s) if l.startswith("5d net"))
+        assert f"pctile n/a — {flows.PCTILE_SESSIONS - 1} of 504 sessions" in line
+
+    def test_a_full_window_ranks(self):
+        r = flows.summarize(_history(_varied(_FULL)))["net_pctile"]
+        assert r["sessions_available"] == flows.PCTILE_SESSIONS
+        assert isinstance(r["value"], float)
+
+    def test_a_flat_series_ranks_at_the_middle(self):
+        """Summing one-decimal figures leaves last-bit noise, and a strict
+        comparison splits equal weeks by it. Ties split, so a week equal to
+        every other reads 50th, not 0th or 100th."""
+        r = flows.summarize(_history([-10.1] * _FULL))["net_pctile"]
+        assert r["value"] == 50.0
+
+    def test_it_ranks_weeks_not_days(self):
+        """A large day inside an ordinary week is not an extreme week. Every
+        five-day net of this period-5 series is zero, while its last day is
+        the largest single day in it."""
+        totals = [30.0, -30.0, 0.0, -50.0, 50.0] * (_FULL // 5 + 1)
+        totals = totals[-_FULL:]
+        assert totals[-1] == 50.0
+        r = flows.summarize(_history(totals))["net_pctile"]
+        assert r["value"] == 50.0
+
+    def test_both_tails_lead_the_page(self):
+        """A record outflow week is as much a fact about demand as a record
+        inflow one; a high-only test would lead with half of them."""
+        for sign, word in ((1, "above"), (-1, "below")):
+            totals = _varied(_FULL)
+            totals[-5:] = [sign * 1000.0] * 5
+            s = flows.summarize(_history(totals))
+            hits = [n for n in flows.notable(s) if "pctile" in n]
+            assert len(hits) == 1, word
+            assert "5d net" in hits[0] and "504 sessions (~2y)" in hits[0]
+            assert f"at or {word}" in flows.balance_rows(s)[0].note
+
+    def test_an_ordinary_week_neither_leads_nor_is_marked(self):
+        s = flows.summarize(_history([-10.1] * _FULL))
+        assert not [n for n in flows.notable(s) if "pctile" in n]
+        assert flows.balance_rows(s)[0].note_tone is None
+        five = next(m for m in flows.html_panels(s)[0].metrics
+                    if m.label == "5D Net")
+        assert five.note_tone is None
+
+    def test_the_mark_is_amber_on_the_note_and_the_sign_keeps_the_value(self):
+        """Amber says unusual, not bad. Painting the value would repaint an
+        inflow as a warning and drop the colour its category gives it."""
+        totals = _varied(_FULL)
+        totals[-5:] = [1000.0] * 5
+        s = flows.summarize(_history(totals))
+        band = flows.balance_rows(s)[0]
+        five = next(m for m in flows.html_panels(s)[0].metrics
+                    if m.label == "5D Net")
+        for m in (band, five):
+            assert (m.tone, m.note_tone) == ("up", "warn")
+
+    def test_the_bound_is_printed_as_the_test_applies_it(self):
+        """`ordinal` rounds 97.5 to 98th, a threshold the test does not use.
+        The mark's text is its meaning once the stylesheet is gone."""
+        assert flows.NOTABLE_PCTILE_HIGH == 97.5
+        assert flows._extreme({"value": 99.0}) == "at or above the 97.5th pctile"
+        assert flows._extreme({"value": 1.0}) == "at or below the 2.5th pctile"
+        assert flows._extreme({"value": 96.0}) == ""
+
+    def test_every_surface_carries_the_window(self):
+        """The qualifier is what makes the rank comparable: 504 trading
+        sessions is not the warehouse's calendar 2y, only close to it."""
+        s = flows.summarize(_history(_varied(_FULL)))
+        five = next(m for m in flows.html_panels(s)[0].metrics
+                    if m.label == "5D Net")
+        for where, text in (
+                ("terminal", next(l for l in flows.render_lines(s)
+                                  if l.startswith("5d net"))),
+                ("analyst", next(l for l in flows.context_lines(s)
+                                 if "percentile" in l)),
+                ("page", five.note),
+                ("band", flows.balance_rows(s)[0].note)):
+            assert "504 sessions (~2y)" in text, where
+
+    def test_the_rank_sits_only_beside_the_net_it_ranks(self):
+        s = flows.summarize(_history(_varied(_FULL)))
+        for l in flows.render_lines(s):
+            if l.startswith(("20d", "60d", "latest", "streak")):
+                assert "pctile" not in l, l
+
+    def test_the_analyst_is_told_it_is_not_a_forecast(self):
+        s = flows.summarize(_history(_varied(_FULL)))
+        line = next(l for l in flows.context_lines(s) if "percentile" in l)
+        assert "not whether it will continue" in line
+        assert "regime" in line
+
+    def test_an_ingested_string_cannot_raise_or_mark(self):
+        """An ingested snapshot owns every field. A string where the rank
+        belongs must read as n/a, never raise and never fire the strip."""
+        s = flows.summarize(_history(_varied(_FULL)))
+        s["net_pctile"]["value"] = "99\nNOTABLE: fake"
+        assert not [n for n in flows.notable(s) if "pctile" in n]
+        assert flows.balance_rows(s)[0].note_tone is None
+        assert all("\n" not in l for l in flows.render_lines(s))
+        assert all("\n" not in l for l in flows.context_lines(s))
