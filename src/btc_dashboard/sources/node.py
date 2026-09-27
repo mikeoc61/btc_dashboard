@@ -16,7 +16,7 @@ import json
 import math
 import subprocess
 
-from . import Metric, Panel, SourceResult, fmt, unavailable
+from . import Metric, Panel, SourceResult, as_dict, fmt, unavailable
 
 NAME = "node"
 
@@ -181,7 +181,7 @@ def render_lines(d: dict) -> list[str]:
     if d.get("hash_rate_7d_pct") is not None:
         hr += f" ({fmt(d.get('hash_rate_7d_pct'), '+.2f', suffix='%')} 7d)"
 
-    rt = d.get("retarget") or {}
+    rt = as_dict(d.get("retarget"))
     if rt.get("projection_pct") is not None:
         proj = f"proj {fmt(rt.get('projection_pct'), '+.2f', suffix='%')}"
         sigma = _sigma(rt)
@@ -195,10 +195,10 @@ def render_lines(d: dict) -> list[str]:
         proj = f"proj n/a ({fmt(rt.get('blocks_elapsed'), missing='?')} blks into period)"
     eta = f", ~{fmt(rt.get('eta_days'))}d" if rt.get("eta_days") is not None else ""
 
-    f = d.get("fees_sat_vb") or {}
+    f = as_dict(d.get("fees_sat_vb"))
     fee_txt = "/".join(_fee(f.get(k)) for k in ("fast", "hour", "day"))
 
-    mp = d.get("mempool") or {}
+    mp = as_dict(d.get("mempool"))
     return [
         f"height {fmt(d.get('height'), ',')} | {hr} | "
         f"difficulty {fmt(d.get('difficulty_t'), ',.2f')}T",
@@ -216,7 +216,7 @@ def context_lines(d: dict) -> list[str]:
         out.append(
             f"BTC hash rate 7d change: {fmt(d.get('hash_rate_7d_pct'), '+.2f', suffix='%')}"
         )
-    rt = d.get("retarget") or {}
+    rt = as_dict(d.get("retarget"))
     proj = rt.get("projection_pct")
     if proj is not None:
         line = (
@@ -238,7 +238,7 @@ def context_lines(d: dict) -> list[str]:
                 f"error; this reading is {abs(proj) / sigma:.1f} s.e. from flat"
             )
         out.append(line)
-    mp = d.get("mempool") or {}
+    mp = as_dict(d.get("mempool"))
     if mp.get("tx") is not None or mp.get("vmb") is not None:
         out.append(
             f"BTC mempool: {fmt(mp.get('tx'), ',')} tx / {fmt(mp.get('vmb'), '.1f')} vMB "
@@ -276,9 +276,9 @@ def retarget_tone(rt: dict) -> str | None:
 
 
 def html_panels(d: dict) -> list[Panel]:
-    rt = d.get("retarget") or {}
-    mp = d.get("mempool") or {}
-    f = d.get("fees_sat_vb") or {}
+    rt = as_dict(d.get("retarget"))
+    mp = as_dict(d.get("mempool"))
+    f = as_dict(d.get("fees_sat_vb"))
     hr7 = d.get("hash_rate_7d_pct")
 
     proj = rt.get("projection_pct")
@@ -376,7 +376,7 @@ NOTABLE_RETARGET_SIGMA = 2.0
 
 
 def notable(d: dict) -> list[str]:
-    rt = d.get("retarget") or {}
+    rt = as_dict(d.get("retarget"))
     proj, sigma = rt.get("projection_pct"), _sigma(rt)
     if not isinstance(proj, (int, float)) or sigma is None:
         return []

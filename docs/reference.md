@@ -1079,6 +1079,17 @@ prompt, and it's handled as such:
   one line, stripping control and bidi characters (`\x1b` is not whitespace,
   and `ESC [ 2 J` clears the reader's screen), and capping the length. The HTML
   page escapes everything and was never exposed.
+- **A field of the wrong type costs one value, not the block.** A presentation
+  that raises loses its whole source — and in two places something worse: the
+  strip swallows the error and drops every entry the source had, and a failed
+  `analyst_scope` left the ask box saying no source offers live history.
+  `d.get("mempool") or {}` survives a missing block and raises on a string, so
+  nested blocks are read through `sources.as_dict` / `as_list`, and `ordinal`
+  and the flow `_m` read anything but a number as `n/a`.
+  `tests/test_render_robustness.py` walks every field of a real snapshot
+  (`tests/fixtures/snapshot.json`) with a string, an int, a list and a dict
+  through every presentation; a field a source starts emitting belongs in that
+  fixture, or the walk cannot see it.
 - **The answer is bounded on the way back too**, in `text.safe_block`. A
   hostile snapshot steers the model, and the model's reply lands on a terminal:
   the answer and the queries keep their own lines, because prose and SQL are

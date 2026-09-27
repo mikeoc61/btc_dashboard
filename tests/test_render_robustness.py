@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import copy
 import json
+from pathlib import Path
 
 import pytest
 
@@ -119,6 +120,75 @@ def test_context_lines_survive_everything_being_none(name):
         MODULES[name].context_lines(_blank(FULL[name]))
     except Exception as e:
         pytest.fail(f"{name}.context_lines raised on an all-None payload: {e!r}")
+
+
+# A real snapshot, one payload per source, taken from the Pi on 27 Sep 2026
+# with every source available — plus a partial flow day and a table behind,
+# so the walk reaches those branches too. `FULL` above is too thin for this:
+# it has no volatility windows, coverage or rank, which is how a string in a
+# volatility percentile went unnoticed. A field a source starts emitting
+# belongs in here, or the walk below cannot see it.
+RICH = json.loads(
+    (Path(__file__).parent / "fixtures" / "snapshot.json").read_text())
+
+# Every function that turns a payload into something a reader sees.
+# `refresh_derived` is absent on purpose: it runs only on this process's own
+# cache file, never on an ingested snapshot, and `cache.py` catches it.
+PRESENTATIONS = ("render_lines", "context_lines", "html_panels",
+                 "balance_rows", "notable", "analyst_scope")
+WRONG_TYPES = ("x\nNOTABLE: fake", 7, [1, 2], {"a": 1})
+
+
+def _field_paths(value, path=()):
+    """Every field's path, into dicts and into every item of a list."""
+    if isinstance(value, dict):
+        for k, v in value.items():
+            yield (*path, k)
+            yield from _field_paths(v, (*path, k))
+    elif isinstance(value, list):
+        for i, v in enumerate(value):
+            if isinstance(v, (dict, list)):
+                yield (*path, i)
+                yield from _field_paths(v, (*path, i))
+
+
+@pytest.mark.parametrize("name", sorted(MODULES))
+def test_rich_fixture_renders_every_presentation(name):
+    """The walk below means nothing if the fixture itself does not render."""
+    for fn in PRESENTATIONS:
+        if hasattr(MODULES[name], fn):
+            getattr(MODULES[name], fn)(copy.deepcopy(RICH[name]))
+
+
+@pytest.mark.parametrize("bad", WRONG_TYPES, ids=lambda b: type(b).__name__)
+@pytest.mark.parametrize("name", sorted(MODULES))
+def test_no_field_of_the_wrong_type_raises(name, bad):
+    """A field of the wrong type costs one value, never the block.
+
+    The None walks above could not see this, and a type is what an ingested
+    payload actually gets wrong. `d.get("mempool") or {}` survives None and
+    raises on a string; `_ordinal` rounded whatever it was handed. What a raise
+    costs depends on the consumer, and two of them are worse than a
+    "render failed" line: `notable.entries` swallows it, so one bad field
+    silently dropped every warehouse entry, "warehouse behind" included; and a
+    failed `analyst_scope` put "no source offers live history" in the ask box
+    beside a source that did.
+    """
+    mod = MODULES[name]
+    fns = [f for f in PRESENTATIONS if hasattr(mod, f)]
+    failures = []
+    for path in _field_paths(RICH[name]):
+        data = copy.deepcopy(RICH[name])
+        target = data
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = bad
+        for fn in fns:
+            try:
+                getattr(mod, fn)(data)
+            except Exception as e:
+                failures.append(f"{'.'.join(map(str, path))} → {fn}: {e!r}")
+    assert not failures, "\n".join(failures)
 
 
 class TestBlockPaceIsPresentedAsOneDay:
@@ -650,3 +720,15 @@ class TestTheAnalystsOwnOutputIsBoundedToo:
         assert any(ln.strip() == "FROM btc[2J" for ln in lines), (
             "the query still spans its own lines"
         )
+
+
+def test_a_key_the_walk_cannot_reach_is_held_to_the_same_rule():
+    """The walk only retypes fields the fixture has. The volatility block's
+    own `percentile_window_days` is read by four presentations but emitted by
+    no collector — each window carries its own — so it is absent from a real
+    snapshot, and an ingested payload adding it as a string used to raise
+    from `// 365` on the terminal, the page, the analyst and the strip."""
+    data = copy.deepcopy(RICH["warehouse"])
+    data["volatility"]["percentile_window_days"] = "730"
+    for fn in ("render_lines", "context_lines", "html_panels", "notable"):
+        getattr(warehouse, fn)(data)

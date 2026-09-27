@@ -41,6 +41,8 @@ from . import (
     Panel,
     SourceResult,
     Tool,
+    as_dict,
+    as_list,
     fmt,
     notable_pctile_phrase,
     safe_text,
@@ -600,9 +602,14 @@ def analyst_scope(data: dict) -> str | None:
     the same reason every other figure here carries its window: "history since
     2013" is false for an on-chain question by two and a half years.
     """
+    # Only spans this can sort and compare. A failure here is caught by the
+    # page, which then says no source offers live history — beside a source
+    # that does. So a malformed entry is dropped, not allowed to raise.
     spans = {
-        t: c for t, c in ((data or {}).get("coverage") or {}).items()
-        if c.get("first") and c.get("last")
+        t: c for t, c in as_dict(as_dict(data).get("coverage")).items()
+        if isinstance(c, dict)
+        and isinstance(c.get("first"), str) and isinstance(c.get("last"), str)
+        and c["first"] and c["last"]
     }
     if not spans:
         return None
@@ -1004,8 +1011,8 @@ def _apply_staleness(data: dict, date: datetime.date) -> None:
 
 def _behind_phrase(d: dict) -> str:
     """Which tables are behind and by how much, or the bare day count."""
-    tables = d.get("stale_tables") or {}
-    if not isinstance(tables, dict) or not tables:
+    tables = as_dict(d.get("stale_tables"))
+    if not tables:
         return f"{fmt(d.get('days_behind'), missing='?')}d"
     return ", ".join(
         f"{COVERAGE_LABELS.get(t, t)} {fmt(n)}d"
@@ -1028,8 +1035,23 @@ def refresh_derived(data: dict) -> dict:
     return data
 
 
+def _vol_years(vol: dict) -> str:
+    """The volatility percentile window in whole years, for `… of 2y`.
+
+    The collector states the window per window, not at this level, so the
+    default is what every live payload uses; the check is for an ingested one
+    that adds the key as something `//` cannot divide. `?` rather than the
+    default there, which would state a window the payload contradicts.
+    """
+    days = vol.get("percentile_window_days", VOL_PERCENTILE_RECENT_DAYS)
+    return fmt(days // 365) if isinstance(days, int) else "?"
+
+
 def _window_label(days: int) -> str:
     """`2y` for whole years, `90d` otherwise — a percentile's other half."""
+    # The fallback where it is called is `or CONSTANT`, which a string passes.
+    if not isinstance(days, int):
+        return "n/a"
     return f"{days // 365}y" if days >= 365 and days % 365 == 0 else f"{days}d"
 
 
@@ -1077,8 +1099,8 @@ def _close_day(d: dict) -> str:
 
 
 def render_lines(d: dict) -> list[str]:
-    oc = d.get("onchain") or {}
-    sig = d.get("signals") or {}
+    oc = as_dict(d.get("onchain"))
+    sig = as_dict(d.get("signals"))
     parts = []
     if oc.get("blocks_day") is not None:
         parts.append(f"{fmt(oc.get('blocks_day'))} blks")
@@ -1154,7 +1176,7 @@ def render_lines(d: dict) -> list[str]:
         )
 
     parts = []
-    for s in d.get("smas") or []:
+    for s in as_list(d.get("smas")):
         if not isinstance(s, dict):
             continue
         if s.get("covered"):
@@ -1173,9 +1195,9 @@ def render_lines(d: dict) -> list[str]:
         out.append((f"SMA (through {day}): " if day else "SMA ")
                    + " | ".join(parts))
 
-    vol = d.get("volatility") or {}
+    vol = as_dict(d.get("volatility"))
     vparts = []
-    for w in vol.get("windows") or []:
+    for w in as_list(vol.get("windows")):
         if not isinstance(w, dict):
             continue
         if not w.get("covered"):
@@ -1194,7 +1216,7 @@ def render_lines(d: dict) -> list[str]:
         # the long end — 19 points at 360d on closes through 11 Aug 2026, 42 on
         # closes through 25 Sep — where the all-history figure is substantially
         # reporting Bitcoin's declining volatility rather than today.
-        years = fmt(vol.get("percentile_window_days", 730) // 365)
+        years = _vol_years(vol)
         # Dated like the SMAs and for the same reason: these run over the same
         # `btc` closes and end on the same row, so a 30-day window through
         # Monday is not the one through Thursday. That row is the close's day,
@@ -1245,8 +1267,8 @@ def context_lines(d: dict) -> list[str]:
     describe fee/subsidy as apathetic without being able to say what the fee
     actually was.
     """
-    sig = d.get("signals") or {}
-    oc = d.get("onchain") or {}
+    sig = as_dict(d.get("signals"))
+    oc = as_dict(d.get("onchain"))
     out: list[str] = []
 
     # The day's own figures, before anything derived from them. Each is guarded
@@ -1356,11 +1378,11 @@ def context_lines(d: dict) -> list[str]:
             "flags the panic itself, not the low, which typically follows days "
             "later."
         )
-    vol = d.get("volatility") or {}
-    covered = [w for w in (vol.get("windows") or [])
+    vol = as_dict(d.get("volatility"))
+    covered = [w for w in as_list(vol.get("windows"))
                if isinstance(w, dict) and w.get("covered")]
     if covered:
-        years = fmt(vol.get("percentile_window_days", 730) // 365)
+        years = _vol_years(vol)
         levels = ", ".join(
             f"{fmt(w.get('days'))}d {fmt(w.get('value'), '.0f')}%"
             + (f" ({_ordinal(w['percentile_recent'])} pctile of the last {years}y"
@@ -1420,10 +1442,10 @@ def context_lines(d: dict) -> list[str]:
 
 
 def html_panels(d: dict) -> list[Panel]:
-    oc = d.get("onchain") or {}
-    sig = d.get("signals") or {}
-    vol = d.get("volatility") or {}
-    years = fmt(vol.get("percentile_window_days", 730) // 365)
+    oc = as_dict(d.get("onchain"))
+    sig = as_dict(d.get("signals"))
+    vol = as_dict(d.get("volatility"))
+    years = _vol_years(vol)
 
     pace, blocks = d.get("day_pace_retarget"), oc.get("blocks_day")
     facts = [
@@ -1476,7 +1498,7 @@ def html_panels(d: dict) -> list[Panel]:
         signals.append(Metric(name, f"{_pctile(v)} pctile", note=f"{window} · {why}"))
 
     vols = []
-    for w in vol.get("windows") or []:
+    for w in as_list(vol.get("windows")):
         if not isinstance(w, dict):
             continue
         if not w.get("covered"):
@@ -1615,10 +1637,10 @@ def balance_rows(d: dict) -> list[Metric]:
     Survives an empty dict with its labels intact, so a missing warehouse still
     occupies both rows.
     """
-    vol = d.get("volatility") or {}
+    vol = as_dict(d.get("volatility"))
     through = _balance_through(d)
     window = next(
-        (w for w in (vol.get("windows") or [])
+        (w for w in as_list(vol.get("windows"))
          if isinstance(w, dict) and w.get("days") == BALANCE_VOL_WINDOW),
         {},
     )
@@ -1648,7 +1670,7 @@ def balance_rows(d: dict) -> list[Metric]:
             note=f"not enough history for a {BALANCE_VOL_WINDOW}d window",
         )
 
-    trades = (d.get("signals") or {}).get(BALANCE_ACTIVITY_KEY)
+    trades = as_dict(d.get("signals")).get(BALANCE_ACTIVITY_KEY)
     if isinstance(trades, (int, float)):
         name, why = ACTIVITY_PANEL[BALANCE_ACTIVITY_KEY]
         # High end only, the same rule the strip applies to a trade count.
@@ -1682,9 +1704,9 @@ def notable(d: dict) -> list[str]:
     reader to stop looking at it.
     """
     out: list[str] = []
-    vol = d.get("volatility") or {}
-    years = fmt(vol.get("percentile_window_days", 730) // 365)
-    for w in vol.get("windows") or []:
+    vol = as_dict(d.get("volatility"))
+    years = _vol_years(vol)
+    for w in as_list(vol.get("windows")):
         if not isinstance(w, dict) or not w.get("covered"):
             continue
         pct = w.get("percentile_recent")
@@ -1696,7 +1718,7 @@ def notable(d: dict) -> list[str]:
                 f"— {_pctile(pct)} pctile of {years}y"
             )
 
-    sig = d.get("signals") or {}
+    sig = as_dict(d.get("signals"))
     fee = sig.get("fee_pctile")
     if isinstance(fee, (int, float)) and (
             fee <= NOTABLE_PCTILE_LOW or fee >= NOTABLE_PCTILE_HIGH):

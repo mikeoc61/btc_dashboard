@@ -243,6 +243,23 @@ def fmt(value, spec: str = "", *, prefix: str = "", suffix: str = "",
     return f"{prefix}{safe_text(text)}{suffix}"
 
 
+def as_dict(value) -> dict:
+    """`value` if it is a dict, else `{}` — for reading a nested block.
+
+    `d.get("mempool") or {}` survives a missing block and raises on a string
+    or a number, and an ingested snapshot owns every field: one wrong type in
+    a nested block cost the whole source its panel. A presentation reads
+    nested blocks through this and `as_list`, so a bad block reads as missing,
+    which it is.
+    """
+    return value if isinstance(value, dict) else {}
+
+
+def as_list(value) -> list:
+    """`value` if it is a list, else `[]`. See `as_dict`."""
+    return value if isinstance(value, list) else []
+
+
 def pctile_text(value) -> str:
     """Percentile for the panel, without letting rounding overstate an extreme.
 
@@ -267,6 +284,11 @@ def pctile_text(value) -> str:
 
 
 def ordinal(p: float) -> str:
+    # `n/a` for a non-number, because `round` raises on one and several call
+    # sites check only for None — enough for a string in an ingested
+    # percentile to cost the warehouse block.
+    if not isinstance(p, (int, float)):
+        return "n/a"
     n = max(1, round(p))
     suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
     return f"{n}{suffix}"

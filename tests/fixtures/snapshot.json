@@ -1,0 +1,258 @@
+{
+ "price": {
+  "spot": 84285.05,
+  "source": "coingecko",
+  "prev_close": 84416.71,
+  "prev_close_date": "2026-09-26",
+  "change_pct": -0.16,
+  "smas": [
+   {
+    "days": 20,
+    "days_available": 201,
+    "covered": true,
+    "value": 80163.01,
+    "pct": 5.14,
+    "position": "above"
+   },
+   {
+    "days": 50,
+    "days_available": 201,
+    "covered": true,
+    "value": 75712.27,
+    "pct": 11.32,
+    "position": "above"
+   },
+   {
+    "days": 200,
+    "days_available": 201,
+    "covered": true,
+    "value": 70990.86,
+    "pct": 18.73,
+    "position": "above"
+   }
+  ],
+  "sma200": 70990.86,
+  "sma200_pct": 18.73,
+  "sma200_position": "above",
+  "rsi_live": {
+   "period": 14,
+   "bars_available": 202,
+   "covered": true,
+   "value": 64.5
+  },
+  "rsi_close": {
+   "period": 14,
+   "bars_available": 201,
+   "covered": true,
+   "value": 65.0
+  },
+  "days_available": 201
+ },
+ "node": {
+  "height": 968765,
+  "hash_rate_ehs": 944.7,
+  "hash_rate_7d_pct": 2.2,
+  "difficulty_t": 132.76,
+  "retarget": {
+   "blocks_left": 931,
+   "blocks_elapsed": 1085,
+   "eta_days": 6.6,
+   "projection_pct": -2.56,
+   "projection_sigma_pct": 3.04
+  },
+  "mempool": {
+   "tx": 76054,
+   "vmb": 40.8
+  },
+  "fees_sat_vb": {
+   "fast": 1.1,
+   "hour": 1.0,
+   "day": 0.6
+  }
+ },
+ "warehouse": {
+  "date": "2026-09-25",
+  "onchain": {
+   "blocks_day": 134,
+   "block_fullness": 98.40812332089553,
+   "p50_fee": 1.0,
+   "fee_subsidy": 0.9145116513432836,
+   "miner_rev": 422.57951754,
+   "hash_rate_ehs": 924.7693301450481,
+   "difficulty_t": 132.7570734494875,
+   "tx_rate": 6.929525462962963
+  },
+  "signals": {
+   "fee_pctile": 39.52054794520548,
+   "apathy_days": 35,
+   "hashrate_drawdown": -8.241826579438918,
+   "vol_pctile": 81.98630136986301,
+   "trades_pctile": 98.01369863013699,
+   "trade_size_pctile": 11.666666666666666
+  },
+  "close": 84090.5,
+  "close_date": "2026-09-25",
+  "smas": [
+   {
+    "days": 20,
+    "covered": true,
+    "value": 79958.71,
+    "pct": 5.17
+   },
+   {
+    "days": 50,
+    "covered": true,
+    "value": 75321.53,
+    "pct": 11.64
+   },
+   {
+    "days": 200,
+    "covered": true,
+    "value": 70930.31,
+    "pct": 18.55
+   }
+  ],
+  "volatility": {
+   "annualisation_days": 365,
+   "windows": [
+    {
+     "days": 7,
+     "covered": true,
+     "value": 52.2,
+     "percentile_recent": 81.2,
+     "percentile_all": 52.7,
+     "percentile_window_days": 730,
+     "days_available": 4719
+    },
+    {
+     "days": 30,
+     "covered": true,
+     "value": 43.3,
+     "percentile_recent": 59.9,
+     "percentile_all": 26.7,
+     "percentile_window_days": 730,
+     "days_available": 4696
+    },
+    {
+     "days": 90,
+     "covered": true,
+     "value": 39.2,
+     "percentile_recent": 37.7,
+     "percentile_all": 12.2,
+     "percentile_window_days": 730,
+     "days_available": 4636
+    },
+    {
+     "days": 180,
+     "covered": true,
+     "value": 38.3,
+     "percentile_recent": 23.6,
+     "percentile_all": 5.7,
+     "percentile_window_days": 730,
+     "days_available": 4546
+    },
+    {
+     "days": 360,
+     "covered": true,
+     "value": 45.4,
+     "percentile_recent": 53.9,
+     "percentile_all": 12.3,
+     "percentile_window_days": 730,
+     "days_available": 4366
+    }
+   ]
+  },
+  "sma200": 70930.31,
+  "sma200_pct": 18.55,
+  "day_pace_retarget": -6.944444444444442,
+  "coverage": {
+   "btc": {
+    "first": "2013-10-06",
+    "last": "2026-09-25",
+    "days": 4726
+   },
+   "onchain": {
+    "first": "2016-01-01",
+    "last": "2026-09-25",
+    "days": 3921
+   }
+  },
+  "days_behind": 1,
+  "stale_tables": {
+   "btc": 3
+  },
+  "warehouse_stale": true
+ },
+ "flows": {
+  "source": "https://farside.co.uk/bitcoin-etf-flow-all-data/",
+  "fetched_at": "2026-09-27T00:50:04.900609+00:00",
+  "lead": "IBIT",
+  "as_of": "25 Sep 2026",
+  "age_days": 1,
+  "latest_total": 134.5,
+  "latest_lead": 97.0,
+  "days_complete": 679,
+  "windows": [
+   {
+    "days": 5,
+    "days_available": 5,
+    "covered": true,
+    "total": 2385.8,
+    "lead": 1157.6
+   },
+   {
+    "days": 20,
+    "days_available": 20,
+    "covered": true,
+    "total": 2714.0,
+    "lead": 1883.8
+   },
+   {
+    "days": 60,
+    "days_available": 60,
+    "covered": true,
+    "total": 6707.1,
+    "lead": 5247.9
+   }
+  ],
+  "streak_days": 7,
+  "streak_sign": "inflow",
+  "regime": "broad accumulation",
+  "regime_window_days": 5,
+  "lead_share_pct": 48.5,
+  "net_pctile": {
+   "days": 5,
+   "sessions": 504,
+   "sessions_available": 504,
+   "value": 91.96428571428571
+  },
+  "ytd": {
+   "year": 2026,
+   "through": "25 Sep 2026",
+   "sessions": 184,
+   "total": 1021.3,
+   "reason": null,
+   "prior": {
+    "year": 2025,
+    "through": "25 Sep 2025",
+    "sessions": 183,
+    "total": 21953.0,
+    "reason": null
+   }
+  },
+  "partial": {
+   "date": "28 Sep 2026",
+   "published_total": -35.3,
+   "reported_total": -81.1,
+   "other": 45.8,
+   "reported": [
+    "IBIT"
+   ],
+   "pending": [
+    "FBTC",
+    "ARKB",
+    "GBTC"
+   ]
+  }
+ }
+}
