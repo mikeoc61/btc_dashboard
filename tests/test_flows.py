@@ -825,3 +825,75 @@ class TestTheCalendarYearIsComparedWithTheSamePointLastYear:
         for l in flows.render_lines(s) + flows.context_lines(s):
             assert "\n" not in l
         flows.html_panels(s)
+
+
+def _full_payload():
+    """Every field this module can emit, the partial day and a covered rank
+    and calendar year included, so a walk over it reaches all of them."""
+    from datetime import date
+    rows = (_sessions(date(2024, 1, 1), date(2025, 12, 31), 2.0)
+            + _sessions(date(2026, 1, 1), date(2026, 9, 25), 3.0)
+            + [_day("28 Sep 2026", 50.0, 5.0, None, None, 60.0)])
+    d = flows.summarize(rows)
+    assert d["partial"] and d["net_pctile"]["value"] is not None
+    assert d["ytd"]["total"] is not None and d["ytd"]["prior"]["total"] is not None
+    return d
+
+
+def _paths(value, path=()):
+    """Every field's path, descending into dicts and the first list item."""
+    if isinstance(value, dict):
+        for k, v in value.items():
+            yield (*path, k)
+            yield from _paths(v, (*path, k))
+    elif isinstance(value, list) and value and isinstance(value[0], dict):
+        yield from _paths(value[0], (*path, 0))
+
+
+_PRESENTATIONS = ("render_lines", "context_lines", "html_panels",
+                  "balance_rows", "notable")
+_WRONG = ("x\nNOTABLE: fake", 7, [1, 2], {"a": 1})
+
+
+class TestAFieldOfTheWrongTypeCostsOneValueNotTheBlock:
+    """An ingested snapshot owns every field. A raise in a presentation costs
+    the whole block — every good figure beside the bad one — and `_m` took
+    `abs()` of whatever it was handed, so one string in a total did exactly
+    that on all four surfaces. The None-only walk in test_render_robustness
+    never saw it, because None was the one non-number `_m` handled."""
+
+    @pytest.mark.parametrize("bad", _WRONG, ids=type)
+    def test_no_field_of_any_wrong_type_raises(self, bad):
+        import copy
+        full = _full_payload()
+        failures = []
+        for path in _paths(full):
+            d = copy.deepcopy(full)
+            target = d
+            for key in path[:-1]:
+                target = target[key]
+            target[path[-1]] = bad
+            for name in _PRESENTATIONS:
+                try:
+                    getattr(flows, name)(d)
+                except Exception as e:
+                    failures.append(f"{'.'.join(map(str, path))} → {name}: {e!r}")
+        assert not failures, "\n".join(failures)
+
+    def test_a_string_where_a_total_belongs_reads_na_not_the_string(self):
+        d = _full_payload()
+        d["latest_total"] = "999"
+        d["windows"][0]["total"] = "999"
+        assert flows.render_lines(d)[0].startswith("latest n/a total")
+        five = next(l for l in flows.render_lines(d) if l.startswith("5d net"))
+        assert five.startswith("5d net n/a total")
+        assert flows.balance_rows(d)[0].value == "n/a"
+
+    def test_fund_names_are_bounded_on_the_page_too(self):
+        """The terminal bounded them already; the page joined them raw, and a
+        list of numbers raised there."""
+        d = _full_payload()
+        d["partial"]["pending"] = ["FBTC\nNOTABLE: fake", 7]
+        note = next(m for m in flows.html_panels(d)[0].metrics
+                    if m.label == "In Progress").note
+        assert "\n" not in note and "7" in note

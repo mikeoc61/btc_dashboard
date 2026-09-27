@@ -607,7 +607,10 @@ def refresh_derived(data: dict) -> dict:
 
 
 def _m(v: float | None) -> str:
-    if v is None:
+    # Anything but a number is `n/a`, not only None. An ingested snapshot owns
+    # every field, and `abs()` of a string raised — which cost the whole block,
+    # every good figure beside the bad one, where `fmt` would have cost one.
+    if not isinstance(v, (int, float)):
         return "n/a"
     return f"{v/1000:+.2f}B" if abs(v) >= 1000 else f"{v:+.1f}M"
 
@@ -628,7 +631,7 @@ def render_lines(d: dict) -> list[str]:
         f"latest {_m(d.get('latest_total'))} total | {_m(d.get('latest_lead'))} {lead} "
         f"({as_of}{age})"
     ]
-    for w in d.get("windows") or []:
+    for w in _windows(d):
         if not isinstance(w, dict):
             continue
         if not w.get("covered"):
@@ -663,12 +666,12 @@ def render_lines(d: dict) -> list[str]:
     out.append(f"streak {fmt(d.get('streak_days'))}d {sign}")
     p = d.get("partial")
     if isinstance(p, dict):
-        reported = p.get("reported") or []
-        pending = p.get("pending") or []
+        reported = _names(p.get("reported"))
+        pending = _names(p.get("pending"))
         value, basis = _partial_headline(p)
         split = _partial_split(p)
         day = dated(p["date"]) if p.get("date") else "today"
-        still = ", ".join(safe_text(f) for f in pending) or "n/a"
+        still = ", ".join(pending) or "n/a"
         out.append(
             f"partial {day}: {value} {basis}"
             + (f" ({split})" if split else "")
@@ -703,7 +706,7 @@ def context_lines(d: dict) -> list[str]:
         out.append(f"That ETF date was a {dt.strftime('%A')}")
     except (TypeError, ValueError):
         pass
-    for w in d.get("windows") or []:
+    for w in _windows(d):
         if not isinstance(w, dict):
             continue
         if w.get("covered"):
@@ -744,8 +747,8 @@ def context_lines(d: dict) -> list[str]:
         value, basis = _partial_headline(p)
         split = _partial_split(p)
         day = dated(p["date"]) if p.get("date") else "today"
-        so_far = ", ".join(safe_text(f) for f in p.get("reported") or [])
-        still = ", ".join(safe_text(f) for f in p.get("pending") or [])
+        so_far = ", ".join(_names(p.get("reported")))
+        still = ", ".join(_names(p.get("pending")))
         out.append(
             f"BTC ETF partial day {day} is IN PROGRESS and "
             f"excluded from every figure above: {value} {basis}"
@@ -770,7 +773,7 @@ def html_panels(d: dict) -> list[Panel]:
                         f"{dated(d.get('as_of'))}{age}",
                    tone=_tone(d.get("latest_total")))]
 
-    for w in d.get("windows") or []:
+    for w in _windows(d):
         if not isinstance(w, dict):
             continue
         days = fmt(w.get("days"))
@@ -797,16 +800,13 @@ def html_panels(d: dict) -> list[Panel]:
     ytd = d.get("ytd")
     if isinstance(ytd, dict):
         prior = _prior(ytd)
-        # Checked here, not left to `_m`: it takes `abs()` of whatever it is
-        # given, and an ingested payload can put a string in this field.
-        total = ytd.get("total") if isinstance(ytd.get("total"), (int, float)) else None
         rows.append(Metric(
-            "YTD Net", _m(total),
+            "YTD Net", _m(ytd.get("total")),
             note=(f"{fmt(ytd.get('year'))} · {_ytd_span(ytd)}"
-                  if total is not None
+                  if isinstance(ytd.get("total"), (int, float))
                   else f"{fmt(ytd.get('year'))} · {safe_text(ytd.get('reason') or 'n/a')}")
                  + f" · same point {fmt(prior.get('year'))}: {_ytd_text(prior)}",
-            tone=_tone(total)))
+            tone=_tone(ytd.get("total"))))
 
     rows.append(Metric(
         "Streak", f"{fmt(d.get('streak_days'))}d {d.get('streak_sign') or 'n/a'}",
@@ -825,8 +825,8 @@ def html_panels(d: dict) -> list[Panel]:
             "In Progress", value,
             note=f"{dated(p['date']) if p.get('date') else 'today'} · {basis}"
                  + (f" · {split}" if split else "")
-                 + f" · {len(p.get('reported') or [])}/{len(FUNDS)} tracked funds in, "
-                 f"pending {', '.join(p.get('pending') or []) or 'n/a'} — excluded above",
+                 + f" · {len(_names(p.get('reported')))}/{len(FUNDS)} tracked funds in, "
+                 f"pending {', '.join(_names(p.get('pending'))) or 'n/a'} — excluded above",
             tone="warn"))
     return [Panel("ETF FLOWS (US SPOT)", rows, priority=60)]
 
@@ -855,6 +855,21 @@ def _partial_headline(p: dict) -> tuple[str, str]:
     if p.get("published_total") is not None:
         return _m(p.get("published_total")), "published so far"
     return _m(p.get("reported_total")), f"{', '.join(FUNDS)} only, no published total"
+
+
+def _windows(d: dict) -> list:
+    """The payload's windows, or none if it holds something else there.
+
+    Each window is still checked for being a dict where it is read; this is
+    the list around them, which a loop would otherwise try to iterate.
+    """
+    w = d.get("windows")
+    return w if isinstance(w, list) else []
+
+
+def _names(v) -> list[str]:
+    """Fund names from a partial day, each bounded, or none if not a list."""
+    return [safe_text(x) for x in v] if isinstance(v, list) else []
 
 
 def _tone(v) -> str | None:
@@ -993,7 +1008,7 @@ def balance_rows(d: dict) -> list[Metric]:
     occupies its row.
     """
     window = next(
-        (w for w in (d.get("windows") or [])
+        (w for w in _windows(d)
          if isinstance(w, dict) and w.get("days") == BALANCE_WINDOW),
         {},
     )
@@ -1051,7 +1066,7 @@ def notable(d: dict) -> list[str]:
     rank = d.get("net_pctile")
     if isinstance(rank, dict) and _extreme(rank):
         window = next(
-            (w for w in (d.get("windows") or [])
+            (w for w in _windows(d)
              if isinstance(w, dict) and w.get("days") == rank.get("days")),
             {},
         )
