@@ -648,6 +648,30 @@ as the rankable history grows. It says the week is large, not what follows it;
 a directional reading would need a study under `tools/` against the base rate
 first.
 
+**The calendar-year net is always printed beside last year's to the same
+date.** "The funds have taken in $X this year" is how everyone else reports
+ETF flows, so the figure is here for comparability with them — the rolling
+windows answer the same question better on most days, being the same length
+every day. But a calendar sum resets every 1 January, and alone it misleads
+in both directions: on 5 Jan a three-session total reads as weak demand, and
+on 25 Sep 2026 +1.02B read as a quiet year when it was a ~−5.7B drawdown
+recovered by a +6.71B 60 days. Beside +21.95B at the same point of 2025 it
+reads as what it was. Sessions travel with both halves because the spans
+differ — weekends fall differently, and Farside stopped printing holiday rows
+after 19 Jun 2025 — and the two are shown, not normalised.
+
+Anchored to the calendar rather than counted back, it treats a gap
+differently from a window. A rolling window steps over an unusable day and
+still sums N usable ones; a sum from 1 January that steps over one is short by
+it and still says "this year", so any published row in the span that is not
+fully reported makes it `n/a`. So does history that begins inside the year —
+the recent-days fallback page, or 2024, whose flows began on 11 Jan — since
+the first row held need not be the year's first session. Both halves end on
+the last fully-reported day, so the partial day is excluded, and 29 Feb
+compares with 28 Feb. Not on the balance card, whose ETF row is the 5d net,
+and not a `NOTABLE`: it is context, with no threshold that would make it an
+event.
+
 **Weekly seasonality is corrected, two different ways.** `fee_subsidy` runs
 materially lower at weekends, so a raw daily percentile substantially reports
 the day of the week rather than the network. A 7-day mean spans one of each

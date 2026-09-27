@@ -411,6 +411,86 @@ def _carries_flows(row: dict) -> bool:
     return not (all(row.get(f) is None for f in FUNDS) and row.get("Total") == 0.0)
 
 
+def _day_of(row: dict) -> date | None:
+    try:
+        return datetime.strptime(row["date"], "%d %b %Y").date()
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _same_point(d: date, year: int) -> date:
+    """`d`'s calendar date in `year`, 29 Feb falling back to the 28th."""
+    try:
+        return d.replace(year=year)
+    except ValueError:
+        return date(year, 2, 28)
+
+
+def _calendar_net(reported: list[dict], complete: list[dict],
+                  year: int, through: date) -> dict:
+    """The net from 1 Jan of `year` through `through`, or why there is none.
+
+    Anchored to the calendar rather than counted back, which changes what a
+    gap means. A rolling window steps over an unusable day and still sums N
+    usable ones; a sum from 1 January that steps over one is short by that day
+    and still says "this year". So a published row inside the span that did
+    not make `complete` — no Total, or a tracked fund blank — makes it `n/a`.
+
+    It also needs the history to begin before the year does. Without a row
+    from an earlier year there is no telling whether the first row held is
+    the year's first session or only the first one scraped: the recent-days
+    fallback page, or the launch year, whose flows began on 11 Jan 2024.
+    """
+    def inside(r):
+        day = _day_of(r)
+        return day is not None and day.year == year and day <= through
+
+    days = [r for r in complete if inside(r)]
+    out = {
+        "year": year,
+        "through": through.strftime("%d %b %Y"),
+        "sessions": len(days),
+        "total": None,
+        "reason": None,
+    }
+    if any(_day_of(r) is None for r in reported):
+        out["reason"] = "a row's date did not parse"
+    elif not any(_day_of(r).year < year for r in reported):
+        out["reason"] = f"history does not reach back to 1 Jan {year}"
+    elif (short := sum(1 for r in reported if inside(r)) - len(days)):
+        out["reason"] = (f"{short} published row{'s' if short != 1 else ''} "
+                         f"in {year} not fully reported")
+    else:
+        # Unguarded: `complete` has no missing Total. See `_window`.
+        out["total"] = round(sum(r["Total"] for r in days), 1)
+    return out
+
+
+def _ytd(reported: list[dict], complete: list[dict]) -> dict | None:
+    """This calendar year's net, and last year's to the same calendar date.
+
+    Everyone else reports ETF flows this way — "the funds have taken in $X
+    this year" — which is why it is here beside rolling windows that answer
+    the same question better on most days. The comparison is not optional
+    decoration: a calendar sum resets every 1 January, so on 5 Jan a three-
+    session figure reads as weak demand unless the same point of another year
+    sits next to it. Sessions travel with both halves because the two spans
+    differ in length — weekends fall differently, and Farside stopped printing
+    holiday rows after 19 Jun 2025.
+
+    Ends on the last fully-reported day, like every other figure, so the
+    partial day is excluded here too.
+    """
+    end = _day_of(complete[-1]) if complete else None
+    if end is None:
+        return None
+    return {
+        **_calendar_net(reported, complete, end.year, end),
+        "prior": _calendar_net(reported, complete, end.year - 1,
+                               _same_point(end, end.year - 1)),
+    }
+
+
 def summarize(rows: list[dict]) -> dict:
     # A fund column holding an explicit `0.0` is a day that reported no flow,
     # and docstring point 1 says it survives. See `_carries_flows` for the two
@@ -481,6 +561,7 @@ def summarize(rows: list[dict]) -> dict:
             else None
         ),
         "net_pctile": _net_pctile(complete),
+        "ytd": _ytd(reported, complete),
         "partial": partial,
     }
 
@@ -572,6 +653,12 @@ def render_lines(d: dict) -> list[str]:
             line += f" · {rank}"
         out.append(line)
 
+    ytd = d.get("ytd")
+    if isinstance(ytd, dict):
+        prior = _prior(ytd)
+        out.append(f"YTD {fmt(ytd.get('year'))} net {_ytd_text(ytd)} | "
+                   f"same point {fmt(prior.get('year'))} {_ytd_text(prior)}")
+
     sign = safe_text(d.get("streak_sign") or "n/a")
     out.append(f"streak {fmt(d.get('streak_days'))}d {sign}")
     p = d.get("partial")
@@ -632,6 +719,7 @@ def context_lines(d: dict) -> list[str]:
                 f"smaller window's figure."
             )
     out.extend(_rank_context(d))
+    out.extend(_ytd_context(d))
 
     sign = safe_text(d.get("streak_sign") or "same-sign")
     out.append(
@@ -705,6 +793,20 @@ def html_panels(d: dict) -> list[Panel]:
         rows.append(Metric(f"{days}D Net", _m(w.get("total")), note=note,
                            tone=_tone(w.get("total")),
                            note_tone="warn" if _extreme(rank) else None))
+
+    ytd = d.get("ytd")
+    if isinstance(ytd, dict):
+        prior = _prior(ytd)
+        # Checked here, not left to `_m`: it takes `abs()` of whatever it is
+        # given, and an ingested payload can put a string in this field.
+        total = ytd.get("total") if isinstance(ytd.get("total"), (int, float)) else None
+        rows.append(Metric(
+            "YTD Net", _m(total),
+            note=(f"{fmt(ytd.get('year'))} · {_ytd_span(ytd)}"
+                  if total is not None
+                  else f"{fmt(ytd.get('year'))} · {safe_text(ytd.get('reason') or 'n/a')}")
+                 + f" · same point {fmt(prior.get('year'))}: {_ytd_text(prior)}",
+            tone=_tone(total)))
 
     rows.append(Metric(
         "Streak", f"{fmt(d.get('streak_days'))}d {d.get('streak_sign') or 'n/a'}",
@@ -825,6 +927,39 @@ def _rank_context(d: dict) -> list[str]:
         f"history, not whether it will continue. The average daily flow has "
         f"itself shifted across that span, so the rank partly reflects the "
         f"broader regime rather than this window alone."
+    ]
+
+
+def _prior(ytd: dict) -> dict:
+    """Last year's half, or `{}` — an ingested payload owns its shape too."""
+    p = ytd.get("prior")
+    return p if isinstance(p, dict) else {}
+
+
+def _ytd_span(y: dict) -> str:
+    """`184 sessions through Fri 25 Sep 2026` — what a calendar sum covered."""
+    return f"{fmt(y.get('sessions'), missing='?')} sessions through {dated(y.get('through'))}"
+
+
+def _ytd_text(y: dict) -> str:
+    """A calendar net with its span, or `n/a` with the reason it has none."""
+    if isinstance(y.get("total"), (int, float)):
+        return f"{_m(y['total'])} ({_ytd_span(y)})"
+    return f"n/a ({safe_text(y.get('reason') or 'not available')})"
+
+
+def _ytd_context(d: dict) -> list[str]:
+    ytd = d.get("ytd")
+    if not isinstance(ytd, dict):
+        return []
+    prior = _prior(ytd)
+    year, prior_year = fmt(ytd.get("year")), fmt(prior.get("year"))
+    return [
+        f"BTC ETF net so far in calendar {year}: {_ytd_text(ytd)}. At the same "
+        f"calendar date in {prior_year}: {_ytd_text(prior)}. A calendar-year "
+        f"total resets every 1 January, so it is comparable only with the same "
+        f"point of another year — not with a figure from another date, and not "
+        f"with the rolling windows above. An n/a is not zero."
     ]
 
 

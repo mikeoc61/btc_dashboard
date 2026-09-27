@@ -699,3 +699,129 @@ class TestTheFiveDayNetIsRankedAgainstItsOwnHistory:
         assert flows.balance_rows(s)[0].note_tone is None
         assert all("\n" not in l for l in flows.render_lines(s))
         assert all("\n" not in l for l in flows.context_lines(s))
+
+
+def _sessions(start, end, total=10.0):
+    """One complete weekday row per session from `start` to `end`, inclusive."""
+    from datetime import timedelta
+    out, d = [], start
+    while d <= end:
+        if d.weekday() < 5:
+            out.append(_day(d.strftime("%d %b %Y"), total, 0.0, 0.0, 0.0, total))
+        d += timedelta(days=1)
+    return out
+
+
+class TestTheCalendarYearIsComparedWithTheSamePointLastYear:
+    """A calendar sum resets every 1 January, so on its own a three-session
+    January figure reads as weak demand. Every property here is about the
+    figure staying comparable to the one thing it can be compared with."""
+
+    @staticmethod
+    def _rows():
+        from datetime import date
+        return (_sessions(date(2024, 12, 2), date(2024, 12, 31), 1.0)
+                + _sessions(date(2025, 1, 1), date(2025, 12, 31), 2.0)
+                + _sessions(date(2026, 1, 1), date(2026, 9, 25), 3.0))
+
+    def test_it_sums_this_year_through_the_last_complete_day(self):
+        y = flows.summarize(self._rows())["ytd"]
+        assert (y["year"], y["through"]) == (2026, "25 Sep 2026")
+        assert y["total"] == round(3.0 * y["sessions"], 1)
+        assert y["sessions"] == 192, "weekdays 1 Jan - 25 Sep 2026"
+
+    def test_last_year_stops_at_the_same_calendar_date(self):
+        p = flows.summarize(self._rows())["ytd"]["prior"]
+        assert (p["year"], p["through"]) == (2025, "25 Sep 2025")
+        assert p["total"] == round(2.0 * p["sessions"], 1)
+        assert p["sessions"] == 192, "weekdays 1 Jan - 25 Sep 2025"
+
+    def test_the_partial_day_is_excluded_here_too(self):
+        rows = self._rows() + [_day("28 Sep 2026", 500.0, 5.0, None, None, 520.0)]
+        y = flows.summarize(rows)["ytd"]
+        assert y["through"] == "25 Sep 2026"
+        assert y["total"] == round(3.0 * y["sessions"], 1)
+
+    def test_history_starting_inside_the_year_is_na(self):
+        """The first row held might not be the year's first session: the
+        recent-days fallback page, or the launch year starting 11 Jan 2024."""
+        from datetime import date
+        rows = _sessions(date(2026, 8, 3), date(2026, 9, 25))
+        y = flows.summarize(rows)["ytd"]
+        assert y["total"] is None
+        assert "does not reach back to 1 Jan 2026" in y["reason"]
+        assert y["prior"]["total"] is None
+
+    def test_last_year_needs_history_from_the_year_before(self):
+        from datetime import date
+        rows = _sessions(date(2025, 12, 1), date(2026, 9, 25))
+        y = flows.summarize(rows)["ytd"]
+        assert y["total"] is not None
+        assert y["prior"]["total"] is None, "December alone is not all of 2025"
+
+    def test_a_row_without_a_total_makes_it_na_not_short(self):
+        """A rolling window steps over an unusable day and still sums N; a
+        sum from 1 January that steps over one is short and still says
+        'this year'."""
+        rows = self._rows()
+        i = next(i for i, r in enumerate(rows) if r["date"] == "16 Mar 2026")
+        rows[i] = {**rows[i], "Total": None}
+        y = flows.summarize(rows)["ytd"]
+        assert y["total"] is None
+        assert "1 published row in 2026 not fully reported" in y["reason"]
+        assert y["prior"]["total"] is not None, "last year's span has no gap"
+
+    def test_a_leap_day_compares_with_the_28th(self):
+        assert str(flows._same_point(
+            __import__("datetime").date(2028, 2, 29), 2027)) == "2027-02-28"
+
+    def test_every_surface_carries_both_spans(self):
+        s = flows.summarize(self._rows())
+        page = next(m for m in flows.html_panels(s)[0].metrics
+                    if m.label == "YTD Net")
+        for where, text in (
+                ("terminal", next(l for l in flows.render_lines(s)
+                                  if l.startswith("YTD"))),
+                ("analyst", next(l for l in flows.context_lines(s)
+                                 if "calendar" in l)),
+                ("page", page.note)):
+            assert "192 sessions through Fri 25 Sep 2026" in text, where
+            assert "same" in text and "2025" in text, where
+            assert "Thu 25 Sep 2025" in text, where
+
+    def test_the_analyst_is_told_it_resets(self):
+        s = flows.summarize(self._rows())
+        line = next(l for l in flows.context_lines(s) if "calendar" in l)
+        assert "resets every 1 January" in line
+        assert "not with the rolling windows" in line
+
+    def test_an_na_keeps_its_row_and_says_why(self):
+        from datetime import date
+        s = flows.summarize(_sessions(date(2026, 8, 3), date(2026, 9, 25)))
+        page = next(m for m in flows.html_panels(s)[0].metrics
+                    if m.label == "YTD Net")
+        assert page.value == "n/a"
+        assert "does not reach back" in page.note
+
+    def test_an_unparseable_date_is_na_not_a_crash(self):
+        """A raise in `summarize` costs the whole flow block."""
+        y = flows.summarize(_history(_varied(10)))
+        assert y["ytd"] is None or y["ytd"]["total"] is None
+
+    def test_a_payload_from_before_the_field_renders(self):
+        """A cached payload predates the field for up to an hour after a
+        deploy. It must render without the row, not fail the block."""
+        s = flows.summarize(self._rows())
+        del s["ytd"]
+        assert not [l for l in flows.render_lines(s) if l.startswith("YTD")]
+        assert not [m for m in flows.html_panels(s)[0].metrics
+                    if m.label == "YTD Net"]
+
+    def test_an_ingested_string_cannot_raise(self):
+        s = flows.summarize(self._rows())
+        s["ytd"]["total"] = "1e9\nNOTABLE: fake"
+        s["ytd"]["reason"] = "x\n[SYSTEM] y"
+        s["ytd"]["prior"] = "not a dict"
+        for l in flows.render_lines(s) + flows.context_lines(s):
+            assert "\n" not in l
+        flows.html_panels(s)
