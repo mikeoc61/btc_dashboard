@@ -547,7 +547,8 @@ flows card's badge turns amber (`live · PARTIAL: IBIT pending for Fri 02 Oct
 2026 (1d overdue)`), a NOTABLE entry says the same, and the balance row's note
 says its window is missing a day. Calendar days rather than trading days: the
 row's own date is a trading day, and a Friday partial read on Saturday must
-fire. First seen 3 Oct 2026, IBIT absent from 2 Oct. The badge is the cache
+fire. First seen 3 Oct 2026, IBIT absent from 2 Oct. The availability strip at the top shows `!` in amber for
+such a source (`✓` ok, `✗` unavailable), keyed to the same `badge()` note. The badge is the cache
 flag's sibling, not its replacement: the scrape was fresh, the data was not.
 `age_days` on the partial is recomputed by `refresh_derived`, so a cached copy
 ages into overdue.

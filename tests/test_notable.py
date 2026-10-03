@@ -170,3 +170,21 @@ class TestOverduePartialReachesEverySurface:
         blk, _ = self._flows()
         monkeypatch.setattr(flows, "badge", lambda d: 1 / 0)
         assert "ETF FLOWS" in page.render_html(_snap(flows=blk))
+
+    def test_the_tick_is_not_a_green_check_while_the_card_is_amber(self):
+        blk, _ = self._flows()
+        out = page.render_html(_snap(flows=blk))
+        assert 'class="tick warn"><span class="mark">!</span> ETF FLOWS' in out
+        assert 'class="tick ok"><span class="mark">\u2713</span> ETF FLOWS' not in out
+
+    def test_the_marker_survives_the_stylesheet_being_stripped(self):
+        import re
+        blk, _ = self._flows()
+        out = re.sub(r"<style>.*?</style>", "", page.render_html(_snap(flows=blk)), flags=re.S)
+        assert 'class="mark">!</span> ETF FLOWS' in out
+
+    def test_a_complete_day_keeps_the_green_check(self):
+        blk, _ = self._flows()
+        blk["data"]["partial"]["age_days"] = 0
+        out = page.render_html(_snap(flows=blk))
+        assert 'class="tick ok"><span class="mark">\u2713</span> ETF FLOWS' in out

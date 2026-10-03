@@ -344,6 +344,10 @@ _ASKBUSY_JS = """<script>
 </script>"""
 TICK_OK = "\u2713"   # CHECK MARK
 TICK_NO = "\u2717"   # BALLOT X
+# Available, but the source says what it returned is incomplete (`badge`). Plain
+# ASCII on purpose: the stylesheet is held to ASCII, and the glyph is the
+# meaning — the amber only points at it. The card's badge says which and why.
+TICK_WARN = "!"
 
 # Tab icon. Drawn rather than set as a glyph: a "B" exists in every font, but
 # the Bitcoin sign U+20BF does not, and a tab showing a substitution box is
@@ -472,6 +476,7 @@ h1 { font-size:1.05rem; margin:0; letter-spacing:.06em; color:var(--accent); }
 .tick .mark { font-weight:700; }
 .tick.ok .mark { color:var(--up); }
 .tick.no .mark { color:var(--down); }
+.tick.warn .mark { color:var(--warn); }
 .tick.no { color:var(--muted); }
 /* A breakpoint, not a card width. auto-fit stretches tracks to fill the row, so
    a rendered card is always wider than this number and never equal to it: at
@@ -801,11 +806,18 @@ def _live_parts(snapshot: dict) -> dict[str, str]:
     # colours it. A literal also avoids CSS hex escapes, which have to survive
     # two layers of quoting to reach the browser intact — one rewrite turned
     # \2713 into an octal escape and shipped a superscript one.
+    def _tick(n: str, b: dict) -> str:
+        if not b.get("available"):
+            cls, mark = "no", TICK_NO
+        elif snap.badge_note(n, b):
+            cls, mark = "warn", TICK_WARN
+        else:
+            cls, mark = "ok", TICK_OK
+        return (f'<span class="tick {cls}"><span class="mark">{mark}</span> '
+                f'{_esc(snap.TITLES.get(n, n).split(" (")[0])}</span>')
+
     ticks = "".join(
-        f'<span class="tick {"ok" if b.get("available") else "no"}">'
-        f'<span class="mark">{TICK_OK if b.get("available") else TICK_NO}</span> '
-        f'{_esc(snap.TITLES.get(n, n).split(" (")[0])}</span>'
-        for n, b in ((n, snapshot["sources"][n]) for n in snap.ordered_names(snapshot))
+        _tick(n, snapshot["sources"][n]) for n in snap.ordered_names(snapshot)
     )
 
     # Cards are ordered by the priority each source declares, not by source
