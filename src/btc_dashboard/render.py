@@ -127,9 +127,11 @@ def render(snapshot: dict, *, show_errors: bool = True, color: bool | None = Non
             continue
 
         flag = _cache_flag(block)
+        note = snap.badge_note(name, block)
         lines.append(
             paint(title, BOLD, CYAN)
             + paint(flag, YELLOW if block.get("stale") else DIM)
+            + (paint(f" [{note}]", YELLOW) if note else "")
         )
         mod = snap.module_for(name)
         if mod is None:

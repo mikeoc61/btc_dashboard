@@ -86,6 +86,16 @@ SESSIONS_PER_YEAR = 252
 NOTABLE_PCTILE_LOW = 2.5
 NOTABLE_PCTILE_HIGH = 97.5
 
+# A partial row is overdue once a calendar day has passed since its own date.
+# Farside publishes a session's flows the evening it trades, so a partial row is
+# ordinary until that evening and abnormal the next morning. Calendar days, not
+# trading days, are the right count here: the row's date is itself a trading
+# day, so no holiday calendar is needed, and a Friday partial read on Saturday
+# must fire rather than wait for Monday. Seen on 3 Oct 2026, IBIT still absent
+# from 2 Oct. Measured in market time (`age_days`), so it rolls at midnight in
+# New York rather than at 00:00 UTC, which would call a pending evening late.
+PARTIAL_OVERDUE_DAYS = 1
+
 # Farside publishes a trading day's flows once, in the evening — so a scrape
 # more than once an hour buys nothing and only adds load to someone else's
 # site. The cache layer also provides the stale-fallback when the site is
@@ -532,6 +542,7 @@ def summarize(rows: list[dict]) -> dict:
             "other": _other(last),
             "reported": have,
             "pending": [f for f in FUNDS if last.get(f) is None],
+            "age_days": age_days(last["date"]),
         }
 
     windows = [_window(complete, w) for w in WINDOWS]
@@ -603,7 +614,53 @@ def refresh_derived(data: dict) -> dict:
     """
     if data.get("as_of"):
         data["age_days"] = age_days(data["as_of"])
+    # The partial day's lateness ages the same way, and matters more: it is what
+    # decides whether the card is badged, so a stored value would stay "not yet
+    # overdue" all the way through the night a cached copy was being served.
+    p = data.get("partial")
+    if isinstance(p, dict) and p.get("date"):
+        p["age_days"] = age_days(p["date"])
     return data
+
+
+def _overdue(d: dict) -> dict | None:
+    """The partial day, when it has been partial for longer than it should.
+
+    None for no partial, one not yet overdue, or one whose age is not a number
+    (an ingested snapshot may omit it or put text there) — an unknown age is
+    not evidence of lateness, and the `In Progress` row still states the gap.
+    """
+    p = d.get("partial")
+    if not isinstance(p, dict):
+        return None
+    age = p.get("age_days")
+    if isinstance(age, bool) or not isinstance(age, int) or age < PARTIAL_OVERDUE_DAYS:
+        return None
+    return p
+
+
+def _overdue_text(p: dict) -> str:
+    """`IBIT pending for Fri 02 Oct 2026 (1d overdue)`, from the pending list.
+
+    Built from the list rather than naming a fund, so a second pending fund is
+    stated and nothing here is true of IBIT alone. An empty list is an
+    ingested payload that contradicts itself; it falls back to saying the day
+    is incomplete instead of printing a blank.
+    """
+    pending = ", ".join(_names(p.get("pending"))) or "funds"
+    day = dated(p["date"]) if p.get("date") else "the latest day"
+    return f"{pending} pending for {day} ({fmt(p.get('age_days'))}d overdue)"
+
+
+def badge(d: dict) -> str | None:
+    """Card-badge text for a day that is still partial past its publication.
+
+    The cache flag says when the page was *fetched*; this says the thing that
+    was fetched is incomplete. A fresh scrape of a day-old gap read `live`,
+    which is accurate and, next to the other cards, reassuring in the wrong way.
+    """
+    p = _overdue(d)
+    return f"PARTIAL: {_overdue_text(p)}" if p else None
 
 
 def _m(v: float | None) -> str:
@@ -1038,14 +1095,19 @@ def balance_rows(d: dict) -> list[Metric]:
     # the meaning and the tint only points at it. On the note rather than the
     # value, which keeps the colour its inflow/outflow category gives it.
     rank = _rank(d, BALANCE_WINDOW)
+    # The window ends on the last fully-reported day, and by this point a later
+    # one should have been in. Said on the row because it is the row that reads
+    # as current beside readings taken this second.
+    late = _overdue(d)
     return [Metric(
         "ETF Flows", _m(window.get("total")),
         category={"up": "inflow", "down": "outflow"}.get(sign),
         note=f"US spot ETF net, {BALANCE_WINDOW}d through {dated(d.get('as_of'))}"
              + (f" · {_rank_text(rank)}" if rank else "")
-             + " · Farside Total basis, every listed fund",
+             + " · Farside Total basis, every listed fund"
+             + (f" · latest day incomplete: {_overdue_text(late)}" if late else ""),
         tone=sign,
-        note_tone="warn" if _extreme(rank) else None,
+        note_tone="warn" if (late or _extreme(rank)) else None,
     )]
 
 
@@ -1057,6 +1119,9 @@ NOTABLE_STREAK_DAYS = 5
 
 def notable(d: dict) -> list[str]:
     out: list[str] = []
+    overdue = _overdue(d)
+    if overdue:
+        out.append(f"ETF flows: {_overdue_text(overdue)}")
     days, sign = d.get("streak_days"), d.get("streak_sign")
     if isinstance(days, int) and days >= NOTABLE_STREAK_DAYS and sign in ("inflow", "outflow"):
         out.append(f"ETF flows: {days} consecutive {sign} days")

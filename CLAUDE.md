@@ -179,6 +179,7 @@ def render_lines(data) -> list[str]:    # terminal
 def context_lines(data) -> list[str]:   # facts phrased for the LLM
 def html_panels(data) -> list[Panel]:   # optional; cards, each with a priority
 def notable(data) -> list[str]:         # optional; NOTABLE entries, threshold-selected
+def badge(data) -> str | None:           # optional; appended to the card's freshness badge, amber
 def balance_rows(data) -> list[Metric]: # optional; balance card — must survive {}
 def refresh_derived(data) -> dict:      # optional; only if fields age with the clock
 def analyst_tools(cfg) -> list[Tool]:   # optional; live queries lent to --ask

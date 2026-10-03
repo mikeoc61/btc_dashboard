@@ -623,14 +623,21 @@ def _esc(text) -> str:
     return _html.escape(str(text), quote=True)
 
 
-def _badge(block: dict) -> tuple[str, str]:
-    """Freshness marker for a card, mirroring the terminal's flags."""
+def _badge(block: dict, name: str | None = None) -> tuple[str, str]:
+    """Freshness marker for a card, mirroring the terminal's flags.
+
+    A source's own note (`snapshot.badge_note`) is appended and turns the badge
+    amber: the fetch can be perfectly fresh while the data is not.
+    """
     if block.get("stale"):
         age = block.get("cache_age_seconds")
-        return (f"STALE {human_age(age)}" if age is not None else "STALE"), "warn"
-    if block.get("cached"):
-        return f"cached {human_age(block.get('cache_age_seconds'))}", ""
-    return "live", ""
+        label, cls = (f"STALE {human_age(age)}" if age is not None else "STALE"), "warn"
+    elif block.get("cached"):
+        label, cls = f"cached {human_age(block.get('cache_age_seconds'))}", ""
+    else:
+        label, cls = "live", ""
+    note = snap.badge_note(name, block) if name else None
+    return (f"{label} · {note}", "warn") if note else (label, cls)
 
 
 def _rows(metrics: list[Metric]) -> str:
@@ -826,7 +833,7 @@ def _live_parts(snapshot: dict) -> dict[str, str]:
         # Every card of a source carries the badge. One source can produce
         # several cards, the grid wraps them onto different rows, and a badge on
         # the first alone leaves the others looking undated.
-        label, cls = _badge(block)
+        label, cls = _badge(block, name)
         badge = f'<span class="badge {cls}">{_esc(label)}</span>'
         # The failure reason stays on the source's first card: repeating one
         # error three times reads as three problems.

@@ -479,6 +479,7 @@ def context_lines(data) -> list[str]:   # facts phrased for the LLM
 
 def html_panels(data) -> list[Panel]:   # optional; cards for --html and the web view
 def notable(data) -> list[str]:         # optional; NOTABLE entries, threshold-selected
+def badge(data) -> str | None:           # optional; appended to the card's freshness badge, amber
 def balance_rows(data) -> list[Metric]: # optional; rows on the BALANCE OF EVIDENCE card
 def refresh_derived(data) -> dict:      # optional; only if fields age with the clock
 def analyst_tools(cfg) -> list[Tool]:   # optional; live queries offered to --ask
@@ -538,6 +539,18 @@ cannot tell you which, and it does not matter, since neither is a day that
 reported no flow. Both are dropped rather than averaged in. The shape appears
 live every day before publication, so it is not named for closures even though
 16 of its 17 occurrences in the BTC history are holidays.
+
+**A partial day goes overdue after one calendar day.** A partial row is
+ordinary until the evening its session trades, because Farside publishes once,
+then. Once the date is a day behind (`PARTIAL_OVERDUE_DAYS`, market time) the
+flows card's badge turns amber (`live · PARTIAL: IBIT pending for Fri 02 Oct
+2026 (1d overdue)`), a NOTABLE entry says the same, and the balance row's note
+says its window is missing a day. Calendar days rather than trading days: the
+row's own date is a trading day, and a Friday partial read on Saturday must
+fire. First seen 3 Oct 2026, IBIT absent from 2 Oct. The badge is the cache
+flag's sibling, not its replacement: the scrape was fresh, the data was not.
+`age_days` on the partial is recomputed by `refresh_derived`, so a cached copy
+ages into overdue.
 
 The test is *no fund posted*, not *everything is zero*: the site rounds to
 0.1M, so on an asset with smaller flows a quiet but perfectly real session

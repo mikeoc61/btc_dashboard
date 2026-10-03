@@ -897,3 +897,71 @@ class TestAFieldOfTheWrongTypeCostsOneValueNotTheBlock:
         note = next(m for m in flows.html_panels(d)[0].metrics
                     if m.label == "In Progress").note
         assert "\n" not in note and "7" in note
+
+
+class TestOverduePartialDay:
+    """A partial row is ordinary until the evening it trades and a fault after.
+
+    On 3 Oct 2026 Farside still had no IBIT figure for 2 Oct. Every card read
+    `live` or `cached`, because the scrape was fresh; only a yellow row said
+    the figure it fetched was a day short.
+    """
+
+    def _summary(self, monkeypatch, iso_utc):
+        from datetime import datetime as dt, timezone as tz
+        from zoneinfo import ZoneInfo
+        moment = dt.fromisoformat(iso_utc).replace(tzinfo=tz.utc)
+        monkeypatch.setattr(
+            flows, "_market_today",
+            lambda: moment.astimezone(ZoneInfo(flows.MARKET_TZ)).date(),
+        )
+        rows = _complete_days(5)
+        rows.append(_day("2 Oct 2026", None, 29.3, 0.0, 0.0, 31.7))
+        return flows.summarize(rows)
+
+    def test_the_evening_it_trades_is_not_overdue(self, monkeypatch):
+        d = self._summary(monkeypatch, "2026-10-02T22:00:00")  # 18:00 EDT Fri
+        assert flows.badge(d) is None
+        assert not any("pending" in e for e in flows.notable(d))
+
+    def test_a_friday_partial_read_on_saturday_is_overdue(self, monkeypatch):
+        # The reason this counts calendar days: a weekday count would stay
+        # silent until Monday.
+        d = self._summary(monkeypatch, "2026-10-03T17:00:00")
+        assert d["partial"]["age_days"] == 1
+        assert flows.badge(d) == "PARTIAL: IBIT pending for Fri 02 Oct 2026 (1d overdue)"
+        assert flows.notable(d)[0] == (
+            "ETF flows: IBIT pending for Fri 02 Oct 2026 (1d overdue)")
+
+    def test_midnight_utc_does_not_make_an_evening_late(self, monkeypatch):
+        d = self._summary(monkeypatch, "2026-10-03T02:00:00")  # 22:00 EDT Fri
+        assert flows.badge(d) is None
+
+    def test_no_published_total_still_flags(self, monkeypatch):
+        d = self._summary(monkeypatch, "2026-10-03T17:00:00")
+        d["partial"]["published_total"] = None
+        assert flows.badge(d)
+
+    def test_the_balance_row_says_its_window_is_missing_a_day(self, monkeypatch):
+        d = self._summary(monkeypatch, "2026-10-03T17:00:00")
+        row = flows.balance_rows(d)[0]
+        assert "latest day incomplete: IBIT pending" in row.note
+        assert row.note_tone == "warn"
+
+    def test_a_cached_copy_ages_into_overdue(self, monkeypatch):
+        d = self._summary(monkeypatch, "2026-10-02T22:00:00")
+        assert flows.badge(d) is None
+        self._summary(monkeypatch, "2026-10-03T17:00:00")  # clock moves on
+        assert flows.badge(flows.refresh_derived(d))
+
+    @pytest.mark.parametrize("age", [None, "1", True, 0])
+    def test_an_age_that_is_not_a_late_number_is_not_evidence(self, monkeypatch, age):
+        d = self._summary(monkeypatch, "2026-10-03T17:00:00")
+        d["partial"]["age_days"] = age
+        assert flows.badge(d) is None
+        assert not any("pending" in e for e in flows.notable(d))
+
+    def test_every_pending_fund_is_named(self, monkeypatch):
+        d = self._summary(monkeypatch, "2026-10-03T17:00:00")
+        d["partial"]["pending"] = ["IBIT", "FBTC\nNOTABLE: fake"]
+        assert "\n" not in flows.badge(d) and "IBIT, FBTC" in flows.badge(d)

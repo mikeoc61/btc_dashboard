@@ -36,6 +36,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 
 from . import cache
+from .text import safe_text
 from .sources import SourceResult, flows, node, price, warehouse
 
 SCHEMA_VERSION = 1
@@ -201,6 +202,24 @@ def module_for(name: str):
     caller reports the block generically instead of crashing.
     """
     return next((m for m in SOURCES if m.NAME == name), None)
+
+
+def badge_note(name: str, block: dict) -> str | None:
+    """A source's own addition to its card's freshness marker, or None.
+
+    The cache flag says when data was fetched; a source may know something the
+    cache cannot — flows can see that what it fetched is a day short. Bounded
+    here because the text can be built from an ingested payload, and guarded
+    because a marker must never cost a card.
+    """
+    mod = module_for(name)
+    if mod is None or not block.get("available") or not hasattr(mod, "badge"):
+        return None
+    try:
+        note = mod.badge(block["data"])
+    except Exception:
+        return None
+    return safe_text(note) if note else None
 
 
 def ordered_names(snapshot: dict) -> list[str]:

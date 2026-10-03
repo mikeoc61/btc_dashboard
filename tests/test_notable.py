@@ -139,3 +139,34 @@ class TestThePageAndThePromptAgree:
         quiet["sources"]["warehouse"]["data"]["signals"] = {"trades_pctile": 40.0}
         assert "[NOTABLE:" not in page.render_html(quiet)
         assert "No reading crossed" in analyst.build_context(quiet)
+
+
+class TestOverduePartialReachesEverySurface:
+    """Badge, bracket and prompt are one fact; they must not be able to differ."""
+
+    def _flows(self):
+        from btc_dashboard.sources import flows
+        return _block({"as_of": "1 Oct 2026", "streak_days": 1, "streak_sign": "inflow",
+                       "windows": [], "partial": {
+                           "date": "2 Oct 2026", "age_days": 1, "pending": ["IBIT"],
+                           "reported": ["FBTC"], "published_total": 31.7,
+                           "reported_total": 29.3, "other": 2.4}}), flows
+
+    def test_the_same_text_on_the_badge_and_in_the_list(self):
+        blk, flows = self._flows()
+        s = _snap(flows=blk)
+        assert any("IBIT pending for Fri 02 Oct 2026 (1d overdue)" in e
+                   for e in notable.entries(s))
+        out = page.render_html(s)
+        assert "live · PARTIAL: IBIT pending for Fri 02 Oct 2026 (1d overdue)" in out
+
+    def test_the_badge_turns_amber_and_says_it_in_words(self):
+        blk, _ = self._flows()
+        out = page.render_html(_snap(flows=blk))
+        assert 'badge warn">live · PARTIAL' in out
+
+    def test_a_raising_badge_costs_the_marker_not_the_card(self, monkeypatch):
+        from btc_dashboard.sources import flows
+        blk, _ = self._flows()
+        monkeypatch.setattr(flows, "badge", lambda d: 1 / 0)
+        assert "ETF FLOWS" in page.render_html(_snap(flows=blk))
