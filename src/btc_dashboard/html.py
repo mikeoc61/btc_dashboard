@@ -344,7 +344,8 @@ _ASKBUSY_JS = """<script>
 </script>"""
 TICK_OK = "\u2713"   # CHECK MARK
 TICK_NO = "\u2717"   # BALLOT X
-# Available, but the source says what it returned is incomplete (`badge`). Plain
+# Available, but old (`stale`) or, by the source's own account, incomplete
+# (`badge`). Plain
 # ASCII on purpose: the stylesheet is held to ASCII, and the glyph is the
 # meaning — the amber only points at it. The card's badge says which and why.
 TICK_WARN = "!"
@@ -809,7 +810,9 @@ def _live_parts(snapshot: dict) -> dict[str, str]:
     def _tick(n: str, b: dict) -> str:
         if not b.get("available"):
             cls, mark = "no", TICK_NO
-        elif snap.badge_note(n, b):
+        elif b.get("stale") or snap.badge_note(n, b):
+            # Stale is the cache's own form of the same fact: the source has
+            # data, and it is not current. Both badge amber on the card.
             cls, mark = "warn", TICK_WARN
         else:
             cls, mark = "ok", TICK_OK

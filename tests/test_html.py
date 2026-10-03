@@ -176,6 +176,15 @@ class TestAvailabilityTicks:
         assert "\\" not in page.CSS
         assert all(ord(c) < 128 for c in page.CSS)
 
+    def test_a_stale_source_is_not_a_green_check(self):
+        """Stale data is still `available`; the card badges it amber, so the
+        strip must not say ok beside it."""
+        snap = self._two_sources(node_ok=True)
+        snap["sources"]["node"]["stale"] = True
+        out = page.render_html(snap)
+        assert 'class="tick warn"><span class="mark">!</span> NETWORK' in out
+        assert 'class="tick ok"><span class="mark">\u2713</span> NETWORK' not in out
+
     def test_ticks_name_their_source(self):
         out = page.render_html(self._two_sources(node_ok=True))
         assert "PRICE" in out and "NETWORK" in out
