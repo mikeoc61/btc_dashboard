@@ -785,6 +785,31 @@ standard error is 5.6% — the strip led with a reading indistinguishable from
 on-pace. The bound is now 2σ, and the band travels onto the strip with the
 level.
 
+**Fee estimates are pinned to Core's block policy estimator.** From Bitcoin
+Core 32.0, `estimatesmartfee` defaults to `auto`: the lower of the block policy
+estimate (built from how fast past transactions confirmed) and a new
+mempool-based one, falling back to block policy alone while the mempool
+estimator has too few recent blocks. Left at the default, the three figures
+could sit on different bases in one card, and silently move from one basis to
+the other in the hour or so after every node restart. `node` passes
+`fee_rate_estimator: block_policy`, which is what every Core before 32
+reported, so the series is continuous across the upgrade, and both the
+terminal and the card say `block policy` next to it.
+
+A missing fee carries the node's own reason (`fees_error`), shown beside the
+`n/a`. The case that prompted it: the pibot upgrade from 30.5 to 32.1 on
+22 Nov 2026 migrated `fee_estimates.dat` to `fees/block_policy_estimates.dat`
+and then rejected it as too old to read, so the estimator started from empty
+and all three figures read `n/a` for hours, with nothing to tell that apart
+from a broken renderer. When it recovered, it could estimate two blocks out
+and no further, and answered all three requests at that target
+(`"blocks": 2`). So a figure is kept only when the node's returned target is
+the one asked for; otherwise it is `n/a`, with the target the node did reach
+as the reason — the unfillable-window rule, applied to a horizon instead of a
+mean. Each fee call also fails on its own, so a node that
+rejects the call — any pre-32 node rejects the options argument — costs that
+figure, not the hashrate, difficulty and mempool beside it.
+
 **Volatility is reported as a level *and two* percentiles, with the
 annualisation named.** The level is not portable: the same series on a 252-day year reads
 ~17% lower, and the price source and close time move it further. So a level

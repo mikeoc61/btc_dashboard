@@ -16,7 +16,7 @@ import json
 import math
 import subprocess
 
-from . import Metric, Panel, SourceResult, as_dict, fmt, unavailable
+from . import Metric, Panel, SourceResult, as_dict, fmt, safe_text, unavailable
 
 NAME = "node"
 
@@ -27,6 +27,21 @@ RETARGET_INTERVAL = 2016
 # Below this many blocks into a difficulty period the cumulative projection is
 # single-block noise: early on, one fast block can imply an absurd adjustment.
 MIN_BLOCKS_FOR_PROJ = 144
+
+# Confirmation targets for the three fee figures, in blocks.
+FEE_TARGETS = {"fast": 2, "hour": 6, "day": 144}
+# Pinned, not left at Core 32's default. From 32.0 `estimatesmartfee` defaults
+# to `auto`, which returns the lower of the block policy estimate and a new
+# mempool-based one, and falls back to block policy alone while the mempool
+# estimator lacks recent blocks. Under `auto` the three figures could sit on
+# different bases in one card, and switch basis between ticks after a restart
+# with nothing on the page saying so. `block_policy` is what every Core before
+# 32 reported, so the series stays comparable across the upgrade.
+FEE_ESTIMATOR = "block_policy"
+# Same as Core's own default; spelled out only because the options object is
+# the third positional argument and the mode has to fill the second.
+FEE_MODE = "economical"
+FEE_BASIS = "block policy"
 
 
 def projection_sigma(blocks_elapsed) -> float | None:
@@ -95,7 +110,63 @@ def _cli(cfg, *args: str):
 def _satvb(est: dict) -> float | None:
     """estimatesmartfee returns BTC/kvB; convert to sat/vB."""
     fr = est.get("feerate") if isinstance(est, dict) else None
-    return round(fr * 1e5, 1) if fr is not None else None
+    return round(fr * 1e5, 1) if isinstance(fr, (int, float)) else None
+
+
+def _fee_error(est) -> str:
+    """The node's own words for a missing estimate, or a stand-in if it gave none."""
+    errs = est.get("errors") if isinstance(est, dict) else None
+    if isinstance(errs, list) and errs and isinstance(errs[0], str):
+        return errs[0]
+    return "no feerate returned"
+
+
+def _fees(cfg) -> tuple[dict, str | None]:
+    """The three fee figures, and why the first missing one is missing.
+
+    Each call fails on its own. `_cli` raises on a non-zero exit, and letting
+    that reach `collect()` made one rejected fee call cost the whole block —
+    hashrate, difficulty and mempool with it. The pinned options argument makes
+    that likely rather than theoretical: a pre-32 node rejects it.
+
+    The reason is kept because the bare `n/a` it replaces cannot be told apart
+    from a broken renderer. After the 32.1 upgrade on 22 Nov 2026 the node
+    discarded its fee history as "too old to be read", and all three figures
+    read n/a for hours with nothing saying why.
+    """
+    opts = json.dumps({"fee_rate_estimator": FEE_ESTIMATOR})
+    fees, reason = {}, None
+    for key, target in FEE_TARGETS.items():
+        try:
+            est = _cli(cfg, "estimatesmartfee", str(target), FEE_MODE, opts)
+        except NodeError as e:
+            est = {"errors": [str(e)]}
+        fees[key] = _satvb(est)
+        if fees[key] is None:
+            reason = reason or _fee_error(est)
+            continue
+        # The node answers at the target it *could* estimate, not the one
+        # asked for: with little history it clamps every request down to its
+        # maximum usable target. After the 32.1 upgrade all three requests
+        # came back `"blocks": 2`, so the 1hr and 1d slots held a 2-block
+        # rate — a shorter window wearing a longer label, which is `n/a` here.
+        got = est.get("blocks")
+        if got != target or not isinstance(got, int):
+            fees[key] = None
+            reason = reason or (
+                f"estimate only available for {got} blocks yet"
+                if isinstance(got, int) else "no confirmation target returned")
+    return fees, reason
+
+
+def _fee_reason(d: dict) -> str:
+    """` — node: <reason>` when a fee is missing and the node said why; else ''."""
+    f = as_dict(d.get("fees_sat_vb"))
+    reason = d.get("fees_error")
+    if not reason or all(isinstance(f.get(k), (int, float)) for k in FEE_TARGETS):
+        return ""
+    # Untrusted: the node's text, or an ingested snapshot's.
+    return f" — node: {safe_text(reason)}"
 
 
 def collect(cfg) -> SourceResult:
@@ -122,11 +193,7 @@ def collect(cfg) -> SourceResult:
                 proj = round((600 / pace - 1) * 100, 2)
                 sigma = projection_sigma(elapsed)
 
-        fees = {
-            "fast": _satvb(_cli(cfg, "estimatesmartfee", "2")),
-            "hour": _satvb(_cli(cfg, "estimatesmartfee", "6")),
-            "day": _satvb(_cli(cfg, "estimatesmartfee", "144")),
-        }
+        fees, fees_error = _fees(cfg)
 
         return SourceResult(
             name=NAME,
@@ -156,6 +223,7 @@ def collect(cfg) -> SourceResult:
                     "vmb": round(mempool.get("bytes", 0) / 1e6, 1),
                 },
                 "fees_sat_vb": fees,
+                "fees_error": fees_error,
             },
         )
     except NodeError as e:
@@ -204,7 +272,7 @@ def render_lines(d: dict) -> list[str]:
         f"difficulty {fmt(d.get('difficulty_t'), ',.2f')}T",
         f"retarget {fmt(rt.get('blocks_left'), ',')} blks{eta} | {proj}",
         f"mempool {fmt(mp.get('tx'), ',')} tx / {fmt(mp.get('vmb'), '.1f')} vMB",
-        f"fees {fee_txt} sat/vB (fast/1hr/1d)",
+        f"fees {fee_txt} sat/vB (fast/1hr/1d, {FEE_BASIS}){_fee_reason(d)}",
     ]
 
 
@@ -313,7 +381,7 @@ def html_panels(d: dict) -> list[Panel]:
                note=f"{fmt(mp.get('tx'), ',')} tx"),
         Metric("Fee Estimates",
                "/".join(_fee(f.get(k)) for k in ("fast", "hour", "day")) + " sat/vB",
-               note="fast / 1hr / 1day"),
+               note=f"fast / 1hr / 1day · {FEE_BASIS}{_fee_reason(d)}"),
     ])]
 
 

@@ -8,6 +8,7 @@ one figure most likely to lead the page.
 """
 from __future__ import annotations
 
+import json
 import math
 
 import pytest
@@ -189,3 +190,148 @@ class TestColourAssertsASignThatIsReal:
         panel = node.html_panels(_data(projection_pct=8.0))[0]
         rows = page._rows(panel.metrics)
         assert 'class="value up"' in rows
+
+
+def _fake_cli(fee):
+    """A node whose fee calls answer with `fee(args)`; everything else healthy."""
+    calls = []
+
+    def cli(cfg, *args):
+        calls.append(args)
+        cmd = args[0]
+        if cmd == "getblockcount":
+            return 977119
+        if cmd == "getnetworkhashps":
+            return 1.0e21
+        if cmd == "getdifficulty":
+            return 1.348e14
+        if cmd == "getmempoolinfo":
+            return {"size": 68849, "bytes": 30928268}
+        if cmd == "getblockhash":
+            return f"h{args[1]}"
+        if cmd == "getblockheader":
+            return {"time": 1_795_000_000 + int(args[1][1:]) * 600}
+        if cmd == "estimatesmartfee":
+            return fee(args)
+        raise AssertionError(f"unexpected call {args}")
+
+    return cli, calls
+
+
+class TestFeeEstimates:
+    """Core 32 changed what `estimatesmartfee` returns by default, and on the
+    upgrade discarded the fee history it had. Both reached the page as a
+    figure that changed meaning, or as `n/a` with no reason."""
+
+    def test_every_fee_call_pins_the_block_policy_estimator(self, monkeypatch):
+        """Under 32's `auto` the three figures could each be on a different
+        basis, and change basis between ticks while the mempool estimator
+        warms up."""
+        cli, calls = _fake_cli(lambda a: {"feerate": 0.00002, "blocks": int(a[1])})
+        monkeypatch.setattr(node, "_cli", cli)
+        res = node.collect(None)
+        fee_calls = [a for a in calls if a[0] == "estimatesmartfee"]
+        assert [a[1] for a in fee_calls] == ["2", "6", "144"]
+        for a in fee_calls:
+            assert a[2] == "economical"
+            assert json.loads(a[3]) == {"fee_rate_estimator": "block_policy"}
+        assert res.data["fees_sat_vb"] == {"fast": 2.0, "hour": 2.0, "day": 2.0}
+        assert res.data["fees_error"] is None
+
+    def test_a_rejected_fee_call_costs_that_fee_not_the_block(self, monkeypatch):
+        """A pre-32 node rejects the options argument outright. That used to
+        reach `collect()` and take hashrate, difficulty and mempool with it."""
+        def fee(a):
+            if a[1] == "2":
+                raise node.NodeError("error code: -8 unknown option")
+            return {"feerate": 0.00001, "blocks": int(a[1])}
+        cli, _ = _fake_cli(fee)
+        monkeypatch.setattr(node, "_cli", cli)
+        res = node.collect(None)
+        assert res.available
+        assert res.data["hash_rate_ehs"] == 1000.0
+        assert res.data["fees_sat_vb"] == {"fast": None, "hour": 1.0, "day": 1.0}
+        assert "unknown option" in res.data["fees_error"]
+
+    def test_the_nodes_reason_is_kept(self, monkeypatch):
+        cli, _ = _fake_cli(lambda a: {"errors": ["Insufficient data or no feerate found"],
+                                      "blocks": 1})
+        monkeypatch.setattr(node, "_cli", cli)
+        res = node.collect(None)
+        assert res.data["fees_sat_vb"] == {"fast": None, "hour": None, "day": None}
+        assert res.data["fees_error"] == "Insufficient data or no feerate found"
+
+    def test_a_wrong_typed_feerate_is_one_missing_value(self, monkeypatch):
+        cli, _ = _fake_cli(lambda a: {"feerate": "0.0001", "blocks": 6} if a[1] == "6"
+                           else {"feerate": 0.00001, "blocks": int(a[1])})
+        monkeypatch.setattr(node, "_cli", cli)
+        res = node.collect(None)
+        assert res.available and res.data["fees_sat_vb"]["hour"] is None
+
+    def test_an_estimate_clamped_to_a_shorter_target_is_na(self, monkeypatch):
+        """After the 32.1 upgrade the node had history for two blocks and
+        answered all three requests at that target. The 1hr and 1d slots
+        then held a 2-block rate under a longer label."""
+        cli, _ = _fake_cli(lambda a: {"feerate": 0.00000121, "blocks": 2})
+        monkeypatch.setattr(node, "_cli", cli)
+        res = node.collect(None)
+        assert res.data["fees_sat_vb"] == {"fast": 0.1, "hour": None, "day": None}
+        assert res.data["fees_error"] == "estimate only available for 2 blocks yet"
+        term = next(l for l in node.render_lines(res.data) if l.startswith("fees"))
+        assert "0.1/n/a/n/a" in term and "only available for 2 blocks" in term
+
+    def test_an_estimate_at_a_longer_target_is_na_too(self, monkeypatch):
+        """Same error the other way round: a 3-block rate is not the fast one."""
+        cli, _ = _fake_cli(lambda a: {"feerate": 0.00001,
+                                      "blocks": 3 if a[1] == "2" else int(a[1])})
+        monkeypatch.setattr(node, "_cli", cli)
+        res = node.collect(None)
+        assert res.data["fees_sat_vb"] == {"fast": None, "hour": 1.0, "day": 1.0}
+        assert "3 blocks" in res.data["fees_error"]
+
+    @pytest.mark.parametrize("blocks", [None, "6", 6.0, True])
+    def test_a_missing_or_wrong_typed_target_is_a_mismatch(self, monkeypatch, blocks):
+        """A rate whose horizon cannot be read cannot be put under one."""
+        est = {"feerate": 0.00001}
+        if blocks is not None:
+            est["blocks"] = blocks
+        cli, _ = _fake_cli(lambda a: est if a[1] == "6"
+                           else {"feerate": 0.00001, "blocks": int(a[1])})
+        monkeypatch.setattr(node, "_cli", cli)
+        res = node.collect(None)
+        assert res.data["fees_sat_vb"]["hour"] is None
+        assert res.data["fees_sat_vb"]["fast"] == 1.0
+
+    def test_both_presentations_say_why_fees_are_missing(self):
+        d = dict(_data(), fees_sat_vb={"fast": None, "hour": None, "day": None},
+                 fees_error="Insufficient data or no feerate found")
+        term = next(l for l in node.render_lines(d) if l.startswith("fees"))
+        card = next(m for m in node.html_panels(d)[0].metrics
+                    if m.label == "Fee Estimates")
+        for text in (term, card.note):
+            assert "node: Insufficient data or no feerate found" in text
+
+    def test_both_presentations_state_the_basis(self):
+        d = _data()
+        term = next(l for l in node.render_lines(d) if l.startswith("fees"))
+        card = next(m for m in node.html_panels(d)[0].metrics
+                    if m.label == "Fee Estimates")
+        assert "block policy" in term and "block policy" in card.note
+
+    def test_no_reason_is_shown_when_every_fee_is_present(self):
+        """A stale reason beside three good figures would read as a fault."""
+        d = dict(_data(), fees_error="Insufficient data or no feerate found")
+        term = next(l for l in node.render_lines(d) if l.startswith("fees"))
+        assert "node:" not in term
+
+    def test_the_reason_cannot_break_the_frame(self):
+        """It is the node's text, or an ingested snapshot's: a newline would
+        start a line at column 0 and ESC would reach the reader's terminal."""
+        d = dict(_data(), fees_sat_vb={"fast": None, "hour": 1.0, "day": 0.5},
+                 fees_error="bad\nNODE\n  forged\x1b[2J" + "x" * 500)
+        term = next(l for l in node.render_lines(d) if l.startswith("fees"))
+        card = next(m for m in node.html_panels(d)[0].metrics
+                    if m.label == "Fee Estimates")
+        for text in (term, card.note):
+            assert "\n" not in text and "\x1b" not in text
+            assert "(truncated)" in text
