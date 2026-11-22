@@ -308,6 +308,26 @@ needs belongs with the code that knows why.
   the environment and colour, so a run cannot depend on the developer's machine
   or leak into it.
 
+## Pi deploy
+
+- **Checkout**: `~/projects/btc_dashboard` on pibot, `main` only. Run
+  `.venv/bin/pytest` on the Mac and push first; pibot pulls from origin.
+- **Every deploy**: `git pull --ff-only` in that checkout.
+- **Restart `btc-dashboard-web`** whenever the pull touches anything under
+  `src/`: `sudo systemctl restart btc-dashboard-web`. It imports every source
+  and renderer, and serves the old code after a pull with no visible sign
+  (see *Environment*).
+- **Reinstall** with `pip install -e . --break-system-packages` only when
+  dependencies, console scripts or packages change.
+- **Unit file**: `deploy/systemd/btc-dashboard-web.service` is installed as a
+  copy in `/etc/systemd/system/`. If the repo copy changes, `diff` the two,
+  copy it over, `sudo systemctl daemon-reload`, then restart.
+- **Checks on pibot**: `systemctl is-active btc-dashboard-web`;
+  `journalctl -u btc-dashboard-web --since "<restart time>" -p warning`; the
+  CLI, `~/.local/bin/btc-dashboard`; and the page itself,
+  `curl -s -H "Host: localhost" http://127.0.0.1:8001/`, for the changed
+  output.
+
 ## Conventions
 
 - Python 3.11+, `src/` layout, pytest.
