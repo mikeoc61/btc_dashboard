@@ -23,7 +23,7 @@ import json
 
 from . import composite, notable as _notable_mod, snapshot as snap
 from .render import human_age
-from .sources import Metric, Panel
+from .sources import Metric, Panel, node
 
 REFRESH_SECONDS = 60
 
@@ -31,7 +31,10 @@ REFRESH_SECONDS = 60
 # agree on them: the page that lays them out, the fragment that re-renders
 # them, and the script that patches one into the other. Three literals would
 # drift the first time a region moved.
-LIVE_IDS = ("ticks", "stamp", "composite", "cards")
+# `corever` sits inside the otherwise static <h1>: the title never changes,
+# but the node's version does on an upgrade, and a label fixed at page load
+# would keep naming the old one for as long as the tab stayed open.
+LIVE_IDS = ("corever", "ticks", "stamp", "composite", "cards")
 
 # The regions the PNG capture draws, named for the same reason `LIVE_IDS` is:
 # what the image contains has to be agreed on by the markup that ids the
@@ -922,6 +925,9 @@ def _live_parts(snapshot: dict) -> dict[str, str]:
     # card takes the whole row on a day with nothing to lead with.
     return {
         "ticks": f'<div class="ticks" id="ticks">{ticks}</div>',
+        # Present but empty with no node, so a later tick has a span to fill.
+        "corever": f'<span class="meta" id="corever">'
+                   f'{_esc(node.version_label(snapshot))}</span>',
         "stamp": f'<div class="meta" id="stamp">{_esc(generated)} UTC</div>',
         "composite": f'<div id="composite">{balance_html}</div>',
         "cards": f'<div class="grid" id="cards">{"".join(cards)}</div>',
@@ -1067,7 +1073,7 @@ def render_html(snapshot: dict, *, title: str = "BTC DASHBOARD",
 <style>{CSS}</style></head>
 <body>
 <header id="pagehead">
-  <h1>{_esc(title)}</h1>
+  <h1>{_esc(title)} {parts['corever']}</h1>
   {parts['ticks']}
   {parts['stamp']}
 </header>

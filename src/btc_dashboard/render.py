@@ -10,6 +10,7 @@ import os
 import sys
 
 from . import composite, snapshot as snap
+from .sources import node
 from .text import safe_text
 
 RULE = "─" * 60
@@ -92,7 +93,9 @@ def render(snapshot: dict, *, show_errors: bool = True, color: bool | None = Non
     # Sanitized before slicing, not after: an escape sequence short enough to
     # fit inside a 19-character timestamp is still an escape sequence.
     generated = safe_text(snapshot["generated_at"])[:19].replace("T", " ")
-    lines.append(paint(f"BTC DASHBOARD — {generated} UTC", BOLD))
+    version = node.version_label(snapshot)
+    lines.append(paint(f"BTC DASHBOARD{' ' + version if version else ''} — "
+                       f"{generated} UTC", BOLD))
     lines.append(paint(RULE, DIM))
 
     # The digest leads, for the same reason it leads the page: it is what a

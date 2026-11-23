@@ -192,7 +192,8 @@ class TestColourAssertsASignThatIsReal:
         assert 'class="value up"' in rows
 
 
-def _fake_cli(fee):
+def _fake_cli(fee, netinfo=lambda: {"version": 320100,
+                                     "subversion": "/Satoshi:32.1.0/"}):
     """A node whose fee calls answer with `fee(args)`; everything else healthy."""
     calls = []
 
@@ -213,6 +214,8 @@ def _fake_cli(fee):
             return {"time": 1_795_000_000 + int(args[1][1:]) * 600}
         if cmd == "estimatesmartfee":
             return fee(args)
+        if cmd == "getnetworkinfo":
+            return netinfo()
         raise AssertionError(f"unexpected call {args}")
 
     return cli, calls
@@ -335,3 +338,80 @@ class TestFeeEstimates:
         for text in (term, card.note):
             assert "\n" not in text and "\x1b" not in text
             assert "(truncated)" in text
+
+
+def _snap(data, available=True):
+    return {"generated_at": "2026-11-22T23:59:00+00:00",
+            "sources": {"node": {"available": available, "data": data,
+                                 "error": None if available else "no node"}}}
+
+
+def _ok_fee(a):
+    return {"feerate": 0.00001, "blocks": int(a[1])}
+
+
+class TestCoreVersion:
+    """The node's version, in the header of the page and the terminal.
+
+    Added after the 32.1 upgrade changed what the fee figures meant with
+    nothing on the page saying a different node was behind them."""
+
+    def test_it_is_collected_as_the_number(self, monkeypatch):
+        cli, _ = _fake_cli(_ok_fee)
+        monkeypatch.setattr(node, "_cli", cli)
+        assert node.collect(None).data["core_version"] == 320100
+
+    def test_a_failed_call_costs_the_version_not_the_block(self, monkeypatch):
+        def broken():
+            raise node.NodeError("getnetworkinfo refused")
+        cli, _ = _fake_cli(_ok_fee, netinfo=broken)
+        monkeypatch.setattr(node, "_cli", cli)
+        res = node.collect(None)
+        assert res.available and res.data["core_version"] is None
+        assert res.data["hash_rate_ehs"] == 1000.0
+
+    @pytest.mark.parametrize("v,label", [(320100, "(Core 32.1.0)"),
+                                         (300500, "(Core 30.5.0)"),
+                                         (310201, "(Core 31.2.1)")])
+    def test_the_number_formats_as_major_minor_patch(self, v, label):
+        assert node.version_label(_snap({"core_version": v})) == label
+
+    @pytest.mark.parametrize("bad", [None, "32.1.0", "/Satoshi:32.1.0/\n", 32.1,
+                                     True, 0, -1])
+    def test_anything_but_a_positive_int_shows_nothing(self, bad):
+        """An ingested snapshot can put text here; only digits may reach a header."""
+        assert node.version_label(_snap({"core_version": bad})) == ""
+
+    def test_no_node_shows_nothing(self):
+        assert node.version_label(_snap({"core_version": 320100}, available=False)) == ""
+        assert node.version_label({}) == ""
+
+
+class TestCoreVersionInTheHeaders:
+    def test_the_page_header_carries_it_in_a_live_span(self):
+        from btc_dashboard import html
+        page = html.render_html(_snap({"core_version": 320100}))
+        assert ('<h1>BTC DASHBOARD <span class="meta" id="corever">'
+                '(Core 32.1.0)</span></h1>') in page
+        assert "corever" in html.LIVE_IDS
+
+    def test_a_tick_carries_it_so_an_upgrade_reaches_an_open_tab(self):
+        from btc_dashboard import html
+        live = html.render_live(_snap({"core_version": 320100}))
+        assert 'id="corever">(Core 32.1.0)</span>' in live
+
+    def test_with_no_node_the_span_is_empty_but_present(self):
+        """A later tick has to find it to fill it."""
+        from btc_dashboard import html
+        page = html.render_html(_snap({}, available=False))
+        assert '<span class="meta" id="corever"></span>' in page
+
+    def test_the_terminal_header_carries_it(self):
+        from btc_dashboard import render
+        out = render.render(_snap({"core_version": 320100}), color=False)
+        assert out.splitlines()[0].startswith("BTC DASHBOARD (Core 32.1.0) — ")
+
+    def test_the_terminal_header_is_unchanged_without_a_node(self):
+        from btc_dashboard import render
+        out = render.render(_snap({}, available=False), color=False)
+        assert out.splitlines()[0].startswith("BTC DASHBOARD — ")

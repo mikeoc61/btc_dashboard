@@ -810,6 +810,14 @@ mean. Each fee call also fails on its own, so a node that
 rejects the call — any pre-32 node rejects the options argument — costs that
 figure, not the hashrate, difficulty and mempool beside it.
 
+Because an upgrade can change what a figure means with nothing else on the
+page changing, the node's version is in both headers: `BTC DASHBOARD (Core
+32.1.0)`. It is `getnetworkinfo`'s numeric `version` (`320100`), not the
+free-text `subversion`, so only digits can reach a header, and it is empty
+when the node is unavailable. On the page it is its own live region,
+`corever`, inside the otherwise static title, so an upgrade reaches a tab that
+was already open.
+
 **Volatility is reported as a level *and two* percentiles, with the
 annualisation named.** The level is not portable: the same series on a 252-day year reads
 ~17% lower, and the price source and close time move it further. So a level

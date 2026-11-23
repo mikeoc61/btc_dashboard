@@ -159,6 +159,37 @@ def _fees(cfg) -> tuple[dict, str | None]:
     return fees, reason
 
 
+def _core_version(cfg) -> int | None:
+    """Core's numeric version (320100 for 32.1.0), or None.
+
+    Fails on its own, like each fee call: the version is a label, and a node
+    that will not report it still has a hashrate. The number, not
+    `subversion`: that is free text set by whoever built the binary, while the
+    number can only ever format as digits.
+    """
+    try:
+        v = as_dict(_cli(cfg, "getnetworkinfo")).get("version")
+    except NodeError:
+        return None
+    return v if isinstance(v, int) and not isinstance(v, bool) and v > 0 else None
+
+
+def version_label(snapshot: dict) -> str:
+    """`(Core 32.1.0)` for the page and terminal headers, or '' with no node.
+
+    Read from the snapshot, so an ingested one is held to the same test: only
+    a positive int is formatted. Core encodes major*10000 + minor*100 + patch,
+    which every release since 0.20 fits.
+    """
+    block = as_dict(as_dict(snapshot.get("sources")).get(NAME))
+    if not block.get("available"):
+        return ""
+    v = as_dict(block.get("data")).get("core_version")
+    if not isinstance(v, int) or isinstance(v, bool) or v <= 0:
+        return ""
+    return f"(Core {v // 10000}.{v // 100 % 100}.{v % 100})"
+
+
 def _fee_reason(d: dict) -> str:
     """` — node: <reason>` when a fee is missing and the node said why; else ''."""
     f = as_dict(d.get("fees_sat_vb"))
@@ -194,6 +225,7 @@ def collect(cfg) -> SourceResult:
                 sigma = projection_sigma(elapsed)
 
         fees, fees_error = _fees(cfg)
+        core_version = _core_version(cfg)
 
         return SourceResult(
             name=NAME,
@@ -224,6 +256,7 @@ def collect(cfg) -> SourceResult:
                 },
                 "fees_sat_vb": fees,
                 "fees_error": fees_error,
+                "core_version": core_version,
             },
         )
     except NodeError as e:
