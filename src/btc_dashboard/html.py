@@ -513,8 +513,16 @@ h1 { font-size:1.05rem; margin:0; letter-spacing:.06em; color:var(--accent); }
 .card h2 { font-size:.85rem; margin:0 0 .5rem; letter-spacing:.05em;
            color:var(--accent); display:flex; justify-content:space-between;
            align-items:baseline; gap:.6rem; font-weight:600; }
+/* The badge takes whatever the title leaves, and wraps inside it. With
+   `nowrap` it held its full width and squeezed the title instead: an overdue
+   ETF badge broke "ETF FLOWS (US SPOT)" one word per line, an 82px heading at
+   1960px that this makes 39px -- title on one line, badge on two. A flex-basis
+   of 0 rather than a large flex-shrink, because any shrink at all reaches the
+   title, and a fraction of a pixel is enough to wrap it. The title still wraps
+   if even the badge's longest word cannot fit beside it. */
 .badge { font-size:.78rem; font-weight:400; color:var(--muted);
-         white-space:nowrap; font-family:var(--mono); }
+         flex:1 1 0; white-space:normal; text-align:right;
+         font-family:var(--mono); }
 .badge.warn { color:var(--warn); }
 .row { display:flex; justify-content:space-between; align-items:baseline;
        gap:1rem; padding:.16rem 0; }

@@ -122,6 +122,29 @@ class TestFreshnessBadges:
         assert "STALE 2h" in stale and "refresh failed" in stale
 
 
+class TestALongBadgeDoesNotSqueezeTheTitle:
+    """An overdue ETF badge held its full width under `nowrap` and broke
+    "ETF FLOWS (US SPOT)" one word per line: an 82px heading at 1960px, and
+    the tallest card in its row, so the whole page paid for it. With the badge
+    taking only what the title leaves, the same heading measured 39px."""
+
+    def _badge_rule(self):
+        start = page.CSS.index(".badge {")
+        return page.CSS[start:page.CSS.index("}", start)]
+
+    def test_the_badge_wraps_rather_than_holding_its_width(self):
+        rule = self._badge_rule()
+        assert "white-space:normal" in rule and "nowrap" not in rule
+
+    def test_the_title_is_laid_out_first(self):
+        """A basis of 0, not a large flex-shrink: any shrink reaches the
+        title, and a fraction of a pixel is enough to wrap it."""
+        assert "flex:1 1 0" in self._badge_rule()
+
+    def test_the_wrapped_badge_stays_on_the_right(self):
+        assert "text-align:right" in self._badge_rule()
+
+
 class TestAskBox:
     def test_absent_by_default(self):
         """Static output must not show a control that cannot work."""
